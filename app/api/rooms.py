@@ -1,0 +1,157 @@
+"""房间 REST API —— 房间生命周期管理（创建 / 加入 / 离开 / 准备 / 开局）
+
+Phase 6 起房间生命周期由本层接管：
+- POST   /api/rooms            创建房间（mode / capacity），签发 6 位房间码
+- GET    /api/rooms/{id}       房间详情 + 座位表 + 准备状态
+- POST   /api/rooms/{id}/join  加入（占座 + 签发 rejoinCode，写 room_seats 落库）
+- POST   /api/rooms/{id}/leave 离开（释放座位）
+- POST   /api/rooms/{id}/ready 切换准备态
+- POST   /api/rooms/{id}/start 开局（所有已占真人座位 ready 后触发）
+
+认证（首版轻量）：座位级操作带 rejoinCode 校验，防止误操作他人座位。
+路由全部定义为同步函数 → FastAPI 自动放线程池，不阻塞事件循环。
+"""
+
+import secrets
+from typing import Literal, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from app.game.room import RoomError, RoomSession, room_registry
+from app.storage.db import storage
+
+router = APIRouter(prefix='/api/rooms', tags=['rooms'])
+
+# 6 位房间码字母表：去掉易混淆字符（0/O、1/I、U）
+_ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+
+def _new_room_id() -> str:
+    while True:
+        code = ''.join(secrets.choice(_ROOM_ALPHABET) for _ in range(6))
+        if room_registry.get(code) is None:
+            return code
+
+
+def _room_or_404(room_id: str) -> RoomSession:
+    room = room_registry.get(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail={'code': 'ROOM_NOT_FOUND'})
+    return room
+
+
+def _verify_seat(room: RoomSession, seat: int, rejoin_code: str) -> None:
+    """座位级操作身份校验：该座位存在且重进码匹配。"""
+    state = room.seats[seat] if 0 <= seat < room.player_count else None
+    if state is None:
+        raise HTTPException(status_code=404, detail={'code': 'SEAT_EMPTY'})
+    if state.rejoin_code != rejoin_code:
+        raise HTTPException(status_code=403, detail={'code': 'INVALID_REJOIN_CODE'})
+
+
+def _room_response(room: RoomSession) -> dict:
+    return {
+        'roomId': room.room_id,
+        'mode': room.mode,
+        'capacity': room.capacity,
+        'status': room.status,
+        'seats': [
+            None if state is None else {
+                'seat': state.seat,
+                'nickname': state.nickname,
+                'ready': state.ready,
+                'connected': state.controller.connected,
+            }
+            for state in room.seats
+        ],
+    }
+
+
+# ─── 请求 / 响应模型 ─────────────────────────────────────
+
+class CreateRoomRequest(BaseModel):
+    mode: Literal['east', 'hanchan'] = 'east'
+    capacity: int = Field(default=4, ge=2, le=4)
+
+
+class JoinRequest(BaseModel):
+    nickname: str = Field(min_length=1, max_length=20)
+
+
+class SeatActionRequest(BaseModel):
+    seat: int = Field(ge=0, le=3)
+    rejoinCode: str
+    ready: Optional[bool] = None  # ready 动作可选显式指定
+
+
+# ─── 路由 ────────────────────────────────────────────────
+
+@router.post('')
+def create_room(body: CreateRoomRequest) -> dict:
+    """创建房间。同一房间码唯一，重复创建 → ROOM_EXISTS。"""
+    room_id = _new_room_id()
+    try:
+        room = room_registry.create(
+            room_id, mode=body.mode, capacity=body.capacity, storage=storage)
+    except RoomError as exc:
+        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    storage.create_room(room_id, body.mode, body.capacity)
+    storage.update_room_status(room_id, 'lobby')
+    return _room_response(room)
+
+
+@router.get('/{room_id}')
+def get_room(room_id: str) -> dict:
+    return _room_response(_room_or_404(room_id))
+
+
+@router.post('/{room_id}/join')
+def join_room(room_id: str, body: JoinRequest) -> dict:
+    """加入：占第一个空座并签发 rejoinCode（写 room_seats / players 落库）。"""
+    room = _room_or_404(room_id)
+    if room.status != 'lobby':
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
+    try:
+        seat, is_rejoin, state = room.join_or_rejoin(body.nickname)
+    except RoomError as exc:
+        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    return {
+        'roomId': room.room_id,
+        'seat': seat,
+        'nickname': state.nickname,
+        'rejoinCode': state.rejoin_code,
+        'rejoin': is_rejoin,
+    }
+
+
+@router.post('/{room_id}/leave')
+def leave_room(room_id: str, body: SeatActionRequest) -> dict:
+    """离开：释放座位（带 rejoinCode 身份校验）。"""
+    room = _room_or_404(room_id)
+    _verify_seat(room, body.seat, body.rejoinCode)
+    room.release_seat(body.seat)
+    return {'roomId': room.room_id, 'seat': body.seat, 'left': True}
+
+
+@router.post('/{room_id}/ready')
+def ready_room(room_id: str, body: SeatActionRequest) -> dict:
+    """准备 / 取消准备：返回该座位当前准备态。"""
+    room = _room_or_404(room_id)
+    _verify_seat(room, body.seat, body.rejoinCode)
+    ready = room.ready_seat(body.seat, body.ready)
+    return {'roomId': room.room_id, 'seat': body.seat, 'ready': ready}
+
+
+@router.post('/{room_id}/start')
+async def start_room(room_id: str) -> dict:
+    """开局：所有已占（真人）座位 ready 后触发，独立 game_task 驱动整场。
+
+    async 以便 game_task 创建在事件循环线程（与 WS 处理器一致）。
+    """
+    room = _room_or_404(room_id)
+    try:
+        await room.start()
+    except RoomError as exc:
+        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    return {'roomId': room.room_id, 'status': room.status}

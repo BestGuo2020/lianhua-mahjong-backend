@@ -152,11 +152,14 @@ async def test_room_lifecycle_persists_match(server, fresh_rooms, temp_storage):
             assert resp.status_code == 200
 
         # 开局（客户端未连接，座位由 AI 托管，对局自动打完）
+        room = rooms.get(room_id)
+        assert room is not None and room.status == 'lobby'
+        # REST 创建默认注入 PLAY_PACE（真人节奏）；本测试只验证落库链路，跳过节奏加速
+        room.pace = {}
         resp = await http.post(f'/api/rooms/{room_id}/start')
         assert resp.status_code == 200, resp.text
 
-        room = rooms.get(room_id)
-        assert room is not None and room.status == 'playing'
+        assert room.status == 'playing'
         await wait_until(lambda: room.status == 'finished', timeout=30)
         assert room.manager.match_finished
         assert room.match_id is not None

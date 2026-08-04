@@ -18,6 +18,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
 from app.storage.db import storage
 
@@ -92,8 +93,11 @@ def create_room(body: CreateRoomRequest) -> dict:
     """创建房间。同一房间码唯一，重复创建 → ROOM_EXISTS。"""
     room_id = _new_room_id()
     try:
+        # 真人联机房间注入视觉节奏（AI 出牌/碰杠有可读延迟，对齐前端 PACE_MS）；
+        # 测试直接构造 RoomSession 不经此路径，保持默认 0 加速
         room = room_registry.create(
-            room_id, mode=body.mode, capacity=body.capacity, storage=storage)
+            room_id, mode=body.mode, capacity=body.capacity, storage=storage,
+            pace=PLAY_PACE)
     except RoomError as exc:
         raise HTTPException(status_code=409, detail={'code': str(exc)})
     storage.create_room(room_id, body.mode, body.capacity)

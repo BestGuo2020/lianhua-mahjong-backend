@@ -64,6 +64,17 @@ DEFAULT_PACE = {
     'skipDrawPengDelay': 0,
 }
 
+# 真人联机房间的视觉节奏（REST create 注入，对齐前端 PACE_MS：动画可读、AI 不瞬移）
+PLAY_PACE = {
+    'afterDiscardToNextTurn': 450,
+    'afterClaimGang': 550,
+    'afterClaimPeng': 650,
+    'afterKongSettle': 600,
+    'beforeRobKong': 650,
+    'betweenRobKongs': 450,
+    'skipDrawPengDelay': 350,
+}
+
 
 # ─── 表现副作用接口（Phase 5 由 WebSocket 层实现广播）────────
 
@@ -71,7 +82,7 @@ class GameEvents(Protocol):
     def show_table_action(self, type_: str, actor_index: int, source_index: Optional[int],
                           tile: TileType, meld_index: int) -> None: ...
     def show_score_flow(self, deltas: list[dict]) -> None: ...
-    def announce(self, text: str, tone: str = 'gold') -> None: ...
+    def announce(self, text: str, tone: str = 'gold', id: Optional[int] = None) -> None: ...
     def play_sound(self, name: str, volume: Optional[float] = None) -> None: ...
     async def play_sound_and_wait(self, name: str, volume: Optional[float] = None) -> None: ...
     def snapshot(self) -> None: ...
@@ -206,7 +217,8 @@ class GameManager:
     def _announce(self, text, tone='gold') -> None:
         self._id_counter += 1
         self.announcement = {'text': text, 'tone': tone, 'id': self._id_counter}
-        self.events.announce(text, tone)
+        # id 随广播下发：客户端按 id 去重（公告随快照重复携带，不能重复弹出）
+        self.events.announce(text, tone, id=self._id_counter)
 
     def _play_sound(self, name, volume=None) -> None:
         self.events.play_sound(name, volume)

@@ -64,9 +64,9 @@ def score_flow_message(deltas: list) -> dict:
     return {'kind': 'score_flow', 'deltas': deltas}
 
 
-def announcement_message(text: str, tone: str = 'gold') -> dict:
-    """播报（全房间广播）。"""
-    return {'kind': 'announcement', 'text': text, 'tone': tone}
+def announcement_message(text: str, tone: str = 'gold', id: Optional[int] = None) -> dict:
+    """播报（全房间广播）。id 供客户端去重（公告随快照重复携带）。"""
+    return {'kind': 'announcement', 'text': text, 'tone': tone, 'id': id}
 
 
 def state_snapshot_message(**state) -> dict:

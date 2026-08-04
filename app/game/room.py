@@ -73,8 +73,9 @@ class WSEvents:
     def show_score_flow(self, deltas) -> None:
         self.room.conn.broadcast({'kind': 'score_flow', 'deltas': deltas})
 
-    def announce(self, text, tone='gold') -> None:
-        self.room.conn.broadcast({'kind': 'announcement', 'text': text, 'tone': tone})
+    def announce(self, text, tone='gold', id=None) -> None:
+        # id 来自 manager._announce 的 _id_counter：客户端按 id 去重，避免重复弹出
+        self.room.conn.broadcast({'kind': 'announcement', 'text': text, 'tone': tone, 'id': id})
 
     def play_sound(self, name, volume=None) -> None:
         # 音效由客户端依据 table_action / score_flow 事件自行播放，服务端不推送
@@ -128,7 +129,8 @@ class RoomSession:
     """
 
     def __init__(self, room_id: str, mode: str = 'east', capacity: int = 4,
-                 turn_timeout: float = 12.0, random=None, storage=None):
+                 turn_timeout: float = 12.0, random=None, storage=None,
+                 pace: Optional[dict] = None):
         self.room_id = room_id
         self.mode = mode
         # capacity = 真人座位上限（2/3/4）；麻将桌固定 4 人，空位由 AI 补足
@@ -137,6 +139,7 @@ class RoomSession:
         self.turn_timeout = turn_timeout
         self._random = random
         self.storage = storage  # 可选 app.storage.db.Storage；为 None 时纯内存态（测试/单机）
+        self.pace = pace  # 视觉节奏注入；None → GameManager 默认 0（测试/单机即用即答）
         self.status = 'lobby'  # lobby / playing / finished / error / closed
         self.seats: list[Optional[SeatState]] = [None] * self.player_count
         self.conn = ConnectionManager()
@@ -245,6 +248,7 @@ class RoomSession:
             player_seeds=self._seeds(),
             random=self._random,
             events=WSEvents(self),
+            pace=self.pace,
         )
         self.status = 'playing'
         self.game_task = asyncio.create_task(self._drive())

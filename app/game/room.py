@@ -100,6 +100,10 @@ class WSEvents:
             'dice': dice,
         })
 
+    async def wait_for_opening(self) -> None:
+        # 开局就绪屏障：等所有在线真人客户端发牌动画结束（opening_done）再开始首回合
+        await self.room._wait_for_opening()
+
 
 def build_snapshot(room: 'RoomSession', seat: int) -> dict:
     """构造全量 state_snapshot：对请求座位隐藏其他玩家手牌（防作弊）。"""
@@ -166,6 +170,11 @@ class RoomSession:
         self._continue_timeout = 20.0
         self._continue: Optional[dict] = None
         self._continue_event: Optional[asyncio.Event] = None
+        # 开局就绪屏障：等所有在线真人客户端发牌动画结束（opening_done）再开始首回合。
+        # 消除固定 openingDelay 在慢设备上的「服务端抢跑」；兜底超时防客户端不响应卡死。
+        self._opening_timeout = 15.0
+        self._opening: Optional[dict] = None
+        self._opening_event: Optional[asyncio.Event] = None
 
     # ── 座位 / 重进码 ────────────────────────────────────
 
@@ -243,6 +252,8 @@ class RoomSession:
             return True, ''
         if message.get('type') == 'continue':
             return self._confirm_continue(seat)
+        if message.get('type') == 'opening_done':
+            return self._confirm_opening(seat)
         state = self.seats[seat]
         if state is None or not isinstance(state.controller, RemotePlayer):
             return False, 'NOT_HUMAN_SEAT'
@@ -264,6 +275,49 @@ class RoomSession:
         if self._continue_event is not None:
             self._continue_event.set()
         return True, ''
+
+    def _confirm_opening(self, seat: int) -> tuple[bool, str]:
+        """客户端「opening_done」：标记该座位开局动画已完成（仅在开局就绪屏障激活时生效）。"""
+        if self._opening is None:
+            return True, ''   # 非开局等待期间：幂等忽略
+        confirmed = self._opening['confirmed']
+        if seat not in confirmed:
+            confirmed.add(seat)
+        if self._opening_event is not None:
+            self._opening_event.set()
+        return True, ''
+
+    async def _wait_for_opening(self) -> None:
+        """开局就绪屏障：等所有在线真人客户端发牌动画结束（opening_done）再开始首回合。
+
+        测试路径（pace 为空）不等待：客户端不做开局动画，直接即用即答。
+        兜底超时（_opening_timeout）防客户端完全不响应导致整场卡死。
+        """
+        if not self.pace:
+            return
+        seats = self._human_connected_seats()
+        if not seats:
+            return   # 全 AI / 全员断线 → 无需等待
+        self._opening = {'deadline': time.monotonic() + self._opening_timeout, 'confirmed': set()}
+        self._opening_event = asyncio.Event()
+        try:
+            while True:
+                current = self._human_connected_seats()
+                confirmed = self._opening['confirmed']
+                # 无在线真人（全员断线）或所有在线真人都已就绪 → 开始首回合
+                if not current or all(s in confirmed for s in current):
+                    break
+                remaining = self._opening['deadline'] - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._opening_event.wait(), timeout=remaining)
+                    self._opening_event.clear()
+                except asyncio.TimeoutError:
+                    break
+        finally:
+            self._opening = None
+            self._opening_event = None
 
     async def _wait_for_continue(self) -> None:
         """结算后等所有已连真人确认再推进。全部断线 / 无真人 → 直接通过。

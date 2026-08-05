@@ -99,6 +99,7 @@ class GameEvents(Protocol):
     def snapshot(self) -> None: ...
     def round_start(self, match_started: bool, round_: int, dealer: int,
                     honba: int, dice: list[int]) -> None: ...
+    async def wait_for_opening(self) -> None: ...
 
 
 class NullEvents:
@@ -123,6 +124,9 @@ class NullEvents:
         pass
 
     def round_start(self, *a, **k) -> None:
+        pass
+
+    async def wait_for_opening(self) -> None:
         pass
 
 
@@ -336,11 +340,10 @@ class GameManager:
             return
 
         self._announce(f'{self.round_label()} · 开牌')
-        # 开局表现等待：暂停推进，对齐客户端开局动画（对局开始 / 骰子 / 发牌）。
-        # 若无此暂停，AI 会在客户端动画期间先行，客户端动画结束后只能「追状态」
-        # （牌河跳变）且人类首回合的 12s 计时已消耗大半。
-        opening_key = 'openingDelayStart' if match_started else 'openingDelay'
-        await self._sleep(self.pace[opening_key])
+        # 开局就绪屏障：等所有在线真人客户端发牌动画结束（发送 opening_done）再开始首回合，
+        # 消除固定延时在慢设备上的「服务端抢跑」（AI 已出牌/副露/胡牌而用户没反应过来）。
+        # 无真人（全 AI）或测试路径（NullEvents / pace=None）直接通过，即用即答。
+        await self.events.wait_for_opening()
         await self.begin_turn(self.dealer)
 
     def round_label(self) -> str:

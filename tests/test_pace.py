@@ -14,7 +14,7 @@ import pytest
 from app.game.manager import GameManager, PLAY_PACE
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.remote_player import RemotePlayer
-from app.game.room import RoomSession, room_registry as rooms
+from app.game.room import RoomSession, SeatState, room_registry as rooms
 
 
 async def run_until(manager: GameManager, phase: str, max_steps: int = 4000) -> None:
@@ -91,38 +91,68 @@ async def test_injected_pace_slows_first_round():
 
 
 @pytest.mark.asyncio
-async def test_opening_delay_gates_first_turn():
-    """开局表现等待生效：注入 openingDelayStart 后首回合决策至少等满该时长；默认 0 即用即答。"""
+async def test_start_game_with_barrier_events_still_finishes():
+    """Manager 经 wait_for_opening 事件（默认空实现）开局仍能正常打完，不卡死。"""
     from app.game.player import AIPlayer
 
-    class Recorder(AIPlayer):
-        def __init__(self):
-            super().__init__()
-            self.first_request: float | None = None
-
-        async def request_turn(self, ctx):
-            if self.first_request is None:
-                self.first_request = time.perf_counter()
-            return await super().request_turn(ctx)
-
-    controllers = [Recorder() for _ in range(4)]
-    manager = GameManager(mode='east', controllers=controllers, pace={'openingDelayStart': 200})
+    manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)])
     t0 = time.perf_counter()
-    task = asyncio.create_task(manager.start_game('east'))
-    try:
-        deadline = asyncio.get_event_loop().time() + 5
-        while (not any(c.first_request for c in controllers)
-               and asyncio.get_event_loop().time() < deadline):
-            await asyncio.sleep(0.005)
-        first = min((c.first_request for c in controllers if c.first_request is not None),
-                    default=None)
-        assert first is not None, '首回合决策从未发生'
-        elapsed = first - t0
-        # 留调度余量：至少等满注入的 200ms（宽松判 150ms）
-        assert elapsed >= 0.15, f'开局表现等待未生效: {elapsed:.3f}s'
-    finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+    await manager.start_game('east')
+    assert manager.phase == 'settled'
+    assert time.perf_counter() - t0 < 5, '空实现屏障不应阻塞开局'
+
+
+def _room_with_humans(room_id: str, pace=None, count: int = 2) -> RoomSession:
+    """构造一个带 count 个已连真人座位的房间（REST 真实房间 pace=PLAY_PACE）。"""
+    room = RoomSession(room_id, capacity=count, pace=pace)
+    for i in range(count):
+        controller = RemotePlayer(i, room.conn)
+        controller.set_connected(True)
+        room.seats[i] = SeatState(i, f'P{i}', f'code-{i}', controller)
+    return room
+
+
+class TestOpeningReadyBarrier:
+    """开局就绪屏障：服务端等所有在线真人发牌动画结束（opening_done）再开局，防止抢跑"""
+
+    @pytest.mark.asyncio
+    async def test_all_confirm_proceeds_immediately(self):
+        """所有在线真人确认 opening_done 后，屏障立即通过开始首回合。"""
+        room = _room_with_humans('OPN-ALL', pace=PLAY_PACE)
+        room._opening_timeout = 2.0
+        task = asyncio.create_task(room._wait_for_opening())
+        while room._opening is None:
+            await asyncio.sleep(0)   # 等屏障激活（_opening 建立）
+        # 未全部确认 → 仍在等待
+        room._confirm_opening(0)
+        await asyncio.sleep(0)
+        assert not task.done(), '还有真人未确认，屏障不应通过'
+        room._confirm_opening(1)
+        await asyncio.wait_for(task, timeout=1)
+        assert task.done(), '全部确认后应立即通过'
+
+    @pytest.mark.asyncio
+    async def test_backstop_timeout_proceeds(self):
+        """客户端不响应时兜底超时后仍推进，不卡死整场。"""
+        room = _room_with_humans('OPN-TIMEOUT', pace=PLAY_PACE, count=1)
+        room._opening_timeout = 0.05
+        t0 = time.monotonic()
+        await asyncio.wait_for(room._wait_for_opening(), timeout=1)
+        assert time.monotonic() - t0 >= 0.04, '应等待至少到兜底超时'
+
+    @pytest.mark.asyncio
+    async def test_skipped_without_pace(self):
+        """测试路径（pace=None）不等待：开局即用即答，不拖慢套件。"""
+        room = _room_with_humans('OPN-NOPACE', pace=None, count=1)
+        await asyncio.wait_for(room._wait_for_opening(), timeout=0.2)
+
+    @pytest.mark.asyncio
+    async def test_no_humans_passes_immediately(self):
+        """无在线真人（全 AI）时屏障直接通过。"""
+        room = RoomSession('OPN-AI', capacity=4, pace=PLAY_PACE)   # 无座位 → 无真人
+        await asyncio.wait_for(room._wait_for_opening(), timeout=0.2)
+
+    def test_confirm_opening_outside_barrier_is_idempotent(self):
+        """非开局等待期间到达的 opening_done 幂等忽略，不算错。"""
+        room = RoomSession('OPN-IDLE', capacity=4, pace=PLAY_PACE)
+        assert room._confirm_opening(0) == (True, '')

@@ -65,6 +65,7 @@ DEFAULT_PACE = {
     'skipDrawPengDelay': 0,
     'openingDelayStart': 0,   # 首局开局表现等待（对局开始 + 骰子 + 发牌动画）
     'openingDelay': 0,        # 后续局开局表现等待（骰子 + 发牌动画）
+    'redKongDraw': 0,         # 红中花杠亮杠后到补摸的停顿（人类节奏）
 }
 
 # 真人联机房间的视觉节奏（REST create 注入，对齐前端 PACE_MS：动画可读、AI 不瞬移）
@@ -81,6 +82,8 @@ PLAY_PACE = {
     # 服务端在此窗口暂停推进，避免 AI 在客户端动画期间先行，导致客户端追状态 / 回合计时错位。
     'openingDelayStart': 6400,
     'openingDelay': 5300,
+    # 红中花杠：亮杠（动画 + 音效）后停顿再补摸，人类正常速度
+    'redKongDraw': 600,
 }
 
 
@@ -361,6 +364,8 @@ class GameManager:
                 self.end_game(player_index, {'fourRed': True})
                 return False
             await self._play_sound_and_wait('gang.mp3')
+            # 亮杠后停顿再补摸：给花杠动画与报杠音效留出人类正常节奏，避免补摸瞬移
+            await self._sleep(self.pace['redKongDraw'])
             if self.phase == 'settled':
                 return False
             return await self.draw_for(player_index, True)
@@ -493,10 +498,10 @@ class GameManager:
         if kind == 'gang':
             perform_discard_gang(self._table_context, claimant['playerIndex'], tile, from_)
             self._broadcast_snapshot()
-            if await self.draw_for(claimant['playerIndex'], True):
-                await self._sleep(self.pace['afterClaimGang'])
-                return await self.begin_turn(claimant['playerIndex'], from_tail=True)
-            return
+            # 杠后补摸只由 begin_turn(from_tail) 完成：这里不能再 draw_for，
+            # 否则点杠会连摸两张（补摸 + 回合摸），四副露时手牌多一张，不再是单骑。
+            await self._sleep(self.pace['afterClaimGang'])
+            return await self.begin_turn(claimant['playerIndex'], from_tail=True)
         # peng
         perform_peng(self._table_context, claimant['playerIndex'], tile, from_)
         self._broadcast_snapshot()

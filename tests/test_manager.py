@@ -11,6 +11,7 @@ import pytest
 
 from app.game.manager import GameManager
 from app.game.player import AIPlayer
+from app.models.game import GamePlayer, Meld
 
 
 async def play_one_match(max_steps: int = 8000) -> dict:
@@ -91,3 +92,63 @@ class TestGameManagerState:
             assert manager.dealer == dealer_before
         else:
             assert manager.dealer == (dealer_before + 1) % 4
+
+
+class TestDiscardGangReplacement:
+    """点杠（杠他人弃牌）后只补摸一张 —— 回归：曾连摸两张导致四副露手牌多一张、非单骑"""
+
+    class _StubController:
+        def __init__(self):
+            self.turn_calls = 0
+
+        async def request_claim(self, ctx):
+            return {'kind': 'gang'}
+
+        async def request_turn(self, ctx):
+            self.turn_calls += 1
+            return {'kind': 'discard', 'handIndex': 0}
+
+        async def request_rob_kong(self, ctx):
+            return 'pass'
+
+        def on_discarded(self):
+            pass
+
+        def reset(self):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_single_replacement_after_discard_gang(self):
+        """点杠只补摸一张：杠后手牌净减 3（13 → 10），不再连摸两张（否则为 11）"""
+        stub = self._StubController()
+        manager = GameManager(mode='east', controllers=[stub for _ in range(4)])
+        manager.players = [
+            GamePlayer(name='P0', avatar='', score=1000, seat=0, hand=['m1'],
+                       discards=[], melds=[], redCount=0, drawnTileIndex=-1),
+            # 1 号有 3 张 m1 可点杠，其余 10 张无关联
+            GamePlayer(name='P1', avatar='', score=1000, seat=1,
+                       hand=['m1', 'm1', 'm1', 'p2', 'p3', 'p4', 's5', 's6', 's7',
+                             'east', 'west', 'south', 'north'],
+                       discards=[], melds=[], redCount=0, drawnTileIndex=-1),
+            GamePlayer(name='P2', avatar='', score=1000, seat=2, hand=[],
+                       discards=[], melds=[], redCount=0, drawnTileIndex=-1),
+            GamePlayer(name='P3', avatar='', score=1000, seat=3, hand=[],
+                       discards=[], melds=[], redCount=0, drawnTileIndex=-1),
+        ]
+        manager._table_context.players = manager.players
+        manager.wall = ['m9']   # 恰好 1 张：杠后补摸一张后墙空 → 流局
+        manager.phase = 'drawing'
+        manager.current_player = 0
+
+        # 0 号打出 m1 → 1 号点杠 → 补摸 1 张 → 出 1 张 → 墙空流局
+        await manager.discard_tile(0, 0)
+
+        p1 = manager.players[1]
+        # 点杠移除 3 张 + 补摸 1 张 + 出牌 1 张 = 净 -3：13 → 10（若连摸两张则为 11）
+        assert len(p1.hand) == 10, f'点杠后手牌应为 10 张（净减 3），实际 {len(p1.hand)}'
+        assert any(m.type == 'gang' and m.tile == 'm1' for m in p1.melds), '应形成 m1 杠副露'
+        # 手牌数守恒：hand + 副露张数 = 13 + 杠数（单骑等待结构）
+        meld_tiles = sum(len(m.tiles) for m in p1.melds)
+        kongs = sum(1 for m in p1.melds if m.type in ('gang', 'angang'))
+        assert len(p1.hand) + meld_tiles == 13 + kongs
+        assert manager.phase == 'settled'   # 墙空流局结束

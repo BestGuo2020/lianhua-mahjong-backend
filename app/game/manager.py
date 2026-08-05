@@ -78,10 +78,10 @@ PLAY_PACE = {
     'betweenRobKongs': 450,
     'skipDrawPengDelay': 350,
     # 开局表现等待：对齐前端 useRemoteGame 的开局动画时长
-    # （首局 = start 1250 + 骰子 1150 + 发牌 3720 ≈ 6120ms；后续局 = 骰子 1150 + 发牌 3720 ≈ 4870ms）
+    # （每局都播 start 1250 + 骰子 1150 + 发牌 3720 ≈ 6120ms；客户端逐局展示「xx场·xx局」提示）
     # 服务端在此窗口暂停推进，避免 AI 在客户端动画期间先行，导致客户端追状态 / 回合计时错位。
     'openingDelayStart': 6400,
-    'openingDelay': 5300,
+    'openingDelay': 6400,
     # 红中花杠：亮杠（动画 + 音效）后停顿再补摸，人类正常速度
     'redKongDraw': 600,
 }

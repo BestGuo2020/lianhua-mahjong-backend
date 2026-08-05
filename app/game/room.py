@@ -13,6 +13,7 @@ WSEvents 是 GameManager 的 GameEvents 真实实现：表动作/分数/公告�
 """
 
 import asyncio
+import os
 import secrets
 import time
 from typing import Optional
@@ -25,6 +26,13 @@ from app.ws.manager import ConnectionManager
 
 class RoomError(Exception):
     """房间层业务错误（错误码直接作为 rejoin_err / error 消息的 code 返回）。"""
+
+
+# ─── 空房间 TTL 清理（Phase 8：房间不会自动解散，空闲房间需定期回收）────
+# 大厅/全员掉线的房间空闲超 IDLE_TTL 回收；已结束房间保留 FINISHED_TTL 供查看结果。
+# 可用环境变量覆盖（秒）。
+IDLE_TTL = float(os.environ.get('ROOM_IDLE_TTL', str(30 * 60)))
+FINISHED_TTL = float(os.environ.get('ROOM_FINISHED_TTL', str(10 * 60)))
 
 
 def _make_rejoin_code() -> str:
@@ -171,6 +179,7 @@ class RoomSession:
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
+        self.last_active: float = time.monotonic()  # 最后活动时间（空房 TTL 清理用）
         # 结算确认屏障：一局结算后等所有已连真人确认（客户端「继续」按钮）再推进下一局。
         # 兜底超时防止某客户端完全不响应导致整场卡死；正常流程客户端 10s 倒计时自动确认。
         self._continue_timeout = 20.0
@@ -182,6 +191,22 @@ class RoomSession:
         self._opening: Optional[dict] = None
         self._opening_event: Optional[asyncio.Event] = None
 
+    # ── 活动时间 / 空房 TTL ─────────────────────────────
+
+    def _touch(self) -> None:
+        """记录一次活动（join/leave/ready/start/WS 消息等），刷新 TTL 计时起点。"""
+        self.last_active = time.monotonic()
+
+    def is_expired(self, now: Optional[float] = None) -> bool:
+        """空房间是否可回收：对局中绝不清理；有人在座且在线不清理；
+        空闲超 TTL（大厅/全掉线 IDLE_TTL，已结束 FINISHED_TTL）才回收。"""
+        if self.status == 'playing':
+            return False
+        if any(s is not None and s.controller.connected for s in self.seats):
+            return False
+        ttl = FINISHED_TTL if self.status == 'finished' else IDLE_TTL
+        return (now if now is not None else time.monotonic()) - self.last_active >= ttl
+
     # ── 座位 / 重进码 ────────────────────────────────────
 
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None):
@@ -191,6 +216,7 @@ class RoomSession:
         昵称查重：房间内已有同名玩家占座 → NICKNAME_TAKEN（重进码路径不受此限）。
         首个占座者为创建者（REST 创建房间后 creator 自己 join）。
         """
+        self._touch()
         if rejoin_code:
             return self.resume_by_code(rejoin_code)
         if sum(1 for s in self.seats if s is not None) >= self.capacity:
@@ -244,6 +270,7 @@ class RoomSession:
 
     def release_seat(self, seat: int, rejoin_code: Optional[str] = None) -> None:
         """REST leave：释放座位。带 rejoin_code 时校验身份，防止误释放他人座位。"""
+        self._touch()
         state = self.seats[seat]
         if state is None:
             raise RoomError('SEAT_EMPTY')
@@ -264,6 +291,7 @@ class RoomSession:
 
     def ready_seat(self, seat: int, ready: Optional[bool] = None) -> bool:
         """REST ready：设置座位准备态（缺省 toggle）。返回新状态。"""
+        self._touch()
         state = self.seats[seat]
         if state is None:
             raise RoomError('SEAT_EMPTY')
@@ -273,12 +301,14 @@ class RoomSession:
     # ── 连接生命周期 ─────────────────────────────────────
 
     def on_connect(self, seat: int) -> None:
+        self._touch()
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(True)
             state.connected_at = time.time()
 
     def on_disconnect(self, seat: int) -> None:
+        self._touch()
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(False)
@@ -290,6 +320,7 @@ class RoomSession:
 
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
+        self._touch()   # 任意 WS 消息 = 活动：对局中持续刷新 TTL
         if message.get('type') == 'ping':
             return True, ''
         if message.get('type') == 'continue':
@@ -400,6 +431,7 @@ class RoomSession:
         必须 await（async）以便 game_task 创建在当前事件循环 —— 即 uvicorn 的
         事件循环，与 WS 处理器一致。否则跨循环入队/唤醒会死锁。
         """
+        self._touch()
         if self.manager is not None or self.game_task is not None:
             raise RoomError('ALREADY_STARTED')
         if self.status != 'lobby':
@@ -520,6 +552,7 @@ class RoomSession:
                     await asyncio.sleep(0)
             if self.manager.phase == 'finished':
                 self.status = 'finished'
+            self._touch()   # 对局结束：TTL 从结束时刻起算（FINISHED_TTL）
             final_scores = [
                 {'seat': p.seat, 'name': p.name, 'score': p.score}
                 for p in self.manager.players
@@ -547,12 +580,18 @@ class RoomSession:
 
 
 class RoomRegistry:
-    """内存房间注册表（Phase 6 由 REST 层接管创建；当前供 WS 端点与测试使用）。"""
+    """内存房间注册表（Phase 6 由 REST 层接管创建；当前供 WS 端点与测试使用）。
+
+    空房间 TTL 清理：get/create 时惰性清扫过期房（带节流），对局中/有人在线的房间不回收。
+    """
 
     def __init__(self) -> None:
         self._rooms: dict[str, RoomSession] = {}
+        self._last_sweep = 0.0
+        self._sweep_interval = 60.0   # 惰性清扫节流：至少间隔 60s 才真正遍历
 
     def create(self, room_id: str, **kwargs) -> RoomSession:
+        self._maybe_sweep()
         if room_id in self._rooms:
             raise RoomError('ROOM_EXISTS')
         room = RoomSession(room_id, **kwargs)
@@ -560,7 +599,23 @@ class RoomRegistry:
         return room
 
     def get(self, room_id: str) -> Optional[RoomSession]:
+        self._maybe_sweep()
         return self._rooms.get(room_id)
+
+    def _maybe_sweep(self) -> None:
+        now = time.monotonic()
+        if now - self._last_sweep < self._sweep_interval:
+            return
+        self._last_sweep = now
+        self.sweep_expired(now)
+
+    def sweep_expired(self, now: Optional[float] = None) -> list[str]:
+        """回收所有过期的空房间，返回被回收的房间码列表（供测试直接触发）。"""
+        now = now if now is not None else time.monotonic()
+        expired = [rid for rid, room in list(self._rooms.items()) if room.is_expired(now)]
+        for rid in expired:
+            self.remove(rid)
+        return expired
 
     def remove(self, room_id: str) -> None:
         room = self._rooms.pop(room_id, None)

@@ -292,6 +292,19 @@ class GameManager:
             if tile:
                 self._receive_dealt_tile(self.players[player_index], tile)
 
+    def _break_wall_by_dice(self) -> None:
+        """骰子决定拆墙点：一墩=2 张，数两骰点数和墩后拆开，旋转列表让拆墙处成为前端。
+
+        与前端 useGame 的拆墙逻辑保持一致（本地/远程同规则）。牌已洗乱，从哪拆
+        不影响公平，只为还原真实麻将的「骰子拆墙」观感。不设王牌：整条墙仍会被
+        正常摸/杠补摸完。
+        """
+        if not self.wall:
+            return
+        s = self.dice[0] + self.dice[1]
+        break_index = (s * 2) % len(self.wall)
+        self.wall = self.wall[break_index:] + self.wall[:break_index]
+
     # ── 开局 ──
 
     async def start_game(self, mode: Optional[str] = None) -> None:
@@ -321,6 +334,7 @@ class GameManager:
             self.dice = [1 + int(self._random() * 6), 1 + int(self._random() * 6)]
         match_started = (self.round == 1 and self.dealer == 0 and self.honba == 0)
         self.events.round_start(match_started, self.round, self.dealer, self.honba, self.dice)
+        self._break_wall_by_dice()   # 骰子决定拆墙点（本地/远程同规则）
 
         seat_order = [(self.dealer + offset) % len(self.players) for offset in range(len(self.players))]
         for _ in range(3):

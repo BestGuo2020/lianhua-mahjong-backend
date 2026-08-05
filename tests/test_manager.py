@@ -181,3 +181,21 @@ class TestEndDrawCleanup:
         assert manager.action_prompt is None, '流局应清掉 action_prompt'
         assert manager.winning_player_index == -1
         assert manager.result is not None and manager.result.get('draw') is True
+
+
+def test_break_wall_by_dice_rotates_to_break_point():
+    """骰子决定拆墙点：数两骰点数和墩（一墩=2 张）后旋转列表，拆墙处成为前端。"""
+    manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)])
+    manager.wall = [f't{i}' for i in range(10)]   # 10 张：索引 0-9
+    manager.dice = [1, 3]                         # 和=4 → 拆 4*2=8 张（%10）→ 从索引 8 起
+    manager._break_wall_by_dice()
+    assert manager.wall == [f't{i}' for i in range(8, 10)] + [f't{i}' for i in range(8)]
+
+
+def test_break_wall_by_dice_empty_wall_noop():
+    """空墙调用拆墙不报错（流局边缘等空墙场景）。"""
+    manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)])
+    manager.wall = []
+    manager.dice = [6, 6]
+    manager._break_wall_by_dice()
+    assert manager.wall == []

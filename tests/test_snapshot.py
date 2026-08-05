@@ -163,3 +163,60 @@ async def test_snapshot_after_hand_result(server, fresh_rooms):
         assert 'winnerIndex' in wp and 'tile' in wp
     finally:
         await safe_close(a)
+
+
+@pytest.mark.asyncio
+async def test_settled_snapshot_reveals_all_hands(server, fresh_rooms):
+    """结算快照亮出全部玩家手牌（赢牌翻牌展示三家），进行中仍只显示本人。"""
+    room, codes = await prepare_room('SNAP5', 1, ['纪伯'])
+    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP5', codes['纪伯']))
+    try:
+        await read_until(a, 'rejoin_ok')
+        async with httpx.AsyncClient(base_url=server['http']) as http:
+            await http.post('/api/rooms/SNAP5/start')
+        # 打到第一局结算，收集消息（期间自动代打）
+        settled_snap = None
+        while True:
+            msg = await recv_json(a, timeout=20)
+            kind = msg.get('kind')
+            if kind == 'turn_request':
+                await a.send(json.dumps({'type': 'discard', 'handIndex': 0}))
+            elif kind in ('claim_request', 'rob_kong_request'):
+                await a.send(json.dumps({'type': 'pass'}))
+            elif kind == 'state_snapshot' and msg.get('phase') == 'settled':
+                settled_snap = msg
+            elif kind == 'hand_result':
+                break
+        assert settled_snap is not None, '未收到 phase=settled 的快照'
+        # 结算快照：三家手牌全部可见（白板/翻牌展示需要真实牌面）
+        for player in settled_snap['players']:
+            assert player['hand'], f'结算快照手牌不应为空: 座位 {player["seat"]}'
+            assert all(t is not None for t in player['hand']), \
+                f'结算快照手牌应亮出真实牌面: 座位 {player["seat"]}'
+    finally:
+        await safe_close(a)
+
+
+@pytest.mark.asyncio
+async def test_round_start_carries_dice(server, fresh_rooms):
+    """开局广播 round_start：携带骰子值，先于发牌快照到达；快照亦带同款骰子。"""
+    room, codes = await prepare_room('SNAP4', 1, ['小骰'])
+    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP4', codes['小骰']))
+    try:
+        await read_until(a, 'rejoin_ok')
+        async with httpx.AsyncClient(base_url=server['http']) as http:
+            await http.post('/api/rooms/SNAP4/start')
+        # 收集到 round_start 为止（跳过连上时的 lobby 快照）
+        msgs = await collect_until(a, {'round_start'})
+        rs = msgs[-1]
+        assert rs['kind'] == 'round_start'
+        assert rs['matchStarted'] is True, '首局 matchStarted 应为 True'
+        assert rs['round'] == 1 and rs['dealer'] == 0
+        dice = rs['dice']
+        assert isinstance(dice, list) and len(dice) == 2
+        assert all(isinstance(v, int) and 1 <= v <= 6 for v in dice), f'骰子值应在 [1,6]: {dice}'
+        # 紧随其后的发牌快照携带同款骰子（重连/兜底用）
+        snap = await read_until(a, 'state_snapshot')
+        assert snap['dice'] == dice, '发牌快照骰子应与 round_start 一致'
+    finally:
+        await safe_close(a)

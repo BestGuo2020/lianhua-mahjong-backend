@@ -89,6 +89,17 @@ class WSEvents:
         # 状态变更后广播全量快照：per-seat 差异化（本人手牌可见，他座隐藏）
         self.room.broadcast_snapshot()
 
+    def round_start(self, match_started, round_, dealer, honba, dice) -> None:
+        # 每局开局广播：客户端据此播放开局序列（对局开始 + 骰子）
+        self.room.conn.broadcast({
+            'kind': 'round_start',
+            'matchStarted': match_started,
+            'round': round_,
+            'dealer': dealer,
+            'honba': honba,
+            'dice': dice,
+        })
+
 
 def build_snapshot(room: 'RoomSession', seat: int) -> dict:
     """构造全量 state_snapshot：对请求座位隐藏其他玩家手牌（防作弊）。"""
@@ -97,7 +108,10 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
     if mgr is not None:
         for p in mgr.players:
             data = p.model_dump(mode='json', by_alias=True)
-            if p.seat != seat:
+            # 结算快照亮出全部手牌（局已结束，赢牌翻牌需要展示三家手牌）；
+            # 进行中只对本人显示手牌，他人用 null 占位（防作弊）。
+            reveal = mgr.phase == 'settled' and mgr.result is not None
+            if p.seat != seat and not reveal:
                 data['hand'] = [None] * len(data['hand'])
             players.append(data)
     return {
@@ -108,6 +122,7 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'round': mgr.round if mgr else 1,
         'dealer': mgr.dealer if mgr else 0,
         'honba': mgr.honba if mgr else 0,
+        'dice': mgr.dice if mgr else [1, 1],
         'wallCount': len(mgr.wall) if mgr else 0,
         'currentPlayer': mgr.current_player if mgr else -1,
         'players': players,
@@ -146,6 +161,11 @@ class RoomSession:
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
+        # 结算确认屏障：一局结算后等所有已连真人确认（客户端「继续」按钮）再推进下一局。
+        # 兜底超时防止某客户端完全不响应导致整场卡死；正常流程客户端 10s 倒计时自动确认。
+        self._continue_timeout = 20.0
+        self._continue: Optional[dict] = None
+        self._continue_event: Optional[asyncio.Event] = None
 
     # ── 座位 / 重进码 ────────────────────────────────────
 
@@ -220,10 +240,60 @@ class RoomSession:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
         if message.get('type') == 'ping':
             return True, ''
+        if message.get('type') == 'continue':
+            return self._confirm_continue(seat)
         state = self.seats[seat]
         if state is None or not isinstance(state.controller, RemotePlayer):
             return False, 'NOT_HUMAN_SEAT'
         return state.controller.handle_action(message)
+
+    # ── 结算确认屏障 ─────────────────────────────────────
+
+    def _human_connected_seats(self) -> list[int]:
+        """当前在线（WS 已连）的真人座位列表。断线座位由 AI 托管，不参与确认。"""
+        return [s.seat for s in self.seats if s is not None and s.controller.connected]
+
+    def _confirm_continue(self, seat: int) -> tuple[bool, str]:
+        """客户端「继续」：把座位标记为已确认（仅在确认屏障激活时生效）。"""
+        if self._continue is None:
+            return True, ''   # 非结算期间：幂等忽略（结算窗早于到达的 continue 不算错）
+        confirmed = self._continue['confirmed']
+        if seat not in confirmed:
+            confirmed.add(seat)
+        if self._continue_event is not None:
+            self._continue_event.set()
+        return True, ''
+
+    async def _wait_for_continue(self) -> None:
+        """结算后等所有已连真人确认再推进。全部断线 / 无真人 → 直接通过。
+
+        客户端在「继续」按钮显示后自动倒计时 10s 并发送 continue；此处的兜底
+        超时（_continue_timeout）只防客户端完全不响应导致整场卡死。
+        """
+        seats = self._human_connected_seats()
+        if not seats:
+            return
+        self._continue = {'deadline': time.monotonic() + self._continue_timeout, 'confirmed': set()}
+        self._continue_event = asyncio.Event()
+        self.conn.broadcast({'kind': 'continue_prompt', 'total': len(seats)})
+        try:
+            while True:
+                current = self._human_connected_seats()
+                confirmed = self._continue['confirmed']
+                # 无在线真人（全员断线）或所有在线真人都已确认 → 推进
+                if not current or all(s in confirmed for s in current):
+                    break
+                remaining = self._continue['deadline'] - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._continue_event.wait(), timeout=remaining)
+                    self._continue_event.clear()
+                except asyncio.TimeoutError:
+                    break
+        finally:
+            self._continue = None
+            self._continue_event = None
 
     # ── 开局驱动 ─────────────────────────────────────────
 
@@ -327,6 +397,8 @@ class RoomSession:
                 if self.manager.phase == 'settled':
                     self.conn.broadcast({'kind': 'hand_result', 'result': self.manager.result})
                     await self._persist_round(self.manager.result)
+                    # 确认屏障：等所有在线真人点「继续」（10s 倒计时 / 兜底超时）再进下一局
+                    await self._wait_for_continue()
                     await self.manager.next_round()
                 elif self.manager.phase == 'lobby':
                     break

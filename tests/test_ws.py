@@ -70,7 +70,7 @@ async def read_until(ws, kind: str, timeout=15.0) -> dict:
 
 
 async def auto_player(ws, timeout=8.0) -> dict:
-    """自动玩家：turn_request → 弃 0；claim/rob_kong → pass；直到 match_finished。"""
+    """自动玩家：turn_request → 弃 0；claim/rob_kong → pass；hand_result → 确认；直到 match_finished。"""
     rejoin = None
     try:
         while True:
@@ -82,6 +82,9 @@ async def auto_player(ws, timeout=8.0) -> dict:
                 await ws.send(json.dumps({'type': 'discard', 'handIndex': 0}))
             elif kind in ('claim_request', 'rob_kong_request'):
                 await ws.send(json.dumps({'type': 'pass'}))
+            elif kind == 'hand_result':
+                # 结算确认屏障：点「继续」才能进下一局
+                await ws.send(json.dumps({'type': 'continue'}))
             elif kind == 'match_finished':
                 return {'rejoin': rejoin, 'finalScores': msg.get('finalScores')}
     except (TimeoutError, websockets.exceptions.ConnectionClosed):

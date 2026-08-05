@@ -34,6 +34,9 @@ async def test_rest_create_injects_play_pace(server, fresh_rooms):
     assert room.pace == PLAY_PACE
     # 常量本身非空：至少一个关键节奏点有延迟（否则问题 1 回归）
     assert PLAY_PACE['afterDiscardToNextTurn'] > 0
+    # 开局表现等待：对齐客户端开局动画，防止 AI 在动画期间推进
+    assert PLAY_PACE['openingDelayStart'] > 0
+    assert PLAY_PACE['openingDelay'] > 0
 
 
 def test_room_session_default_pace_is_none():
@@ -58,3 +61,41 @@ async def test_injected_pace_slows_first_round():
 
     # 一局约 15+ 次弃牌 × 20ms ≈ 300ms 的节奏量；留 200ms 判定余量
     assert slow - fast >= 0.2, f'节奏注入未生效: fast={fast:.3f}s slow={slow:.3f}s'
+
+
+@pytest.mark.asyncio
+async def test_opening_delay_gates_first_turn():
+    """开局表现等待生效：注入 openingDelayStart 后首回合决策至少等满该时长；默认 0 即用即答。"""
+    from app.game.player import AIPlayer
+
+    class Recorder(AIPlayer):
+        def __init__(self):
+            super().__init__()
+            self.first_request: float | None = None
+
+        async def request_turn(self, ctx):
+            if self.first_request is None:
+                self.first_request = time.perf_counter()
+            return await super().request_turn(ctx)
+
+    controllers = [Recorder() for _ in range(4)]
+    manager = GameManager(mode='east', controllers=controllers, pace={'openingDelayStart': 200})
+    t0 = time.perf_counter()
+    task = asyncio.create_task(manager.start_game('east'))
+    try:
+        deadline = asyncio.get_event_loop().time() + 5
+        while (not any(c.first_request for c in controllers)
+               and asyncio.get_event_loop().time() < deadline):
+            await asyncio.sleep(0.005)
+        first = min((c.first_request for c in controllers if c.first_request is not None),
+                    default=None)
+        assert first is not None, '首回合决策从未发生'
+        elapsed = first - t0
+        # 留调度余量：至少等满注入的 200ms（宽松判 150ms）
+        assert elapsed >= 0.15, f'开局表现等待未生效: {elapsed:.3f}s'
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass

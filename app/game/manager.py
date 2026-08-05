@@ -20,6 +20,7 @@ GameManager 是房间内的权威状态机，房间内异步串行执行（async
 """
 
 import asyncio
+import random
 import sys
 from types import SimpleNamespace
 from typing import Optional, Protocol
@@ -62,6 +63,8 @@ DEFAULT_PACE = {
     'beforeRobKong': 0,
     'betweenRobKongs': 0,
     'skipDrawPengDelay': 0,
+    'openingDelayStart': 0,   # 首局开局表现等待（对局开始 + 骰子 + 发牌动画）
+    'openingDelay': 0,        # 后续局开局表现等待（骰子 + 发牌动画）
 }
 
 # 真人联机房间的视觉节奏（REST create 注入，对齐前端 PACE_MS：动画可读、AI 不瞬移）
@@ -73,6 +76,11 @@ PLAY_PACE = {
     'beforeRobKong': 650,
     'betweenRobKongs': 450,
     'skipDrawPengDelay': 350,
+    # 开局表现等待：对齐前端 useRemoteGame 的开局动画时长
+    # （首局 = start 1250 + 骰子 1150 + 发牌 3720 ≈ 6120ms；后续局 = 骰子 1150 + 发牌 3720 ≈ 4870ms）
+    # 服务端在此窗口暂停推进，避免 AI 在客户端动画期间先行，导致客户端追状态 / 回合计时错位。
+    'openingDelayStart': 6400,
+    'openingDelay': 5300,
 }
 
 
@@ -86,6 +94,8 @@ class GameEvents(Protocol):
     def play_sound(self, name: str, volume: Optional[float] = None) -> None: ...
     async def play_sound_and_wait(self, name: str, volume: Optional[float] = None) -> None: ...
     def snapshot(self) -> None: ...
+    def round_start(self, match_started: bool, round_: int, dealer: int,
+                    honba: int, dice: list[int]) -> None: ...
 
 
 class NullEvents:
@@ -107,6 +117,9 @@ class NullEvents:
         pass
 
     def snapshot(self) -> None:
+        pass
+
+    def round_start(self, *a, **k) -> None:
         pass
 
 
@@ -188,6 +201,7 @@ class GameManager:
         self.round = 1
         self.dealer = 0
         self.honba = 0
+        self.dice = [1, 1]
         self.match_finished = False
         self.user_drew_this_turn = False
 
@@ -291,6 +305,14 @@ class GameManager:
         self.last_discard = None
         self.phase = 'dealing'
 
+        # 骰子（装饰性：不决定庄家；服务端生成保证全场一致）
+        if self._random is None:
+            self.dice = [random.randint(1, 6), random.randint(1, 6)]
+        else:
+            self.dice = [1 + int(self._random() * 6), 1 + int(self._random() * 6)]
+        match_started = (self.round == 1 and self.dealer == 0 and self.honba == 0)
+        self.events.round_start(match_started, self.round, self.dealer, self.honba, self.dice)
+
         seat_order = [(self.dealer + offset) % len(self.players) for offset in range(len(self.players))]
         for _ in range(3):
             for player_index in seat_order:
@@ -309,6 +331,11 @@ class GameManager:
             return
 
         self._announce(f'{self.round_label()} · 开牌')
+        # 开局表现等待：暂停推进，对齐客户端开局动画（对局开始 / 骰子 / 发牌）。
+        # 若无此暂停，AI 会在客户端动画期间先行，客户端动画结束后只能「追状态」
+        # （牌河跳变）且人类首回合的 12s 计时已消耗大半。
+        opening_key = 'openingDelayStart' if match_started else 'openingDelay'
+        await self._sleep(self.pace[opening_key])
         await self.begin_turn(self.dealer)
 
     def round_label(self) -> str:

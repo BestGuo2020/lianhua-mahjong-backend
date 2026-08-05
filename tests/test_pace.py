@@ -12,7 +12,8 @@ import httpx
 import pytest
 
 from app.game.manager import GameManager, PLAY_PACE
-from app.game.player import AIPlayer
+from app.game.player import AI_DELAYS, AIPlayer
+from app.game.remote_player import RemotePlayer
 from app.game.room import RoomSession, room_registry as rooms
 
 
@@ -37,6 +38,32 @@ async def test_rest_create_injects_play_pace(server, fresh_rooms):
     # 开局表现等待：对齐客户端开局动画，防止 AI 在动画期间推进
     assert PLAY_PACE['openingDelayStart'] > 0
     assert PLAY_PACE['openingDelay'] > 0
+
+
+@pytest.mark.asyncio
+async def test_real_room_ai_uses_human_think_delays(server, fresh_rooms):
+    """真人联机房间的 AI 用人类思考速度（对齐前端 AI_DELAYS）；测试路径保持即用即答。"""
+    # REST 创建的房间（注入 PLAY_PACE）→ AI 补位座位有 think 延迟
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
+        assert resp.status_code == 200, resp.text
+    room = rooms.get(resp.json()['roomId'])
+    controllers = room._controllers()
+    ai_controllers = [c for s, c in zip(room.seats, controllers) if s is None]
+    assert ai_controllers, '应存在 AI 补位座位'
+    assert all(c.delays == AI_DELAYS for c in ai_controllers), \
+        f'真人房间 AI 应为人类思考速度: {[c.delays for c in ai_controllers]}'
+
+    # 真人座位的断线/超时代打 AI 同样使用人类思考速度
+    remote = RemotePlayer(0, room.conn, ai_delays=AI_DELAYS)
+    assert remote._ai.delays == AI_DELAYS, f'断线代打 AI 应为人类思考速度: {remote._ai.delays}'
+
+    # 直接构造的测试房间（pace=None）→ AI 即用即答（不拖慢测试套件）
+    test_room = RoomSession('AI-SPEED-TEST', capacity=2)
+    test_ai = [c for s, c in zip(test_room.seats, test_room._controllers()) if s is None][0]
+    assert test_ai.delays['turn'] == 0 and test_ai.delays['claim'] == 0
+    # AI_DELAYS 本身与前端 playerController.ts 的 AI_DELAYS 一致（人类正常思考速度）
+    assert AI_DELAYS == {'turn': 650, 'after_kong': 550, 'claim': 500}
 
 
 def test_room_session_default_pace_is_none():

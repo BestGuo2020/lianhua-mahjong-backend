@@ -18,7 +18,7 @@ import time
 from typing import Optional
 
 from app.game.manager import GameManager, PLAYER_SEED
-from app.game.player import AIPlayer
+from app.game.player import AI_DELAYS, AIPlayer
 from app.game.remote_player import RemotePlayer
 from app.ws.manager import ConnectionManager
 
@@ -180,6 +180,7 @@ class RoomSession:
             raise RoomError('ROOM_FULL')
         for seat, state in enumerate(self.seats):
             if state is None:
+                # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
                 controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout)
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller)
                 self.seats[seat] = state
@@ -323,8 +324,25 @@ class RoomSession:
         self.status = 'playing'
         self.game_task = asyncio.create_task(self._drive())
 
+    def _ai_delays(self) -> Optional[dict]:
+        """真人联机房间（注入 PLAY_PACE）的 AI 用人类思考速度；测试路径保持即用即答。"""
+        return AI_DELAYS if self.pace else None
+
     def _controllers(self) -> list:
-        return [s.controller if s is not None else AIPlayer() for s in self.seats]
+        """装配控制器：空座位 AIPlayer；真人座位 RemotePlayer。
+
+        AI 思考速度按「开局瞬间」的房间节奏注入（_ai_delays）：真人房间用
+        AI_DELAYS 人类节奏，测试路径（pace 为空）保持即用即答。
+        """
+        ai_delays = self._ai_delays()
+        controllers = []
+        for seat in self.seats:
+            if seat is not None:
+                seat.controller.set_ai_delays(ai_delays)
+                controllers.append(seat.controller)
+            else:
+                controllers.append(AIPlayer(delays=ai_delays))
+        return controllers
 
     def _seeds(self) -> list:
         seeds = []

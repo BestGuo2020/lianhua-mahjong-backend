@@ -62,6 +62,13 @@ class PlayerController(Protocol):
 
 # ─── AI 控制器 ─────────────────────────────────────────────
 
+# 对齐前端 src/game/playerController.ts 的 AI_DELAYS（人类正常思考速度）：
+# 真人联机房间的 AI 摸牌/出牌（turn 650ms）、杠后补摸再决策（after_kong 550ms）、
+# 吃碰杠响应（claim 500ms）都保持与本地 AI 一致的节奏，避免 AI 瞬移显得机械。
+# 测试路径默认不注入（AIPlayer 默认全 0），保持即用即答。
+AI_DELAYS = {'turn': 650, 'after_kong': 550, 'claim': 500}
+
+
 def _map_turn_decision(decision: dict) -> dict:
     """把 ai.py 的 TurnDecision 映射为控制器层 TurnAction（语义一致）。"""
     kind = decision['kind']

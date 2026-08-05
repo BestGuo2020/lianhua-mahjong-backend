@@ -25,11 +25,12 @@ _DISCONNECTED = object()
 class RemotePlayer:
     """人类远程玩家控制器。"""
 
-    def __init__(self, seat: int, conn, timeout: float = 12.0):
+    def __init__(self, seat: int, conn, timeout: float = 12.0, ai_delays: Optional[dict] = None):
         self.seat = seat
         self.conn = conn          # ConnectionManager（按座位路由出站）
         self.timeout = timeout    # 单回合超时秒数（超时 AI 代打）
-        self._ai = AIPlayer()
+        # 断线/超时代打用 AI 的思考速度：真人联机房间注入 AI_DELAYS（人类节奏），测试保持即用即答
+        self._ai = AIPlayer(delays=ai_delays)
         self._pending: Optional[asyncio.Future] = None
         self._pending_kind: Optional[str] = None   # 'turn' | 'claim' | 'rob_kong'
         self._last_ctx = None     # 最近一次请求上下文（added-kong 需查 melds）
@@ -176,6 +177,15 @@ class RemotePlayer:
             future.set_result(_DISCONNECTED)
 
     # ── PlayerController 其余协议方法 ────────────────────
+
+    def set_ai_delays(self, delays: Optional[dict]) -> None:
+        """设置断线/超时代打 AI 的思考速度。
+
+        开局时由 RoomSession 统一按房间节奏注入（真人联机房间用 AI_DELAYS 人类节奏，
+        测试路径置 None 保持即用即答）。放在开局而非 join 时注入，保证以「开局瞬间」
+        的房间节奏为准（测试可能在 join 后再改 pace）。
+        """
+        self._ai = AIPlayer(delays=delays)
 
     def on_discarded(self) -> None:
         pass

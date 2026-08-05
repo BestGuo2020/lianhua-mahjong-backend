@@ -55,13 +55,42 @@ CREATE TABLE IF NOT EXISTS round_results (
   result_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS match_players (
+  match_id  TEXT NOT NULL REFERENCES matches(id),
+  seat      INTEGER NOT NULL,
+  player_id TEXT,                    -- 匿名身份（guestId）；AI 座位为 NULL
+  nickname  TEXT NOT NULL,
+  PRIMARY KEY (match_id, seat)
+);
+
 CREATE TABLE IF NOT EXISTS room_seats (
   room_id         TEXT NOT NULL REFERENCES rooms(id),
   seat            INTEGER NOT NULL,
   nickname        TEXT NOT NULL,
   rejoin_code     TEXT NOT NULL,
+  player_id       TEXT,                    -- 客户端匿名身份（guestId），bans 与将来账号的锚点
   disconnected_at DATETIME,
   PRIMARY KEY (room_id, seat)
+);
+
+CREATE TABLE IF NOT EXISTS bans (
+  scope      TEXT NOT NULL,                -- 'player' | 'room' | 'device'
+  target     TEXT NOT NULL,
+  reason     TEXT NOT NULL DEFAULT '',
+  banned_by  TEXT NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (scope, target)
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+  id          TEXT PRIMARY KEY,
+  room_id     TEXT NOT NULL DEFAULT '',
+  reporter    TEXT NOT NULL DEFAULT '',    -- 举报者 player_id
+  target      TEXT NOT NULL DEFAULT '',    -- 被举报者 player_id
+  target_name TEXT NOT NULL DEFAULT '',    -- 被举报者昵称（展示用）
+  reason      TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'open',
+  created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_matches_room ON matches(room_id);
@@ -97,6 +126,14 @@ class Storage:
     def init(self) -> None:
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """旧库补列：room_seats.player_id（CREATE IF NOT EXISTS 不会改已存在表）。"""
+        cols = {r['name'] for r in conn.execute('PRAGMA table_info(room_seats)').fetchall()}
+        if 'player_id' not in cols:
+            conn.execute('ALTER TABLE room_seats ADD COLUMN player_id TEXT')
 
     # ── 玩家 ─────────────────────────────────────────────
 
@@ -138,6 +175,14 @@ class Storage:
             )
         return match_id
 
+    def upsert_match_players(self, match_id: str, players: list) -> None:
+        """开局时记录参赛者身份（战绩真源：room_seats 离房即删，不能作为战绩依据）。"""
+        with self._conn() as conn:
+            conn.executemany(
+                'INSERT OR REPLACE INTO match_players (match_id, seat, player_id, nickname) '
+                'VALUES (?, ?, ?, ?)',
+                [(match_id, p['seat'], p.get('player_id'), p['nickname']) for p in players])
+
     def finish_match(self, match_id: str, final_scores: list) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -157,12 +202,13 @@ class Storage:
 
     # ── 座位 ─────────────────────────────────────────────
 
-    def upsert_room_seat(self, room_id: str, seat: int, nickname: str, rejoin_code: str) -> None:
+    def upsert_room_seat(self, room_id: str, seat: int, nickname: str, rejoin_code: str,
+                         player_id: Optional[str] = None) -> None:
         with self._conn() as conn:
             conn.execute(
                 'INSERT OR REPLACE INTO room_seats '
-                '(room_id, seat, nickname, rejoin_code) VALUES (?, ?, ?, ?)',
-                (room_id, seat, nickname, rejoin_code),
+                '(room_id, seat, nickname, rejoin_code, player_id) VALUES (?, ?, ?, ?, ?)',
+                (room_id, seat, nickname, rejoin_code, player_id),
             )
 
     def remove_room_seat(self, room_id: str, seat: int) -> None:
@@ -170,6 +216,41 @@ class Storage:
             conn.execute(
                 'DELETE FROM room_seats WHERE room_id = ? AND seat = ?',
                 (room_id, seat),
+            )
+
+    # ── 封禁 / 举报 ──────────────────────────────────────
+
+    def is_banned(self, scope: str, target: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                'SELECT 1 FROM bans WHERE scope = ? AND target = ?',
+                (scope, target)).fetchone()
+            return row is not None
+
+    def ban_target(self, scope: str, target: str, reason: str = '',
+                   banned_by: str = '') -> None:
+        """封禁（player/room/device）。同 scope+target 重复封禁 = 更新原因。"""
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT OR REPLACE INTO bans (scope, target, reason, banned_by) '
+                'VALUES (?, ?, ?, ?)',
+                (scope, target, reason, banned_by),
+            )
+
+    def unban(self, scope: str, target: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                'DELETE FROM bans WHERE scope = ? AND target = ?',
+                (scope, target),
+            )
+
+    def add_report(self, room_id: str, reporter: str, target: str,
+                   target_name: str, reason: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT INTO reports (id, room_id, reporter, target, target_name, reason) '
+                'VALUES (?, ?, ?, ?, ?, ?)',
+                (_new_id(), room_id, reporter, target, target_name, reason),
             )
 
     # ── 查询 ─────────────────────────────────────────────
@@ -215,44 +296,60 @@ class Storage:
         ]
 
     def get_player_stats(self, nickname: str) -> dict:
-        """个人统计（首版简化）：场次 / 参与局数 / 胡牌局数 / 总净胜分。
+        """个人统计（按昵称，旧版兼容）：场次 / 参与局数 / 胡牌局数 / 总净胜分。
 
-        通过 room_seats.nickname → matches.room_id 关联出该玩家参与过的对局，
-        再聚合 round_results 里的 winner（胡牌）与 scoreChanges（净胜分）。
+        从 match_players（开局记录参赛身份，离房不删）聚合，round_results 按座位号取
+        deltas / winner_index。P1 之前的旧局无 match_players 行 → 返回 0（仅能靠新局）。
         """
         with self._conn() as conn:
-            seats = conn.execute(
-                'SELECT room_id FROM room_seats WHERE nickname = ?', (nickname,)).fetchall()
-            room_ids = [r['room_id'] for r in seats]
-            if not room_ids:
+            rows = conn.execute(
+                'SELECT match_id, seat FROM match_players WHERE nickname = ?',
+                (nickname,)).fetchall()
+            if not rows:
                 return {'nickname': nickname, 'matches': 0, 'hands': 0,
                         'wins': 0, 'totalDelta': 0}
-            placeholders = ','.join('?' * len(room_ids))
-            matches = conn.execute(
-                f'SELECT id FROM matches WHERE room_id IN ({placeholders})',
-                room_ids).fetchall()
-            match_ids = [m['id'] for m in matches]
+            return {'nickname': nickname,
+                    **self._aggregate_stats(conn, {r['match_id']: r['seat'] for r in rows})}
 
-            hands = wins = total_delta = 0
-            if match_ids:
-                mh = ','.join('?' * len(match_ids))
-                for row in conn.execute(
-                        f'SELECT result_json FROM round_results WHERE match_id IN ({mh})',
-                        match_ids).fetchall():
-                    result = json.loads(row['result_json'])
-                    hands += 1
-                    if result.get('winner') == nickname:
-                        wins += 1
-                    for change in result.get('scoreChanges', []):
-                        if change.get('name') == nickname:
-                            total_delta += change.get('delta', 0)
-        return {
-            'nickname': nickname,
-            'matches': len(matches),
-            'hands': hands,
-            'wins': wins,
-            'totalDelta': total_delta,
-        }
+    def get_player_stats_by_id(self, player_id: str) -> dict:
+        """按匿名身份（player_id / guestId）聚合战绩：场次 / 参与局数 / 胡牌局数 / 总净胜分。
+
+        身份锚点是 player_id（match_players 开局记录，离房不删）：改名不丢历史、重名不混。
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                'SELECT match_id, seat FROM match_players WHERE player_id = ?',
+                (player_id,)).fetchall()
+            if not rows:
+                return {'playerId': player_id, 'matches': 0, 'hands': 0,
+                        'wins': 0, 'totalDelta': 0}
+            return {'playerId': player_id,
+                    **self._aggregate_stats(conn, {r['match_id']: r['seat'] for r in rows})}
+
+    @staticmethod
+    def _aggregate_stats(conn, match_seats: dict) -> dict:
+        """按 {match_id: seat} 聚合 round_results（存储格式 deltas[]/winner_index）。"""
+        match_ids = list(match_seats)
+        matches: set[str] = set()
+        hands = wins = total_delta = 0
+        if match_ids:
+            mh = ','.join('?' * len(match_ids))
+            for row in conn.execute(
+                    f'SELECT match_id, result_json FROM round_results '
+                    f'WHERE match_id IN ({mh})', match_ids).fetchall():
+                seat = match_seats[row['match_id']]
+                result = json.loads(row['result_json'])
+                deltas = result.get('deltas', []) or []
+                entry = next((d for d in deltas if d.get('playerIndex') == seat), None)
+                if entry is None:
+                    continue   # 该局无此座位记录
+                matches.add(row['match_id'])
+                hands += 1
+                if result.get('winner_index') == seat:
+                    wins += 1
+                total_delta += entry.get('amount', 0) or 0
+        return {'matches': len(matches), 'hands': hands, 'wins': wins,
+                'totalDelta': total_delta}
 
 
 # 模块级共享存储单例（REST 层与 RoomSession 注入用；测试可自行构造临时库实例）

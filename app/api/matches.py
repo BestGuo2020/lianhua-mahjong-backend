@@ -37,5 +37,11 @@ def list_room_matches(room_id: str) -> dict:
 
 @router.get('/api/players/{nickname}/stats')
 def get_player_stats(nickname: str) -> dict:
-    """个人统计：场次 / 参与局数 / 胡牌局数 / 总净胜分。"""
+    """个人统计（按昵称，旧版）：场次 / 参与局数 / 胡牌局数 / 总净胜分。"""
     return storage.get_player_stats(nickname)
+
+
+@router.get('/api/players/by-id/{player_id}/stats')
+def get_player_stats_by_id(player_id: str) -> dict:
+    """个人统计（按匿名身份 player_id / guestId）：改名不丢历史、重名不混。"""
+    return storage.get_player_stats_by_id(player_id)

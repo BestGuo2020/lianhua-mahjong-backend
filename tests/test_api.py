@@ -26,8 +26,10 @@ def temp_storage(tmp_path, monkeypatch):
     s.init()
     import app.api.rooms as rooms_api
     import app.api.matches as matches_api
+    import app.api.moderation as moderation_api
     monkeypatch.setattr(rooms_api, 'storage', s)
     monkeypatch.setattr(matches_api, 'storage', s)
+    monkeypatch.setattr(moderation_api, 'storage', s)
     return s
 
 
@@ -296,3 +298,64 @@ async def test_room_lifecycle_persists_match(server, fresh_rooms, temp_storage):
         resp = await http.get('/api/matches/does-not-exist')
         assert resp.status_code == 404
         assert resp.json()['detail']['code'] == 'MATCH_NOT_FOUND'
+
+
+@pytest.mark.asyncio
+async def test_stats_by_player_id(server, fresh_rooms, temp_storage):
+    """按匿名身份（playerId / guestId）查战绩：身份锚点而非昵称。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        for nickname, pid in (('甲', 'guest-A'), ('乙', 'guest-B')):
+            j = (await http.post(f'/api/rooms/{room_id}/join',
+                                 json={'nickname': nickname, 'playerId': pid})).json()
+            await http.post(f'/api/rooms/{room_id}/ready',
+                            json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
+        room = rooms.get(room_id)
+        room.pace = {}
+        await http.post(f'/api/rooms/{room_id}/start')
+        await wait_until(lambda: room.status == 'finished', timeout=30)
+
+        resp = await http.get('/api/players/by-id/guest-A/stats')
+        assert resp.status_code == 200
+        stats = resp.json()
+        assert stats['playerId'] == 'guest-A'
+        assert stats['matches'] == 1
+        assert stats['hands'] >= 1
+
+        # guest-B 各算各的，不与 guest-A 混淆
+        resp_b = await http.get('/api/players/by-id/guest-B/stats')
+        assert resp_b.json()['matches'] == 1
+
+        # 未参与过对局的 playerId → 全 0
+        resp_c = await http.get('/api/players/by-id/guest-nobody/stats')
+        assert resp_c.json()['matches'] == 0 and resp_c.json()['hands'] == 0
+
+
+@pytest.mark.asyncio
+async def test_stats_survive_leaving_room(server, fresh_rooms, temp_storage):
+    """离房后战绩仍在：match_players 开局记录参赛身份（room_seats 离房即删，不能作战绩真源）。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        joins = {}
+        for nickname, pid in (('甲', 'guest-A'), ('乙', 'guest-B')):
+            joins[nickname] = (await http.post(f'/api/rooms/{room_id}/join',
+                                               json={'nickname': nickname, 'playerId': pid})).json()
+        for j in joins.values():
+            await http.post(f'/api/rooms/{room_id}/ready',
+                            json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
+        room = rooms.get(room_id)
+        room.pace = {}
+        await http.post(f'/api/rooms/{room_id}/start')
+        await wait_until(lambda: room.status == 'finished', timeout=30)
+        # 对局结束后全部离房 → room_seats 行被删
+        for j in joins.values():
+            await http.post(f'/api/rooms/{room_id}/leave',
+                            json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
+        assert temp_storage._conn().execute(
+            'SELECT COUNT(*) AS c FROM room_seats').fetchone()['c'] == 0
+        # 战绩仍可查（match_players 持久）
+        resp = await http.get('/api/players/by-id/guest-A/stats')
+        stats = resp.json()
+        assert stats['matches'] == 1 and stats['hands'] >= 1
+        resp_b = await http.get('/api/players/by-id/guest-B/stats')
+        assert resp_b.json()['matches'] == 1

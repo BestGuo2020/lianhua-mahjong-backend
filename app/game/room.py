@@ -43,12 +43,14 @@ def _make_rejoin_code() -> str:
 class SeatState:
     """座位会话元数据：真人占座后的身份 / 重进码 / 控制器 / 准备态。"""
 
-    __slots__ = ('seat', 'nickname', 'rejoin_code', 'controller', 'connected_at', 'ready')
+    __slots__ = ('seat', 'nickname', 'rejoin_code', 'player_id', 'controller', 'connected_at', 'ready')
 
-    def __init__(self, seat: int, nickname: str, rejoin_code: str, controller: RemotePlayer):
+    def __init__(self, seat: int, nickname: str, rejoin_code: str, controller: RemotePlayer,
+                 player_id: Optional[str] = None):
         self.seat = seat
         self.nickname = nickname
         self.rejoin_code = rejoin_code
+        self.player_id = player_id
         self.controller = controller
         self.connected_at: Optional[float] = None
         self.ready = False
@@ -209,14 +211,18 @@ class RoomSession:
 
     # ── 座位 / 重进码 ────────────────────────────────────
 
-    def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None):
+    def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
+                       player_id: Optional[str] = None):
         """REST join：占第一个空座并签发重进码（is_rejoin=False）。失败抛 RoomError。
 
         真人占座受 capacity 上限约束（超出 → ROOM_FULL）；AI 座位不在此列。
         昵称查重：房间内已有同名玩家占座 → NICKNAME_TAKEN（重进码路径不受此限）。
         首个占座者为创建者（REST 创建房间后 creator 自己 join）。
+        反赌博风控：player_id 命中黑名单 → BANNED（重进码路径在 resume_by_code 内查禁）。
         """
         self._touch()
+        if player_id and self.storage is not None and self.storage.is_banned('player', player_id):
+            raise RoomError('BANNED')
         if rejoin_code:
             return self.resume_by_code(rejoin_code)
         if sum(1 for s in self.seats if s is not None) >= self.capacity:
@@ -228,7 +234,8 @@ class RoomSession:
             if state is None:
                 # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
                 controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout)
-                state = SeatState(seat, nickname, _make_rejoin_code(), controller)
+                state = SeatState(seat, nickname, _make_rejoin_code(), controller,
+                                  player_id=player_id)
                 self.seats[seat] = state
                 if self.creator_seat is None:
                     self.creator_seat = seat
@@ -240,6 +247,9 @@ class RoomSession:
         """WS 重连：按重进码定位原座位。原会话仍在线 → ALREADY_CONNECTED。"""
         for seat, state in enumerate(self.seats):
             if state is not None and state.rejoin_code == rejoin_code:
+                if self.storage is not None and state.player_id \
+                        and self.storage.is_banned('player', state.player_id):
+                    raise RoomError('BANNED')
                 if state.controller.connected:
                     # 顶号尝试：原会话仍在线，拒绝（防双连接争抢同一座位）
                     raise RoomError('ALREADY_CONNECTED')
@@ -489,7 +499,8 @@ class RoomSession:
             return
         state = self.seats[seat]
         self.storage.create_player(state.nickname)
-        self.storage.upsert_room_seat(self.room_id, seat, state.nickname, state.rejoin_code)
+        self.storage.upsert_room_seat(self.room_id, seat, state.nickname, state.rejoin_code,
+                                      state.player_id)
 
     async def _persist_match_start(self) -> None:
         if self.storage is None:
@@ -497,6 +508,14 @@ class RoomSession:
         self.match_id = await asyncio.to_thread(
             self.storage.create_match, self.room_id, self.mode)
         await asyncio.to_thread(self.storage.update_room_status, self.room_id, 'playing')
+        # 记录参赛者身份（战绩真源；room_seats 离房即删，不能作为战绩依据）
+        players = [
+            {'seat': seat, 'player_id': state.player_id, 'nickname': state.nickname}
+            if (state := self.seats[seat]) is not None else
+            {'seat': seat, 'player_id': None, 'nickname': PLAYER_SEED[seat]['name']}
+            for seat in range(len(self.seats))
+        ]
+        await asyncio.to_thread(self.storage.upsert_match_players, self.match_id, players)
 
     async def _persist_round(self, result: dict) -> None:
         if self.storage is None or self.match_id is None:

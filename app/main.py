@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.rooms import router as rooms_router
 from app.api.matches import router as matches_router
+from app.api.moderation import router as moderation_router
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
 
@@ -24,6 +25,7 @@ storage.init()
 
 app.include_router(rooms_router)
 app.include_router(matches_router)
+app.include_router(moderation_router)
 app.include_router(ws_router)
 
 

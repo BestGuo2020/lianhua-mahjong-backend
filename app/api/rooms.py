@@ -79,6 +79,7 @@ class CreateRoomRequest(BaseModel):
 
 class JoinRequest(BaseModel):
     nickname: str = Field(min_length=1, max_length=20)
+    playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
 
 
 class SeatActionRequest(BaseModel):
@@ -118,7 +119,7 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
     if room.status != 'lobby':
         raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
     try:
-        seat, is_rejoin, state = room.join_or_rejoin(body.nickname)
+        seat, is_rejoin, state = room.join_or_rejoin(body.nickname, player_id=body.playerId)
     except RoomError as exc:
         raise HTTPException(status_code=409, detail={'code': str(exc)})
     return {
@@ -126,6 +127,7 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
         'seat': seat,
         'nickname': state.nickname,
         'rejoinCode': state.rejoin_code,
+        'playerId': state.player_id,
         'rejoin': is_rejoin,
     }
 

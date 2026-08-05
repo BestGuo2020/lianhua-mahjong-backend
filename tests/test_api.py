@@ -107,6 +107,106 @@ async def test_full_room_rejects_join(server, fresh_rooms, temp_storage):
         assert resp.json()['detail']['code'] == 'ROOM_FULL'
 
 
+@pytest.mark.asyncio
+async def test_join_rejects_duplicate_nickname(server, fresh_rooms, temp_storage):
+    """昵称查重：房间内已有同名玩家占座 → NICKNAME_TAKEN。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
+        assert resp.status_code == 200
+        # 同名再占 → 拒绝
+        resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'NICKNAME_TAKEN'
+        # 不同名可正常加入
+        resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_creator_seat_and_transfer(server, fresh_rooms, temp_storage):
+    """创建者追踪：首个 join 者为创建者；创建者离房后房主转移给下一座位。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        # 创建者先 join（seat 0）→ creatorSeat = 0
+        join_a = (await http.post(f'/api/rooms/{room_id}/join',
+                                  json={'nickname': '甲'})).json()
+        info = (await http.get(f'/api/rooms/{room_id}')).json()
+        assert info['creatorSeat'] == 0
+
+        # 乙加入（seat 1）→ creatorSeat 不变
+        join_b = (await http.post(f'/api/rooms/{room_id}/join',
+                                  json={'nickname': '乙'})).json()
+        assert join_b['seat'] == 1
+        info = (await http.get(f'/api/rooms/{room_id}')).json()
+        assert info['creatorSeat'] == 0
+
+        # 创建者离房 → 房主转移给 seat 1
+        resp = await http.post(f'/api/rooms/{room_id}/leave',
+                               json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
+        assert resp.status_code == 200
+        info = (await http.get(f'/api/rooms/{room_id}')).json()
+        assert info['creatorSeat'] == 1
+
+        # 最后一人离房 → creatorSeat 置空
+        resp = await http.post(f'/api/rooms/{room_id}/leave',
+                               json={'seat': 1, 'rejoinCode': join_b['rejoinCode']})
+        assert resp.status_code == 200
+        info = (await http.get(f'/api/rooms/{room_id}')).json()
+        assert info['creatorSeat'] is None
+
+
+@pytest.mark.asyncio
+async def test_close_room_creator_only(server, fresh_rooms, temp_storage):
+    """DELETE 房间：仅创建者可关；对局中拒绝；关闭后房间移除。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        join_a = (await http.post(f'/api/rooms/{room_id}/join',
+                                  json={'nickname': '甲'})).json()
+        join_b = (await http.post(f'/api/rooms/{room_id}/join',
+                                  json={'nickname': '乙'})).json()
+
+        # 非创建者（乙）关闭 → 403
+        resp = await http.request('DELETE', f'/api/rooms/{room_id}',
+                                  json={'seat': 1, 'rejoinCode': join_b['rejoinCode']})
+        assert resp.status_code == 403
+        assert resp.json()['detail']['code'] == 'NOT_CREATOR'
+
+        # 创建者关闭 → 房间移除
+        resp = await http.request('DELETE', f'/api/rooms/{room_id}',
+                                  json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
+        assert resp.status_code == 200
+        assert resp.json()['closed'] is True
+        assert rooms.get(room_id) is None
+        resp = await http.get(f'/api/rooms/{room_id}')
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_close_room_rejected_while_playing(server, fresh_rooms, temp_storage):
+    """对局中（playing）关闭房间 → ROOM_PLAYING。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        joins = {}
+        for nickname in ('甲', '乙'):
+            joins[nickname] = (await http.post(
+                f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
+        for join in joins.values():
+            await http.post(f'/api/rooms/{room_id}/ready',
+                            json={'seat': join['seat'], 'rejoinCode': join['rejoinCode']})
+        room = rooms.get(room_id)
+        room.pace = {}
+        resp = await http.post(f'/api/rooms/{room_id}/start')
+        assert resp.status_code == 200
+        assert room.status == 'playing'
+
+        resp = await http.request('DELETE', f'/api/rooms/{room_id}',
+                                  json={'seat': joins['甲']['seat'],
+                                        'rejoinCode': joins['甲']['rejoinCode']})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'ROOM_PLAYING'
+
+
 # ─── 准备 / 开局 ──────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -161,6 +161,12 @@ class RoomSession:
         self.pace = pace  # 视觉节奏注入；None → GameManager 默认 0（测试/单机即用即答）
         self.status = 'lobby'  # lobby / playing / finished / error / closed
         self.seats: list[Optional[SeatState]] = [None] * self.player_count
+        # 创建者座位（REST 创建房间后第一个 join 者）；创建者离房后转移给下一座位
+        self.creator_seat: Optional[int] = None
+        # 重进码握手限速：30s 窗口内最多 5 次（成功 resume 后清零，正常重连不受影响）
+        self._rejoin_attempts: dict[str, list[float]] = {}
+        self._rejoin_window = 30.0
+        self._rejoin_limit = 5
         self.conn = ConnectionManager()
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
@@ -182,17 +188,24 @@ class RoomSession:
         """REST join：占第一个空座并签发重进码（is_rejoin=False）。失败抛 RoomError。
 
         真人占座受 capacity 上限约束（超出 → ROOM_FULL）；AI 座位不在此列。
+        昵称查重：房间内已有同名玩家占座 → NICKNAME_TAKEN（重进码路径不受此限）。
+        首个占座者为创建者（REST 创建房间后 creator 自己 join）。
         """
         if rejoin_code:
             return self.resume_by_code(rejoin_code)
         if sum(1 for s in self.seats if s is not None) >= self.capacity:
             raise RoomError('ROOM_FULL')
+        for state in self.seats:
+            if state is not None and state.nickname == nickname:
+                raise RoomError('NICKNAME_TAKEN')
         for seat, state in enumerate(self.seats):
             if state is None:
                 # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
                 controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout)
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller)
                 self.seats[seat] = state
+                if self.creator_seat is None:
+                    self.creator_seat = seat
                 self._persist_seat(seat)
                 return seat, False, state
         raise RoomError('ROOM_FULL')
@@ -207,6 +220,28 @@ class RoomSession:
                 return seat, state
         raise RoomError('INVALID_REJOIN_CODE')
 
+    # ── 重进码握手限速 ───────────────────────────────────
+
+    def check_rejoin_rate(self, rejoin_code: str) -> bool:
+        """重进码握手限速：30s 窗口内最多 5 次。
+
+        成功 resume 后由 reset_rejoin_rate 清零 → 正常断线重连的客户端不会因
+        指数退避下的多次重试被锁；失败尝试（错误码 / 顶号）持续累积以触发限速。
+        """
+        now = time.monotonic()
+        window = [t for t in self._rejoin_attempts.get(rejoin_code, [])
+                  if now - t < self._rejoin_window]
+        if len(window) >= self._rejoin_limit:
+            self._rejoin_attempts[rejoin_code] = window
+            return False
+        window.append(now)
+        self._rejoin_attempts[rejoin_code] = window
+        return True
+
+    def reset_rejoin_rate(self, rejoin_code: str) -> None:
+        """成功恢复座位后清零该码的失败计数（正常重连不被限速）。"""
+        self._rejoin_attempts.pop(rejoin_code, None)
+
     def release_seat(self, seat: int, rejoin_code: Optional[str] = None) -> None:
         """REST leave：释放座位。带 rejoin_code 时校验身份，防止误释放他人座位。"""
         state = self.seats[seat]
@@ -217,8 +252,15 @@ class RoomSession:
         state.controller.set_connected(False)  # 断开 pending，转 AI 代打
         self.seats[seat] = None
         self.conn.unregister(seat)
+        if self.creator_seat == seat:
+            self._transfer_creator()
         if self.storage is not None:
             self.storage.remove_room_seat(self.room_id, seat)
+
+    def _transfer_creator(self) -> None:
+        """创建者离房 → 房主转移给剩余座位中编号最小者；无人在座则置空。"""
+        self.creator_seat = next(
+            (s.seat for s in self.seats if s is not None), None)
 
     def ready_seat(self, seat: int, ready: Optional[bool] = None) -> bool:
         """REST ready：设置座位准备态（缺省 toggle）。返回新状态。"""
@@ -497,8 +539,9 @@ class RoomSession:
             raise
 
     def close(self) -> None:
-        """关闭房间：取消游戏任务（WS 层在房间移除时调用）。"""
+        """关闭房间：通知在位客户端后取消游戏任务（WS 层在房间移除时调用）。"""
         self.status = 'closed'
+        self.conn.broadcast({'kind': 'room_closed'})
         if self.game_task is not None and not self.game_task.done():
             self.game_task.cancel()
 

@@ -44,12 +44,18 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         await websocket.send_json({'kind': 'rejoin_err', 'code': 'REJOIN_CODE_REQUIRED'})
         await websocket.close()
         return
+    # 重进码限速：30s 窗口内同一码最多 5 次握手（防重连风暴 / 顶号刷码）
+    if not room.check_rejoin_rate(rejoin_code):
+        await websocket.send_json({'kind': 'rejoin_err', 'code': 'REJOIN_RATE_LIMITED'})
+        await websocket.close()
+        return
     try:
         seat, state = room.resume_by_code(rejoin_code)
     except RoomError as exc:
         await websocket.send_json({'kind': 'rejoin_err', 'code': str(exc)})
         await websocket.close()
         return
+    room.reset_rejoin_rate(rejoin_code)  # 成功恢复座位：清零该码失败计数
 
     # 绑定座位：出站队列 + 后台发送任务
     queue: asyncio.Queue = asyncio.Queue()

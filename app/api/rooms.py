@@ -57,6 +57,7 @@ def _room_response(room: RoomSession) -> dict:
         'mode': room.mode,
         'capacity': room.capacity,
         'status': room.status,
+        'creatorSeat': room.creator_seat,
         'seats': [
             None if state is None else {
                 'seat': state.seat,
@@ -159,3 +160,19 @@ async def start_room(room_id: str) -> dict:
     except RoomError as exc:
         raise HTTPException(status_code=409, detail={'code': str(exc)})
     return {'roomId': room.room_id, 'status': room.status}
+
+
+@router.delete('/{room_id}')
+def close_room(room_id: str, body: SeatActionRequest) -> dict:
+    """关闭房间：仅创建者可执行（带 rejoinCode 身份校验），解散房间并取消对局任务。
+
+    对局中（playing）不允许关闭 —— 创建者可先「退出对局」释放座位。
+    """
+    room = _room_or_404(room_id)
+    _verify_seat(room, body.seat, body.rejoinCode)
+    if room.creator_seat != body.seat:
+        raise HTTPException(status_code=403, detail={'code': 'NOT_CREATOR'})
+    if room.status == 'playing':
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_PLAYING'})
+    room_registry.remove(room_id)
+    return {'roomId': room_id, 'closed': True}

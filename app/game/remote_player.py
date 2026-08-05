@@ -16,6 +16,7 @@ request_rob_kong 通过 ConnectionManager 下发请求并 await 用户动作（a
 import asyncio
 from typing import Optional
 
+from app.core.rules import can_rob_kong, is_winning_hand, matching_count
 from app.game.player import AIPlayer, ClaimContext, RobKongContext, TurnContext
 
 # on_disconnect 投递给 pending future 的哨兵：收到后走 AI 代打
@@ -112,9 +113,18 @@ class RemotePlayer:
         return True, ''
 
     def _validate(self, message: dict) -> tuple[Optional[object], str]:
-        """按当前请求类型校验并规整客户端动作。返回 (action, 错误码)。"""
+        """按当前请求类型校验并规整客户端动作。返回 (action, 错误码)。
+
+        反作弊：以服务端权威上下文（_last_ctx，由 request_* 下发）为准校验
+        「意图」合法性，不信任客户端传来的牌面：
+        - 胡（turn/rob_kong）：用 is_winning_hand / can_rob_kong 校验当前手牌
+        - 碰/杠（claim）：校验手牌中确实够该副露所需张数
+        - 暗杠（turn）：校验手牌中确实有 4 张
+        校验失败返回错误码且不消费 pending，玩家仍可提交合法动作。
+        """
         kind = self._pending_kind
         mtype = message.get('type')
+        ctx = self._last_ctx
 
         if kind == 'turn':
             if mtype == 'discard':
@@ -123,12 +133,15 @@ class RemotePlayer:
                     return None, 'INVALID_ACTION'
                 return {'kind': 'discard', 'handIndex': hi}, ''
             if mtype == 'hu':
-                return {'kind': 'win'}, ''
+                # 自摸胡：手牌（含刚摸的牌）须已成形
+                if ctx is not None and is_winning_hand(ctx.hand, ctx.exposedMelds):
+                    return {'kind': 'win'}, ''
+                return None, 'INVALID_ACTION'
             if mtype == 'gang':
                 gk = message.get('kind')
                 if gk == 'concealed':
                     tile = message.get('tile')
-                    if not tile:
+                    if not tile or ctx is None or matching_count(ctx.hand, tile) < 4:
                         return None, 'INVALID_ACTION'
                     return {'kind': 'concealed-kong', 'tile': tile}, ''
                 if gk == 'added':
@@ -143,8 +156,12 @@ class RemotePlayer:
         if kind == 'claim':
             if mtype == 'claim':
                 a = message.get('action')
-                if a in ('peng', 'gang', 'pass'):
-                    return {'kind': a}, ''
+                if a == 'pass':
+                    return {'kind': 'pass'}, ''
+                if a in ('peng', 'gang'):
+                    # 以服务端权威手牌校验副露张数，防止客户端声明不存在的碰/杠
+                    if ctx is not None and matching_count(ctx.hand, ctx.tile) >= (3 if a == 'gang' else 2):
+                        return {'kind': a}, ''
                 return None, 'INVALID_ACTION'
             if mtype == 'pass':
                 return {'kind': 'pass'}, ''
@@ -152,7 +169,10 @@ class RemotePlayer:
 
         if kind == 'rob_kong':
             if mtype == 'hu':
-                return 'win', ''
+                # 抢杠胡：杠牌加入手牌后须成胡
+                if ctx is not None and can_rob_kong(ctx.hand, ctx.tile, ctx.exposedMelds):
+                    return 'win', ''
+                return None, 'INVALID_ACTION'
             if mtype == 'pass':
                 return 'pass', ''
             return None, 'INVALID_ACTION'

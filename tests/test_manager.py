@@ -152,3 +152,32 @@ class TestDiscardGangReplacement:
         kongs = sum(1 for m in p1.melds if m.type in ('gang', 'angang'))
         assert len(p1.hand) + meld_tiles == 13 + kongs
         assert manager.phase == 'settled'   # 墙空流局结束
+
+
+class TestEndDrawCleanup:
+    """流局展示态清理 —— 对齐前端 endDraw，快照不再携带陈旧 winPresentation"""
+
+    @pytest.mark.asyncio
+    async def test_end_draw_clears_presentation_state(self):
+        manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)])
+        manager.players = [
+            GamePlayer(name=f'P{i}', avatar='', score=1000, seat=i, hand=[],
+                       discards=[], melds=[], redCount=0, drawnTileIndex=-1)
+            for i in range(4)
+        ]
+        manager._table_context.players = manager.players
+        # 注入上一局残留的展示态
+        manager.win_presentation = {'winnerIndex': 0, 'tile': 'm1'}
+        manager.user_drew_this_turn = True
+        manager.action_prompt = {'type': 'claim', 'tile': 'm1', 'from': 1}
+        manager.phase = 'drawing'
+        manager.current_player = 0
+
+        manager.end_draw()
+
+        assert manager.phase == 'settled'
+        assert manager.win_presentation is None, '流局应清掉 win_presentation'
+        assert manager.user_drew_this_turn is False, '流局应清掉 user_drew_this_turn'
+        assert manager.action_prompt is None, '流局应清掉 action_prompt'
+        assert manager.winning_player_index == -1
+        assert manager.result is not None and manager.result.get('draw') is True

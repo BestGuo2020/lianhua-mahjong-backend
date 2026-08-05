@@ -39,7 +39,7 @@ from app.core.rules import (
     score_hand,
 )
 from app.core.actions import perform_discard_gang, perform_peng, remove_matches
-from app.game.player import AIPlayer, ClaimContext, RobKongContext, TurnContext
+from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, TurnContext
 
 # ─── 场次常量（对应 useGame.ts MATCH_HANDS / MATCH_NAMES）────────
 
@@ -170,7 +170,9 @@ class GameManager:
                  pace: Optional[dict] = None, player_seeds: Optional[list] = None):
         self.match_type = mode
         self.player_count = player_count
-        self.controllers = controllers or [AIPlayer() for _ in range(player_count)]
+        # 默认控制器对齐前端 AiController 的 AI_DELAYS（人类思考速度）；
+        # 测试路径显式传入 0 延迟 AIPlayer，不受此默认影响。
+        self.controllers = controllers or [AIPlayer(delays=AI_DELAYS) for _ in range(player_count)]
         # 玩家种子：联网房间用「座位昵称」覆盖默认种子（AI 座位保留 PLAYER_SEED）
         self.seeds = player_seeds or PLAYER_SEED
         self._random = random
@@ -724,6 +726,10 @@ class GameManager:
         """流局：荒庄 → 庄家连庄（本场累加由 next_round 处理）。"""
         self.phase = 'settled'
         self.current_player = -1
+        # 与前端 endDraw 对齐：清理可能残留的展示态（快照不会再携带陈旧 winPresentation）
+        self.user_drew_this_turn = False
+        self.action_prompt = None
+        self.win_presentation = None
         self.winning_player_index = -1
         scores_before = [p.score for p in self.players]
         self.result = self.make_round_result(

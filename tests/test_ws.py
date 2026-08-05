@@ -169,6 +169,20 @@ async def test_invalid_action_rejected(server, fresh_rooms):
 
 
 @pytest.mark.asyncio
+async def test_ping_gets_pong(server, fresh_rooms):
+    """客户端 ping → 服务端回 pong（前端据此测 RTT → 信号质量显示）。"""
+    room, codes = await prepare_room('PING1', 1, ['老张'])
+    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'PING1', codes['老张']))
+    try:
+        await read_until(a, 'rejoin_ok')
+        await a.send(json.dumps({'type': 'ping'}))
+        msg = await read_until(a, 'pong')
+        assert msg['kind'] == 'pong'
+    finally:
+        await safe_close(a)
+
+
+@pytest.mark.asyncio
 async def test_stale_action_rejected_before_game(server, fresh_rooms):
     """无待处理请求时（游戏未开局）的动作 → STALE_ACTION。"""
     # capacity=2：只 join 1 人且未 ready/start → 游戏不会开局 → 无 pending

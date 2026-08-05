@@ -332,6 +332,8 @@ class RoomSession:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
         self._touch()   # 任意 WS 消息 = 活动：对局中持续刷新 TTL
         if message.get('type') == 'ping':
+            # 回应 pong：客户端据此测 RTT → 信号质量显示（signal-N）
+            self.conn.send_to_seat_nowait(seat, {'kind': 'pong'})
             return True, ''
         if message.get('type') == 'continue':
             return self._confirm_continue(seat)

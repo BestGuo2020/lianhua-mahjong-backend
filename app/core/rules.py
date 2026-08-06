@@ -289,8 +289,9 @@ def score_hand(
     points = multiplier * BASE_SCORE + horse_points
     return {
         'multiplier': multiplier,
-        'total_multiplier': total_multiplier,
-        'horse_points': horse_points,
+        # 驼峰 key：与纯前端 scoreHand 完全一致（远程结算 result 直接复用，显示不再少中马加成）
+        'totalMultiplier': total_multiplier,
+        'horsePoints': horse_points,
         'points': points,
         'details': details,
     }

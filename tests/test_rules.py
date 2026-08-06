@@ -112,8 +112,8 @@ class TestHorseAndScore:
         """倍数累乘后，中马按张数乘底分加算"""
         score = score_hand(dealer=True, no_joker=True, four_red=True, horse_hits=2)
         assert score['multiplier'] == 16
-        assert score['total_multiplier'] == 18
-        assert score['horse_points'] == 200
+        assert score['totalMultiplier'] == 18
+        assert score['horsePoints'] == 200
         assert score['points'] == 1800
 
     def test_kong_bloom_doubles_and_records_detail(self):
@@ -127,7 +127,7 @@ class TestHorseAndScore:
         """总分严格按底分乘已知倍数再加中马底分"""
         score = score_hand(dealer=True, no_joker=True, horse_hits=3)
         assert score['multiplier'] == 4
-        assert score['total_multiplier'] == 7
+        assert score['totalMultiplier'] == 7
         assert score['points'] == 700
 
 

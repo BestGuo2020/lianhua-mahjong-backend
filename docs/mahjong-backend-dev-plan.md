@@ -349,13 +349,43 @@ class PlayerController(Protocol):
 2. 托管：断线玩家由 `AIPlayer` 托管，重连后归还
 3. 反作弊加固：服务端权威校验每步动作；客户端仅发意图，不信任客户端计算
 4. 性能：单个 Uvicorn worker 可承载的房间数基准（`GameManager` 为 CPU 轻量状态机，瓶颈在 WS 连接数）
-5. （暂时跳过）Dockerfile + docker-compose（app + 可选 nginx）
+5. ✅ Dockerfile + docker-compose（仅后端 app；nginx/前端容器已裁掉）——已实现，见下方「Phase 8 部署补充」
 6. 端到端冒烟：本地起后端，前端 `vite preview` 联调完整东风场
 
 **验收**：
-- [ ] （暂时跳过）Docker 一键启动
+- [x] Docker 一键启动（`docker compose up -d --build`）
 - [ ] 压测：模拟 N 个房间并发，单 worker 无崩溃、响应延迟在阈值内
 - [ ] 断线托管/重连恢复全链路验证
+
+**Phase 8 部署补充（2026-08 已实现）**：
+
+> 目标：后端容器化，在常驻服务器（CVM / Lighthouse）上用 Docker 一键跑起来。
+> 本项目实时对局强依赖长连接 WebSocket + 服务端内存态（`room_registry`），**不适合边缘函数 / 无服务器运行时**。
+> 前端不在此流水线内，另行托管；如需要可前置 Nginx / EdgeOne 反代 `/api` 与 `/ws`（WebSocket 空闲超时上限 300s，需客户端心跳维持）。
+
+新增文件（均在 `backend/` 内）：
+- `backend/Dockerfile` —— `python:3.11-slim`，`pip install .`，单 uvicorn worker
+- `backend/docker-compose.yml` —— 本地构建版（`docker compose up --build`，入口 http://localhost:8000）
+- `backend/docker-compose.prod.yml` —— 镜像版（供 CI scp 到服务器，服务器只 pull 不构建）
+- `backend/.dockerignore`
+- `backend/.github/workflows/docker-backend.yml` —— CI：构建镜像 → 推 GHCR → scp compose → 服务器部署
+
+存储：默认 SQLite（`mahjong_data` 卷持久化 `/app/data`）；设 `PG_PASSWORD` 后自动走 PostgreSQL（可覆盖 `PG_HOST/PG_PORT/PG_USER/PG_DATABASE`）。
+
+**连带修正**（不修正则镜像/新环境缺库）：
+- `pyproject.toml` 补全运行时依赖 `psycopg[binary]>=3.1` 与 `python-dotenv>=1.0`（此前仅装进 venv 未声明）
+- 新增 `[build-system]` + `[tool.setuptools.packages.find]` + `[tool.setuptools.package-data]`（`app/storage/*.sql` 打进 wheel），使 `pip install .` 可装；已用 `pip wheel . --no-deps` 验证产物含 `app` 包与两个 schema 文件
+
+**CI/CD 补充（2026-08 已实现）**：
+
+> 后端是独立 GitHub 仓库（根仓 `.gitignore` 忽略 `/backend/` 是刻意的，前端仓不含后端代码）。
+> 每个 `master` push 自动：构建镜像 → 推 GHCR（`latest` + `sha-<commit>`）→ scp `docker-compose.prod.yml`
+> → 服务器 `docker compose pull && up -d`。
+
+- workflow：`backend/.github/workflows/docker-backend.yml`，镜像 `ghcr.io/bestguo2020/lianhua-mahjong-backend`
+- 服务器需：Docker + compose v2、目录 `/opt/python-project/lianhua-mahjong-backend`、GHCR 包设为 Public（或 PAT 登录）
+- 仓库 Secrets：`SSH_HOST` / `SSH_USER` / `SSH_KEY`；GHCR 推送用内置 `GITHUB_TOKEN`
+- 完整步骤见 `backend/DEPLOY.md`
 
 ---
 

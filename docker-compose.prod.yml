@@ -1,0 +1,27 @@
+# 莲花广麻后端 · 生产部署（镜像版，供 GitHub Actions scp 到服务器后 `docker compose pull && up`）
+#
+# 由 CI 构建镜像推送 GHCR，服务器只拉取运行、不构建。
+# 服务器用法（/opt/python-project/lianhua-mahjong-backend 目录下）：
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# 数据库：默认 SQLite（mahjong_data 卷）；在目录下放 .env 设 PG_PASSWORD 即走 PostgreSQL。
+# 访问：宿主机 8000 直通容器 8000（REST + WebSocket）。
+services:
+  backend:
+    image: ghcr.io/bestguo2020/lianhua-mahjong-backend:latest
+    restart: unless-stopped
+    environment:
+      PG_PASSWORD: ${PG_PASSWORD:-}
+      # 可选：非 Supabase 的 PG 时覆盖
+      # PG_HOST: ${PG_HOST:-}
+      # PG_PORT: ${PG_PORT:-}
+      # PG_USER: ${PG_USER:-}
+      # PG_DATABASE: ${PG_DATABASE:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - mahjong_data:/app/data
+
+volumes:
+  mahjong_data:

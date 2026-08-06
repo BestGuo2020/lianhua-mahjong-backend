@@ -1,0 +1,70 @@
+# 莲花广麻后端 · 构建并部署（仅后端）
+#
+# 触发：推 master / 手动
+# 流程：构建后端镜像 → 推 GHCR（latest + sha-<sha>）→ scp docker-compose.prod.yml 到服务器
+#       → SSH `docker compose pull && up -d` 重启
+#
+# 服务器需要：
+#   - Docker + docker compose 插件
+#   - GHCR 包已设为 public，或用 PAT 在服务器上 `docker login ghcr.io`
+# 完整步骤见本仓库 DEPLOY.md。
+name: Build & Deploy Backend
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/bestguo2020/lianhua-mahjong-backend
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # 推送 GHCR 包需要
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+
+      - name: Sync compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "docker-compose.prod.yml"
+          target: /opt/python-project/lianhua-mahjong-backend
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/python-project/lianhua-mahjong-backend
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans

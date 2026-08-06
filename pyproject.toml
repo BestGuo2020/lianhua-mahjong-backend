@@ -8,6 +8,9 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.0.0",
     "websockets>=13.0",
+    # 运行时实际依赖（此前仅装进 venv，未声明，导致新环境/Docker 安装缺库）
+    "psycopg[binary]>=3.1",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -20,3 +23,15 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# 支持 `pip install .`（Dockerfile 依赖）：构建 wheel 后 app 打进 site-packages。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["storage/*.sql"]

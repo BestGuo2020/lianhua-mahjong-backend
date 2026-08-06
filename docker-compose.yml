@@ -1,0 +1,17 @@
+# 莲花广麻后端 · 本地构建版（`docker compose up --build`）
+#
+# 与 docker-compose.prod.yml（镜像版，供服务器/CI）不同：本地直接构建源码。
+# 数据库：默认 SQLite（mahjong_data 卷）；设 PG_PASSWORD 即走 PostgreSQL。
+services:
+  backend:
+    build: .
+    restart: unless-stopped
+    environment:
+      PG_PASSWORD: ${PG_PASSWORD:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - mahjong_data:/app/data
+
+volumes:
+  mahjong_data:

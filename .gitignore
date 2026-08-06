@@ -3,3 +3,7 @@
 data/
 *.pyc
 .env
+# pip install . / wheel 构建产物（PEP 517）
+build/
+dist/
+*.egg-info/

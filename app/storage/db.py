@@ -54,10 +54,10 @@ def _new_id() -> str:
 # ─── PostgreSQL（Supabase pooler / 任意 PG，读环境变量，仅启动时生效）────
 
 _PG_DEFAULTS = {
-    'PG_HOST': 'aws-1-ap-northeast-2.pooler.supabase.com',
+    'PG_HOST': '127.0.0.1',
     'PG_PORT': '6543',
-    'PG_USER': 'postgres.szklriclurtinykjlano',
-    'PG_DATABASE': 'postgres',
+    'PG_USER': '******',
+    'PG_DATABASE': '******',
 }
 
 

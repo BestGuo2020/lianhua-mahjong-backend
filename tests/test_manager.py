@@ -199,3 +199,24 @@ def test_break_wall_by_dice_empty_wall_noop():
     manager.dice = [6, 6]
     manager._break_wall_by_dice()
     assert manager.wall == []
+
+
+def test_end_draw_records_tenpai():
+    """流局结果带上各家听牌名单与庄家听牌标志（连庄判断 + 结算展示用）。"""
+    from app.game.manager import GameManager as _GM
+    from app.models.game import GamePlayer as _GP
+    tenpai_hand = ['m1', 'm1', 'm1', 'm2', 'm2', 'm2', 'm3', 'm3', 'm3', 's1', 's1', 's1', 's2']
+    noten_hand = ['m1', 'm2', 'm4', 'm5', 'm7', 'm8', 'p1', 'p2', 'p4', 'p5', 'p7', 'p8', 's1']
+    manager = _GM(mode='east', controllers=[AIPlayer() for _ in range(4)])
+    manager.players = [
+        _GP(name='A', avatar='', score=1000, seat=i, hand=(tenpai_hand if i in (0, 2) else noten_hand),
+            discards=[], melds=[], redCount=0, drawnTileIndex=-1)
+        for i in range(4)
+    ]
+    manager.dealer = 0   # 庄家（seat 0）听牌
+    manager.end_draw()
+    assert manager.result['draw'] is True
+    assert manager.result['tenpai'] == [0, 2]
+    assert manager.result['dealerTenpai'] is True
+    # 不付点数：各 delta 为 0
+    assert all(change['delta'] == 0 for change in manager.result['scoreChanges'])

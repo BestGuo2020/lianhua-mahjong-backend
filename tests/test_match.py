@@ -34,10 +34,15 @@ class TestAdvanceMatchState:
         assert hanchan_result['dealer'] == 0
         assert hanchan_result['finished'] is False
 
-    def test_draw_shifts_dealer(self):
-        """流局时庄位轮转（与 TS 端一致：dealerKeepsSeat = !draw && winner === dealer）"""
-        result = advance_match_state(**BASE, result={'draw': True})
+    def test_draw_dealer_noten_shifts_dealer(self):
+        """流局且庄家未听牌 → 下庄（庄位轮转）"""
+        result = advance_match_state(**BASE, result={'draw': True, 'dealerTenpai': False})
         assert result == {'round': 2, 'dealer': 1, 'honba': 0, 'finished': False}
+
+    def test_draw_dealer_tenpai_keeps_seat(self):
+        """流局且庄家听牌 → 连庄（round/dealer 不变，honba+1）"""
+        result = advance_match_state(**BASE, result={'draw': True, 'dealerTenpai': True})
+        assert result == {'round': 1, 'dealer': 0, 'honba': 1, 'finished': False}
 
     def test_finished_when_round_exceeds_match_hands(self):
         """局数超过场次上限时 finished"""

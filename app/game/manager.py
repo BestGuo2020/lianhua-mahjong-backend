@@ -37,6 +37,7 @@ from app.core.rules import (
     draw_horses,
     matching_count,
     score_hand,
+    waiting_tiles,
 )
 from app.core.actions import perform_discard_gang, perform_peng, remove_matches
 from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, TurnContext
@@ -133,8 +134,15 @@ class NullEvents:
 # ─── 场次推进（对应 useGame.ts advanceMatchState，纯函数）──────
 
 def advance_match_state(*, round_, dealer, honba, match_type, result, scores=None, player_count=4) -> dict:
-    """庄家连庄 + 本场累加 / 轮庄推进 → 终局判断。"""
-    dealer_keeps_seat = not result.get('draw') and result.get('winnerIndex') == dealer
+    """庄家连庄 + 本场累加 / 轮庄推进 → 终局判断。
+
+    连庄规则：胡牌且赢家为庄家 → 连庄；流局且庄家听牌 → 连庄；否则下庄。
+    """
+    draw = bool(result.get('draw'))
+    dealer_keeps_seat = (
+        (not draw and result.get('winnerIndex') == dealer)
+        or (draw and result.get('dealerTenpai'))
+    )
     if dealer_keeps_seat:
         next_state = {'round': round_, 'dealer': dealer, 'honba': honba + 1}
     else:
@@ -740,7 +748,10 @@ class GameManager:
         self.phase = 'settled'
 
     def end_draw(self) -> None:
-        """流局：荒庄 → 庄家连庄（本场累加由 next_round 处理）。"""
+        """流局：荒庄。各家是否听牌（连庄判断 + 结算展示）；不付点数。
+
+        连庄规则见 advance_match_state：流局庄家听牌 → 连庄，否则下庄。
+        """
         self.phase = 'settled'
         self.current_player = -1
         # 与前端 endDraw 对齐：清理可能残留的展示态（快照不会再携带陈旧 winPresentation）
@@ -749,9 +760,15 @@ class GameManager:
         self.win_presentation = None
         self.winning_player_index = -1
         scores_before = [p.score for p in self.players]
+        # 听牌：手牌加任意一张可成胡（waiting_tiles 非空）
+        tenpai = [i for i, p in enumerate(self.players)
+                  if waiting_tiles(p.hand, structural_meld_count(p))]
         self.result = self.make_round_result(
             {'draw': True, 'winner': '荒庄', 'horses': [], 'hits': 0,
-             'multiplier': 0, 'points': 0, 'details': []},
+             'multiplier': 0, 'points': 0, 'details': [],
+             'tenpai': tenpai,
+             'dealerTenpai': self.dealer in tenpai,
+            },
             scores_before,
         )
         self._broadcast_snapshot()

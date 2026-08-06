@@ -12,6 +12,7 @@ Phase 6 起房间生命周期由本层接管：
 路由全部定义为同步函数 → FastAPI 自动放线程池，不阻塞事件循环。
 """
 
+import os
 import secrets
 from typing import Literal, Optional
 
@@ -23,6 +24,9 @@ from app.game.room import RoomError, RoomSession, room_registry
 from app.storage.db import storage
 
 router = APIRouter(prefix='/api/rooms', tags=['rooms'])
+
+# 本服务器最多同时存在的房间数（可环境变量覆盖）
+MAX_ROOMS = int(os.environ.get('ROOM_MAX', '4'))
 
 # 6 位房间码字母表：去掉易混淆字符（0/O、1/I、U）
 _ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -58,6 +62,7 @@ def _room_response(room: RoomSession) -> dict:
         'capacity': room.capacity,
         'status': room.status,
         'creatorSeat': room.creator_seat,
+        'timeLimitSeconds': room.lifetime,  # 房间限时（前端静态提示用）
         'seats': [
             None if state is None else {
                 'seat': state.seat,
@@ -92,7 +97,14 @@ class SeatActionRequest(BaseModel):
 
 @router.post('')
 def create_room(body: CreateRoomRequest) -> dict:
-    """创建房间。同一房间码唯一，重复创建 → ROOM_EXISTS。"""
+    """创建房间。同一房间码唯一，重复创建 → ROOM_EXISTS。
+
+    房间数上限：先清扫到期房间（绕过惰性节流，确保到期房释放槽位），
+    在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED（客户端提示「房间已满」）。
+    """
+    room_registry.sweep_expired()
+    if room_registry.count() >= MAX_ROOMS:
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_LIMIT_REACHED'})
     room_id = _new_room_id()
     try:
         # 真人联机房间注入视觉节奏（AI 出牌/碰杠有可读延迟，对齐前端 PACE_MS）；
@@ -114,9 +126,14 @@ def get_room(room_id: str) -> dict:
 
 @router.post('/{room_id}/join')
 def join_room(room_id: str, body: JoinRequest) -> dict:
-    """加入：占第一个空座并签发 rejoinCode（写 room_seats / players 落库）。"""
+    """加入：占第一个空座并签发 rejoinCode（写 room_seats / players 落库）。
+
+    允许加入大厅（lobby）与已结束（finished）房间——对局结束后离开的玩家可
+    重新加入房间打下一场（start 已允许 finished 房间再开局）。对局中（playing）
+    拒绝：运行中的牌局控制器已接线，新加入者无法参与当前场。
+    """
     room = _room_or_404(room_id)
-    if room.status != 'lobby':
+    if room.status not in ('lobby', 'finished'):
         raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
     try:
         seat, is_rejoin, state = room.join_or_rejoin(body.nickname, player_id=body.playerId)
@@ -134,10 +151,17 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
 
 @router.post('/{room_id}/leave')
 def leave_room(room_id: str, body: SeatActionRequest) -> dict:
-    """离开：释放座位（带 rejoinCode 身份校验）。"""
+    """离开：释放座位（带 rejoinCode 身份校验）。
+
+    房主在非对局中（大厅/场次结束）离开 → 房间自动解散；对局中离开仍走
+    AI 代打（房间保留，房主转移给下一座位）。
+    """
     room = _room_or_404(room_id)
     _verify_seat(room, body.seat, body.rejoinCode)
+    was_creator = room.creator_seat == body.seat
     room.release_seat(body.seat)
+    if was_creator and room.status != 'playing':
+        room_registry.remove(room_id)
     return {'roomId': room.room_id, 'seat': body.seat, 'left': True}
 
 

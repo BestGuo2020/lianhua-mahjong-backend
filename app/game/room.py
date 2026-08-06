@@ -28,11 +28,10 @@ class RoomError(Exception):
     """房间层业务错误（错误码直接作为 rejoin_err / error 消息的 code 返回）。"""
 
 
-# ─── 空房间 TTL 清理（Phase 8：房间不会自动解散，空闲房间需定期回收）────
-# 大厅/全员掉线的房间空闲超 IDLE_TTL 回收；已结束房间保留 FINISHED_TTL 供查看结果。
+# ─── 房间限时（Phase 8：创建起 60 分钟）────
+# 非对局中超过限时 → 自动解散；对局中超过限时 → 等对局结束自动释放。
 # 可用环境变量覆盖（秒）。
-IDLE_TTL = float(os.environ.get('ROOM_IDLE_TTL', str(30 * 60)))
-FINISHED_TTL = float(os.environ.get('ROOM_FINISHED_TTL', str(10 * 60)))
+ROOM_LIFETIME = float(os.environ.get('ROOM_LIFETIME', str(60 * 60)))
 
 
 def _make_rejoin_code() -> str:
@@ -173,6 +172,10 @@ class RoomSession:
         self.seats: list[Optional[SeatState]] = [None] * self.player_count
         # 创建者座位（REST 创建房间后第一个 join 者）；创建者离房后转移给下一座位
         self.creator_seat: Optional[int] = None
+        # 限时：创建起 60 分钟（deadline）。非对局中到期清扫回收；对局中到期由 _drive 在对局结束释放
+        self.lifetime = ROOM_LIFETIME
+        self.created_at: float = time.monotonic()
+        self.deadline: float = self.created_at + ROOM_LIFETIME
         # 重进码握手限速：30s 窗口内最多 5 次（成功 resume 后清零，正常重连不受影响）
         self._rejoin_attempts: dict[str, list[float]] = {}
         self._rejoin_window = 30.0
@@ -181,7 +184,6 @@ class RoomSession:
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
-        self.last_active: float = time.monotonic()  # 最后活动时间（空房 TTL 清理用）
         # 结算确认屏障：一局结算后等所有已连真人确认（客户端「继续」按钮）再推进下一局。
         # 兜底超时防止某客户端完全不响应导致整场卡死；正常流程客户端 10s 倒计时自动确认。
         self._continue_timeout = 20.0
@@ -193,21 +195,18 @@ class RoomSession:
         self._opening: Optional[dict] = None
         self._opening_event: Optional[asyncio.Event] = None
 
-    # ── 活动时间 / 空房 TTL ─────────────────────────────
+    # ── 限时（60 分钟）─────────────────────────────────
 
-    def _touch(self) -> None:
-        """记录一次活动（join/leave/ready/start/WS 消息等），刷新 TTL 计时起点。"""
-        self.last_active = time.monotonic()
+    def is_past_deadline(self, now: Optional[float] = None) -> bool:
+        """是否已超过 60 分钟限时。"""
+        return (now if now is not None else time.monotonic()) >= self.deadline
 
     def is_expired(self, now: Optional[float] = None) -> bool:
-        """空房间是否可回收：对局中绝不清理；有人在座且在线不清理；
-        空闲超 TTL（大厅/全掉线 IDLE_TTL，已结束 FINISHED_TTL）才回收。"""
+        """房间是否可回收：对局中绝不回收（等对局结束自动释放）；
+        超过限时（deadline）即回收，与是否有人在座/在线无关。"""
         if self.status == 'playing':
             return False
-        if any(s is not None and s.controller.connected for s in self.seats):
-            return False
-        ttl = FINISHED_TTL if self.status == 'finished' else IDLE_TTL
-        return (now if now is not None else time.monotonic()) - self.last_active >= ttl
+        return self.is_past_deadline(now)
 
     # ── 座位 / 重进码 ────────────────────────────────────
 
@@ -220,7 +219,6 @@ class RoomSession:
         首个占座者为创建者（REST 创建房间后 creator 自己 join）。
         反赌博风控：player_id 命中黑名单 → BANNED（重进码路径在 resume_by_code 内查禁）。
         """
-        self._touch()
         if player_id and self.storage is not None and self.storage.is_banned('player', player_id):
             raise RoomError('BANNED')
         if rejoin_code:
@@ -280,7 +278,6 @@ class RoomSession:
 
     def release_seat(self, seat: int, rejoin_code: Optional[str] = None) -> None:
         """REST leave：释放座位。带 rejoin_code 时校验身份，防止误释放他人座位。"""
-        self._touch()
         state = self.seats[seat]
         if state is None:
             raise RoomError('SEAT_EMPTY')
@@ -301,7 +298,6 @@ class RoomSession:
 
     def ready_seat(self, seat: int, ready: Optional[bool] = None) -> bool:
         """REST ready：设置座位准备态（缺省 toggle）。返回新状态。"""
-        self._touch()
         state = self.seats[seat]
         if state is None:
             raise RoomError('SEAT_EMPTY')
@@ -311,14 +307,12 @@ class RoomSession:
     # ── 连接生命周期 ─────────────────────────────────────
 
     def on_connect(self, seat: int) -> None:
-        self._touch()
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(True)
             state.connected_at = time.time()
 
     def on_disconnect(self, seat: int) -> None:
-        self._touch()
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(False)
@@ -330,7 +324,6 @@ class RoomSession:
 
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
-        self._touch()   # 任意 WS 消息 = 活动：对局中持续刷新 TTL
         if message.get('type') == 'ping':
             # 回应 pong：客户端据此测 RTT → 信号质量显示（signal-N）
             self.conn.send_to_seat_nowait(seat, {'kind': 'pong'})
@@ -442,11 +435,12 @@ class RoomSession:
 
         必须 await（async）以便 game_task 创建在当前事件循环 —— 即 uvicorn 的
         事件循环，与 WS 处理器一致。否则跨循环入队/唤醒会死锁。
+        对局已结束（game_task 完成、status=finished）的房间允许再开一局：旧
+        manager / match 被新一场替换（旧 match 已落库为 finished 历史）。
         """
-        self._touch()
-        if self.manager is not None or self.game_task is not None:
+        if self.game_task is not None and not self.game_task.done():
             raise RoomError('ALREADY_STARTED')
-        if self.status != 'lobby':
+        if self.status not in ('lobby', 'finished'):
             raise RoomError('ROOM_CLOSED')
         for seat, state in enumerate(self.seats):
             if state is not None and not state.ready:
@@ -573,7 +567,6 @@ class RoomSession:
                     await asyncio.sleep(0)
             if self.manager.phase == 'finished':
                 self.status = 'finished'
-            self._touch()   # 对局结束：TTL 从结束时刻起算（FINISHED_TTL）
             final_scores = [
                 {'seat': p.seat, 'name': p.name, 'score': p.score}
                 for p in self.manager.players
@@ -585,6 +578,14 @@ class RoomSession:
                 'finalScores': final_scores,
             })
             await self._persist_match_end(final_scores)
+            # 对局结束：解除各座位准备态（房间保留，房主可再开一局）。
+            # 不回 lobby 状态，保留 finished 供记录/重连快照展示。
+            for state in self.seats:
+                if state is not None:
+                    state.ready = False
+            # 对局结束时已超过 60 分钟限时 → 自动释放房间（close 内会广播 room_closed）
+            if self.is_past_deadline():
+                room_registry.remove(self.room_id)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -593,17 +594,31 @@ class RoomSession:
             raise
 
     def close(self) -> None:
-        """关闭房间：通知在位客户端后取消游戏任务（WS 层在房间移除时调用）。"""
+        """关闭房间：通知在位客户端后取消游戏任务，落库 closed 状态。
+
+        _drive 在对局结束超时释放房间时会回调（当前任务即 game_task），
+        此时跳过自我取消，避免对已近完成的整场驱动注入 CancelledError。
+        无事件循环线程（REST 同步路由线程池 / 测试清理）里 current_task() 抛错，
+        此时一律正常取消游戏任务。
+        """
         self.status = 'closed'
         self.conn.broadcast({'kind': 'room_closed'})
-        if self.game_task is not None and not self.game_task.done():
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if self.game_task is not None and not self.game_task.done() \
+                and current is not self.game_task:
             self.game_task.cancel()
+        if self.storage is not None:
+            self.storage.update_room_status(self.room_id, 'closed')
 
 
 class RoomRegistry:
     """内存房间注册表（Phase 6 由 REST 层接管创建；当前供 WS 端点与测试使用）。
 
-    空房间 TTL 清理：get/create 时惰性清扫过期房（带节流），对局中/有人在线的房间不回收。
+    限时清扫：get/create 时惰性清扫超过 60 分钟限时的房间（带节流）；
+    对局中的房间不回收，由 _drive 在对局结束超时时释放。
     """
 
     def __init__(self) -> None:
@@ -622,6 +637,10 @@ class RoomRegistry:
     def get(self, room_id: str) -> Optional[RoomSession]:
         self._maybe_sweep()
         return self._rooms.get(room_id)
+
+    def count(self) -> int:
+        """当前在册房间数（房间数上限检查用）。"""
+        return len(self._rooms)
 
     def _maybe_sweep(self) -> None:
         now = time.monotonic()

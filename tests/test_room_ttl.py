@@ -1,99 +1,77 @@
-"""空房间 TTL 清理单测 —— 全退出的房间空闲超 TTL 后自动回收
+"""房间限时（60 分钟）清理单测 —— 超过限时的房间自动解散
 
-对应 Phase 8 讨论：房间不会随全部玩家退出而解散，需 TTL 清扫防止内存累积。
 规则（RoomSession.is_expired）：
-- 对局中（playing）绝不回收
-- 有人在座且在线（connected）不回收
-- 大厅/全员掉线 → 空闲超 IDLE_TTL（30 分钟）回收
-- 已结束（finished）→ 空闲超 FINISHED_TTL（10 分钟）回收
+- 对局中（playing）绝不回收 → 等 _drive 在对局结束超时时自动释放
+- 非对局中且超过限时（deadline）→ 回收，与是否有人在座/在线无关
 
-直接操作注册表 + 回拨 last_active，无需真实服务。
+直接操作注册表 + 回拨 deadline，无需真实服务。
 """
 
 import time
 
-from app.game.room import FINISHED_TTL, IDLE_TTL, room_registry as rooms
+from app.game.room import room_registry as rooms
 
 
 def _backdate(room, seconds: float) -> None:
-    """把房间最后活动时间拨到过去，模拟空闲。"""
-    room.last_active = time.monotonic() - seconds
+    """把房间限时（deadline）拨到过去，模拟超时。"""
+    room.deadline = time.monotonic() - seconds
 
 
-def test_empty_lobby_room_expires(fresh_rooms):
-    """空大厅房间空闲超 IDLE_TTL → 回收。"""
-    room = rooms.create('TTL1', mode='east', capacity=2)
-    _backdate(room, IDLE_TTL + 1)
-    assert rooms.sweep_expired() == ['TTL1']
-    assert rooms.get('TTL1') is None
+def test_expired_lobby_room_dissolves(fresh_rooms):
+    """非对局房间超过限时 → 自动解散。"""
+    room = rooms.create('EXP1', mode='east', capacity=2)
+    _backdate(room, 1)
+    assert rooms.sweep_expired() == ['EXP1']
+    assert rooms.get('EXP1') is None
 
 
-def test_empty_lobby_room_kept_within_ttl(fresh_rooms):
-    """空大厅房间空闲未超 TTL → 保留。"""
-    room = rooms.create('TTL2', mode='east', capacity=2)
-    _backdate(room, IDLE_TTL - 60)
+def test_room_kept_within_deadline(fresh_rooms):
+    """未超限时的房间 → 保留。"""
+    room = rooms.create('EXP2', mode='east', capacity=2)
     assert rooms.sweep_expired() == []
-    assert rooms.get('TTL2') is not None
+    assert rooms.get('EXP2') is not None
 
 
-def test_connected_room_not_expired(fresh_rooms):
-    """有人在座且在线（WS connected）→ 即使空闲也不回收。"""
-    room = rooms.create('TTL3', mode='east', capacity=2)
+def test_connected_room_expires_after_deadline(fresh_rooms):
+    """有人在座且在线、已超限时 → 仍回收（限时优先于在线）。"""
+    room = rooms.create('EXP3', mode='east', capacity=2)
     seat, _, _ = room.join_or_rejoin('甲')
     room.on_connect(seat)
-    _backdate(room, IDLE_TTL + 1)
-    assert rooms.sweep_expired() == []
+    _backdate(room, 1)
+    assert rooms.sweep_expired() == ['EXP3']
 
 
-def test_disconnected_ghost_room_expires(fresh_rooms):
-    """全员掉线（幽灵座位，connected=False）空闲超 TTL → 回收（释放占用的昵称）。"""
-    room = rooms.create('TTL4', mode='east', capacity=2)
-    room.join_or_rejoin('甲')
-    room.join_or_rejoin('乙')
-    _backdate(room, IDLE_TTL + 1)
-    assert rooms.sweep_expired() == ['TTL4']
-
-
-def test_playing_room_never_expired(fresh_rooms):
-    """对局中（playing）即使空闲超 TTL 也不回收。"""
-    room = rooms.create('TTL5', mode='east', capacity=2)
+def test_playing_room_not_swept_past_deadline(fresh_rooms):
+    """对局中超过限时 → 清扫不回收（等 _drive 在对局结束自动释放）。"""
+    room = rooms.create('EXP4', mode='east', capacity=2)
     room.status = 'playing'
-    _backdate(room, IDLE_TTL + 1)
+    _backdate(room, 1)
     assert rooms.sweep_expired() == []
 
 
-def test_finished_room_expires_faster(fresh_rooms):
-    """已结束房间空闲超 FINISHED_TTL → 回收（比大厅更短）。"""
-    room = rooms.create('TTL6', mode='east', capacity=2)
+def test_finished_room_expires_after_deadline(fresh_rooms):
+    """场次结束（finished）不立即释放，超限时才回收。"""
+    room = rooms.create('EXP5', mode='east', capacity=2)
     room.status = 'finished'
-    _backdate(room, FINISHED_TTL + 1)
-    assert rooms.sweep_expired() == ['TTL6']
-
-
-def test_finished_room_kept_within_finished_ttl(fresh_rooms):
-    """已结束房间空闲未超 FINISHED_TTL → 保留（供查看结算）。"""
-    room = rooms.create('TTL7', mode='east', capacity=2)
-    room.status = 'finished'
-    _backdate(room, FINISHED_TTL - 60)
-    assert rooms.sweep_expired() == []
+    _backdate(room, 1)
+    assert rooms.sweep_expired() == ['EXP5']
 
 
 def test_get_prunes_expired_lazily(fresh_rooms):
-    """get() 惰性清扫：过期房在下次访问时被移除。"""
-    room = rooms.create('TTL8', mode='east', capacity=2)
-    _backdate(room, IDLE_TTL + 1)
+    """get() 惰性清扫：超时房间在下次访问时被移除。"""
+    room = rooms.create('EXP6', mode='east', capacity=2)
+    _backdate(room, 1)
     rooms._last_sweep = 0.0   # 绕过节流，强制本次 get 触发清扫
-    assert rooms.get('TTL8') is None
-    assert rooms.get('TTL8') is None
+    assert rooms.get('EXP6') is None
 
 
-def test_activity_refreshes_last_active(fresh_rooms):
-    """活动（join / ready / WS 消息）会刷新 last_active。"""
-    room = rooms.create('TTL9', mode='east', capacity=2)
-    before = room.last_active
-    seat, _, state = room.join_or_rejoin('甲')
-    assert room.last_active >= before
-    # resume 与 WS 消息同样刷新
-    room.join_or_rejoin('甲', rejoin_code=state.rejoin_code)
-    room.handle_client_message(seat, {'type': 'ping'})
-    assert room.last_active >= before
+def test_creator_leave_during_playing_transfers_and_keeps_room(fresh_rooms):
+    """对局中房主 release_seat → 房主转移给下一座位，且注册表保留房间（AI 代打）。"""
+    room = rooms.create('EXP7', mode='east', capacity=2)
+    seat_a, _, state_a = room.join_or_rejoin('甲')
+    seat_b, _, _ = room.join_or_rejoin('乙')
+    assert room.creator_seat == seat_a
+    room.status = 'playing'
+    room.release_seat(seat_a, state_a.rejoin_code)
+    assert room.creator_seat == seat_b   # 房主转移
+    assert rooms.get('EXP7') is not None  # 房间保留

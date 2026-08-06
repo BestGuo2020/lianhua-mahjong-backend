@@ -18,7 +18,7 @@ WORKDIR /app
 # setuptools 配置见 pyproject.toml；storage/*.sql 作为 package-data 一并打包）
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir .
+RUN pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple --no-cache-dir .
 
 # 单 worker 即开发计划 §8 性能基准口径（瓶颈在 WS 连接数而非 CPU）
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

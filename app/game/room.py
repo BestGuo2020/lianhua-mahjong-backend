@@ -13,9 +13,11 @@ WSEvents 是 GameManager 的 GameEvents 真实实现：表动作/分数/公告�
 """
 
 import asyncio
+import json
 import os
 import secrets
 import time
+import urllib.request
 from typing import Optional
 
 from app.game.manager import GameManager, PLAYER_SEED
@@ -39,10 +41,31 @@ def _make_rejoin_code() -> str:
     return f'{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}'
 
 
-class SeatState:
-    """座位会话元数据：真人占座后的身份 / 重进码 / 控制器 / 准备态。"""
+# 外部随机头像 API（可环境变量覆盖；测试在 conftest 里 monkeypatch 不触网）。
+AVATAR_API_URL = os.environ.get(
+    'AVATAR_API_URL', 'https://api.ruseo.cn/api/tx?type=1&imgtype=5')
 
-    __slots__ = ('seat', 'nickname', 'rejoin_code', 'player_id', 'controller', 'connected_at', 'ready')
+
+def _fetch_random_avatar() -> str:
+    """从外部 API 取一个随机头像图片 URL；网络/解析失败返回 ''（前端回退座位默认头像）。
+
+    接口返回 JSON：{"code":0,"data":{"msg":"https://res.apihz.cn/img/tx/<hash>.jpg"}}。
+    每次请求返回不同图片，因此必须把返回的 URL 落库（player_avatars）才能跨房间/场次稳定。
+    """
+    try:
+        with urllib.request.urlopen(AVATAR_API_URL, timeout=3) as resp:
+            payload = json.loads(resp.read().decode('utf-8'))
+        url = payload.get('data', {}).get('msg', '')
+        return url if isinstance(url, str) and url.startswith('http') else ''
+    except Exception:
+        return ''
+
+
+class SeatState:
+    """座位会话元数据：真人占座后的身份 / 重进码 / 头像 / 控制器 / 准备态。"""
+
+    __slots__ = ('seat', 'nickname', 'rejoin_code', 'player_id', 'avatar',
+                 'controller', 'connected_at', 'ready')
 
     def __init__(self, seat: int, nickname: str, rejoin_code: str, controller: RemotePlayer,
                  player_id: Optional[str] = None):
@@ -50,6 +73,7 @@ class SeatState:
         self.nickname = nickname
         self.rejoin_code = rejoin_code
         self.player_id = player_id
+        self.avatar = ''   # 头像 URL：join 时按 player_id 持久化分配；空串 → 前端座位默认
         self.controller = controller
         self.connected_at: Optional[float] = None
         self.ready = False
@@ -210,6 +234,22 @@ class RoomSession:
 
     # ── 座位 / 重进码 ────────────────────────────────────
 
+    def _ensure_seat_avatar(self, state: SeatState) -> None:
+        """确保座位带持久化头像：按 player_id 首次进房从外部 API 取一次并落库，
+        之后跨房间/场次复用（同一玩家头像稳定）。无 player_id / 无存储 / 取图失败
+        时保持空串，由前端回退座位默认头像。
+        """
+        if state.avatar or not state.player_id:
+            return
+        if self.storage is None:
+            return   # 纯内存态（测试/单机）：不触网
+        avatar = self.storage.get_player_avatar(state.player_id)
+        if not avatar:
+            avatar = _fetch_random_avatar()
+            if avatar:
+                self.storage.set_player_avatar(state.player_id, avatar)
+        state.avatar = avatar
+
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
                        player_id: Optional[str] = None):
         """REST join：占第一个空座并签发重进码（is_rejoin=False）。失败抛 RoomError。
@@ -235,6 +275,7 @@ class RoomSession:
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller,
                                   player_id=player_id)
                 self.seats[seat] = state
+                self._ensure_seat_avatar(state)
                 if self.creator_seat is None:
                     self.creator_seat = seat
                 self._persist_seat(seat)
@@ -251,6 +292,7 @@ class RoomSession:
                 if state.controller.connected:
                     # 顶号尝试：原会话仍在线，拒绝（防双连接争抢同一座位）
                     raise RoomError('ALREADY_CONNECTED')
+                self._ensure_seat_avatar(state)   # 服务重启后内存头像丢失，按 player_id 恢复
                 return seat, state
         raise RoomError('INVALID_REJOIN_CODE')
 
@@ -486,8 +528,10 @@ class RoomSession:
         seeds = []
         for seat, state in enumerate(self.seats):
             if state is not None:
-                seeds.append({'name': state.nickname, 'avatar': '', 'score': 1000})
+                # 真人头像 = join 时按 player_id 持久化分配的 URL（空串 → 前端座位默认）
+                seeds.append({'name': state.nickname, 'avatar': state.avatar, 'score': 1000})
             else:
+                # AI 空座：固定种子头像，不随用户变化
                 seeds.append(PLAYER_SEED[seat])
         return seeds
 

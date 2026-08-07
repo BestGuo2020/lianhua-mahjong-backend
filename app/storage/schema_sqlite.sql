@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS bans (
   PRIMARY KEY (scope, target)
 );
 
+CREATE TABLE IF NOT EXISTS player_avatars (
+  player_id  TEXT PRIMARY KEY,      -- 匿名身份（guestId），跨房间/场次稳定
+  avatar     TEXT NOT NULL,         -- 头像图片 URL（外部 API 获取后落库持久化）
+  created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS reports (
   id          TEXT PRIMARY KEY,
   room_id     TEXT NOT NULL DEFAULT '',

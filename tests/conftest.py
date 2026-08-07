@@ -44,3 +44,21 @@ def fresh_rooms():
     rooms.clear()
     yield
     rooms.clear()
+
+
+@pytest.fixture(autouse=True)
+def stub_avatar_fetch(monkeypatch):
+    """头像获取不触网：按调用次数返回固定 URL，并统计调用次数供断言。
+
+    外部头像 API（api.ruseo.cn）在测试里不可依赖；monkeypatch 掉 room.py 的
+    _fetch_random_avatar 后，join 流程照常走「首次取图 → 落库 → 复用」逻辑。
+    """
+    from app.game import room as room_module
+    calls = {'n': 0}
+
+    def _fake_avatar():
+        calls['n'] += 1
+        return f'https://example.com/avatar/fake-{calls["n"]}.jpg'
+
+    monkeypatch.setattr(room_module, '_fetch_random_avatar', _fake_avatar)
+    return calls

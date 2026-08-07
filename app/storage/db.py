@@ -121,6 +121,22 @@ class Storage:
                 (_new_id(), nickname, avatar),
             )
 
+    def get_player_avatar(self, player_id: str) -> str:
+        """按匿名身份查头像 URL（player_avatars 表，跨房间/场次稳定）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                'SELECT avatar FROM player_avatars WHERE player_id = ?',
+                (player_id,)).fetchone()
+            return row['avatar'] if row else ''
+
+    def set_player_avatar(self, player_id: str, avatar: str) -> None:
+        """持久化头像 URL：同 player_id 重复落库 = 覆盖。"""
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT OR REPLACE INTO player_avatars (player_id, avatar) VALUES (?, ?)',
+                (player_id, avatar),
+            )
+
     # ── 房间 ─────────────────────────────────────────────
 
     def create_room(self, room_id: str, mode: str, capacity: int) -> None:
@@ -366,6 +382,23 @@ class PostgresStorage:
                 'INSERT INTO players (id, nickname, avatar) VALUES (%s, %s, %s) '
                 'ON CONFLICT (nickname) DO NOTHING',
                 (_new_id(), nickname, avatar),
+            )
+
+    def get_player_avatar(self, player_id: str) -> str:
+        """按匿名身份查头像 URL（player_avatars 表，跨房间/场次稳定）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                'SELECT avatar FROM player_avatars WHERE player_id = %s',
+                (player_id,)).fetchone()
+            return row['avatar'] if row else ''
+
+    def set_player_avatar(self, player_id: str, avatar: str) -> None:
+        """持久化头像 URL：同 player_id 重复落库 = 覆盖。"""
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT INTO player_avatars (player_id, avatar) VALUES (%s, %s) '
+                'ON CONFLICT (player_id) DO UPDATE SET avatar = EXCLUDED.avatar',
+                (player_id, avatar),
             )
 
     # ── 房间 ─────────────────────────────────────────────

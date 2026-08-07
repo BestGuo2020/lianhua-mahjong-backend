@@ -81,6 +81,7 @@ def _room_response(room: RoomSession) -> dict:
 class CreateRoomRequest(BaseModel):
     mode: Literal['east', 'hanchan'] = 'east'
     capacity: int = Field(default=4, ge=2, le=4)
+    playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
 
 
 class JoinRequest(BaseModel):
@@ -100,9 +101,13 @@ class SeatActionRequest(BaseModel):
 def create_room(body: CreateRoomRequest) -> dict:
     """创建房间。同一房间码唯一，重复创建 → ROOM_EXISTS。
 
+    防重复占房：携带 playerId（匿名身份）时，若该玩家已在某个房间占座
+    （含对局中）→ ALREADY_IN_ROOM，阻止跨标签页/绕过前端守卫再开新房。
     房间数上限：先清扫到期房间（绕过惰性节流，确保到期房释放槽位），
     在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED（客户端提示「房间已满」）。
     """
+    if body.playerId and room_registry.find_room_by_player(body.playerId) is not None:
+        raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
     room_registry.sweep_expired()
     if room_registry.count() >= MAX_ROOMS:
         raise HTTPException(status_code=409, detail={'code': 'ROOM_LIMIT_REACHED'})
@@ -148,6 +153,9 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
     room = _room_or_404(room_id)
     if room.status not in ('lobby', 'finished'):
         raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
+    # 防重复占房：该 guestId 已在别的房间占座 → 拒绝（避免跨标签页同时在两个房间）
+    if body.playerId and room_registry.find_room_by_player(body.playerId) is not None:
+        raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
     try:
         seat, is_rejoin, state = room.join_or_rejoin(body.nickname, player_id=body.playerId)
     except RoomError as exc:

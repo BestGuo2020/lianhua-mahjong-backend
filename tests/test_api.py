@@ -102,15 +102,55 @@ async def test_room_meta_count(server, fresh_rooms, temp_storage):
 
 
 @pytest.mark.asyncio
+async def test_create_rejected_when_player_in_room(server, fresh_rooms, temp_storage):
+    """已在房间占座的玩家（guestId）再创建房间 → 409 ALREADY_IN_ROOM；离房后可再建。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room1 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})).json()['roomId']
+        join = (await http.post(f'/api/rooms/{room1}/join',
+                                json={'nickname': '甲', 'playerId': 'guest-A'})).json()
+
+        # 同一 guestId 已在 room1 占座 → 再建新房被拒
+        resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4, 'playerId': 'guest-A'})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'ALREADY_IN_ROOM'
+
+        # 未占座的玩家可正常创建
+        resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4, 'playerId': 'guest-B'})
+        assert resp.status_code == 200
+
+        # 离房后可再创建
+        await http.post(f'/api/rooms/{room1}/leave',
+                        json={'seat': join['seat'], 'rejoinCode': join['rejoinCode']})
+        resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4, 'playerId': 'guest-A'})
+        assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_join_rejected_when_player_in_another_room(server, fresh_rooms, temp_storage):
+    """已在房间占座的玩家加入另一个房间 → 409 ALREADY_IN_ROOM。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room1 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})).json()['roomId']
+        room2 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})).json()['roomId']
+        await http.post(f'/api/rooms/{room1}/join', json={'nickname': '甲', 'playerId': 'guest-A'})
+
+        resp = await http.post(f'/api/rooms/{room2}/join',
+                               json={'nickname': '甲', 'playerId': 'guest-A'})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'ALREADY_IN_ROOM'
+
+
+@pytest.mark.asyncio
 async def test_human_avatar_persists_ai_unchanged(server, fresh_rooms, temp_storage,
                                                   stub_avatar_fetch):
     """真人头像：首次进房从外部 API 取并落库（跨房间稳定）；AI 空座头像保持 PLAYER_SEED 不变。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})).json()['roomId']
+        joins = {}
         for nickname, pid in (('甲', 'guest-1'), ('乙', 'guest-2')):
             resp = await http.post(f'/api/rooms/{room_id}/join',
                                    json={'nickname': nickname, 'playerId': pid})
             assert resp.status_code == 200, resp.text
+            joins[nickname] = resp.json()
 
         seeds = rooms.get(room_id)._seeds()
         # 真人（0/1 座）：头像来自 stub 且各自不同；AI 空座（2/3）保持 PLAYER_SEED 固定
@@ -120,8 +160,11 @@ async def test_human_avatar_persists_ai_unchanged(server, fresh_rooms, temp_stor
         assert seeds[3]['avatar'] == 'avatars/young-master.svg'
         assert stub_avatar_fetch['n'] == 2   # 只在首次进房取图
 
-        # 持久化落库 + 跨房间复用（同一 player_id 不再重新取图）
+        # 持久化落库 + 跨房间复用（同一 player_id 不再重新取图）。
+        # 一人只能在一间房（ALREADY_IN_ROOM）：甲先离房（房主离开，房间解散）再进新房
         assert temp_storage.get_player_avatar('guest-1') == 'https://example.com/avatar/fake-1.jpg'
+        await http.post(f'/api/rooms/{room_id}/leave',
+                        json={'seat': joins['甲']['seat'], 'rejoinCode': joins['甲']['rejoinCode']})
         room2 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})).json()['roomId']
         await http.post(f'/api/rooms/{room2}/join', json={'nickname': '甲', 'playerId': 'guest-1'})
         seeds2 = rooms.get(room2)._seeds()

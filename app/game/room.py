@@ -690,6 +690,17 @@ class RoomRegistry:
         """当前在册房间数（房间数上限检查用）。"""
         return len(self._rooms)
 
+    def find_room_by_player(self, player_id: str) -> Optional[RoomSession]:
+        """按匿名身份（guestId）定位其所在房间：该 player_id 是否已在某房间占座。
+
+        用于阻止「已在房间/对局中的玩家再开新房」（跨标签页 / 绕过前端守卫）。
+        """
+        for room in self._rooms.values():
+            for state in room.seats:
+                if state is not None and state.player_id == player_id:
+                    return room
+        return None
+
     def _maybe_sweep(self) -> None:
         now = time.monotonic()
         if now - self._last_sweep < self._sweep_interval:

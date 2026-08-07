@@ -2,6 +2,7 @@
 
 Phase 6 起房间生命周期由本层接管：
 - POST   /api/rooms            创建房间（mode / capacity），签发 6 位房间码
+- GET    /api/rooms/meta       服务器房间容量（active 在册数 / max 上限，大厅「剩余房间」用）
 - GET    /api/rooms/{id}       房间详情 + 座位表 + 准备状态
 - POST   /api/rooms/{id}/join  加入（占座 + 签发 rejoinCode，写 room_seats 落库）
 - POST   /api/rooms/{id}/leave 离开（释放座位）
@@ -117,6 +118,18 @@ def create_room(body: CreateRoomRequest) -> dict:
     storage.create_room(room_id, body.mode, body.capacity)
     storage.update_room_status(room_id, 'lobby')
     return _room_response(room)
+
+
+@router.get('/meta')
+def get_room_meta() -> dict:
+    """服务器房间容量：active = 当前在册房间数，max = 上限。
+
+    客户端大厅展示「剩余房间」用。先清扫到期房间，保证计数与实际可建槽位一致
+    （对齐 create_room 的 ROOM_LIMIT_REACHED 判定）。定义在 /{room_id} 之前，
+    避免「meta」被当作房间码匹配。
+    """
+    room_registry.sweep_expired()
+    return {'active': room_registry.count(), 'max': MAX_ROOMS}
 
 
 @router.get('/{room_id}')

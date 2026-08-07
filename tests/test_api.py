@@ -87,6 +87,21 @@ async def test_room_count_limit(server, fresh_rooms, temp_storage):
 
 
 @pytest.mark.asyncio
+async def test_room_meta_count(server, fresh_rooms, temp_storage):
+    """GET /api/rooms/meta 返回在册房间数与上限，随建房递增（大厅「剩余房间」数据源）。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        resp = await http.get('/api/rooms/meta')
+        assert resp.status_code == 200
+        assert resp.json() == {'active': 0, 'max': 4}
+
+        for _ in range(2):
+            resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
+            assert resp.status_code == 200, resp.text
+        resp = await http.get('/api/rooms/meta')
+        assert resp.json() == {'active': 2, 'max': 4}
+
+
+@pytest.mark.asyncio
 async def test_join_leave_room(server, fresh_rooms, temp_storage):
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']

@@ -208,17 +208,12 @@ async def test_creator_leave_during_match_keeps_room(server, fresh_rooms, temp_s
         for nickname in ('甲', '乙', '丙', '丁'):
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
-        for join in joins.values():
-            await http.post(f'/api/rooms/{room_id}/ready',
-                            json={'seat': join['seat'], 'rejoinCode': join['rejoinCode']})
         room = rooms.get(room_id)
         assert room is not None
-        room.pace = {}
-        resp = await http.post(f'/api/rooms/{room_id}/start')
-        assert resp.status_code == 200, resp.text
-        assert room.status == 'playing'
+        # 模拟对局进行中（不真实开局，避免 pace={} 下对局秒结束的时序竞争）
+        room.status = 'playing'
 
-        # 房主（甲，seat 0）对局中离开 → 不散房
+        # 房主（甲，seat 0）对局中离开 → 不散房（仍有其他玩家）
         resp = await http.post(f'/api/rooms/{room_id}/leave',
                                json={'seat': joins['甲']['seat'],
                                      'rejoinCode': joins['甲']['rejoinCode']})
@@ -446,6 +441,52 @@ async def test_non_creator_can_rejoin_finished_room(server, fresh_rooms, temp_st
         # 房主身份未被转移
         info = (await http.get(f'/api/rooms/{room_id}')).json()
         assert info['creatorSeat'] == joins['甲']['seat']
+
+
+@pytest.mark.asyncio
+async def test_all_leave_releases_room(server, fresh_rooms, temp_storage):
+    """全员离开（非对局中）→ 房间立即释放，不占槽位。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        joins = {}
+        for nickname in ('甲', '乙'):
+            joins[nickname] = (await http.post(
+                f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
+        # 非房主先离 → 房间保留
+        await http.post(f'/api/rooms/{room_id}/leave',
+                        json={'seat': joins['乙']['seat'], 'rejoinCode': joins['乙']['rejoinCode']})
+        assert rooms.get(room_id) is not None
+        # 房主再离 → 房间解散
+        await http.post(f'/api/rooms/{room_id}/leave',
+                        json={'seat': joins['甲']['seat'], 'rejoinCode': joins['甲']['rejoinCode']})
+        assert rooms.get(room_id) is None
+
+
+@pytest.mark.asyncio
+async def test_all_exit_mid_match_releases_room(server, fresh_rooms, temp_storage):
+    """对局进行中全员退出 → 房间立即释放（不等到对局结束、不占槽位）。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        joins = {}
+        for nickname in ('甲', '乙'):
+            joins[nickname] = (await http.post(
+                f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
+        for j in joins.values():
+            await http.post(f'/api/rooms/{room_id}/ready',
+                            json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
+        room = rooms.get(room_id)
+        assert room is not None
+        room.pace = {}
+        await http.post(f'/api/rooms/{room_id}/start')
+        assert room.status == 'playing'
+
+        # 全员退出（房主先退 → AI 代打房间保留；最后一人退 → 立即释放）
+        for nickname in ('甲', '乙'):
+            await http.post(f'/api/rooms/{room_id}/leave',
+                            json={'seat': joins[nickname]['seat'],
+                                  'rejoinCode': joins[nickname]['rejoinCode']})
+        # 房间应立刻被释放（无论对局是否已打完），不等到 60 分钟 deadline
+        assert rooms.get(room_id) is None
 
 
 @pytest.mark.asyncio

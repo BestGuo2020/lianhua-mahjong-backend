@@ -296,6 +296,10 @@ class RoomSession:
         self.creator_seat = next(
             (s.seat for s in self.seats if s is not None), None)
 
+    def has_humans(self) -> bool:
+        """是否还有真人占座（seat 表即真人座位；全空则房间无意义，可立即释放）。"""
+        return any(s is not None for s in self.seats)
+
     def ready_seat(self, seat: int, ready: Optional[bool] = None) -> bool:
         """REST ready：设置座位准备态（缺省 toggle）。返回新状态。"""
         state = self.seats[seat]

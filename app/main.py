@@ -9,7 +9,14 @@ from app.api.moderation import router as moderation_router
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
 
-app = FastAPI(title="莲花广麻 Backend", version="0.2.0")
+import os
+import logging
+
+DOCS_SHOW = os.getenv('DOCS_SHOW', 'False') == 'True'
+logger = logging.getLogger("uvicorn.error")
+logger.info(f"api文档开启: {DOCS_SHOW}")
+
+app = FastAPI(title="莲花广麻 Backend", version="0.2.0", docs_url="/docs" if DOCS_SHOW else None)
 
 # 开发期跨域：Vite dev server (:4173) → 后端 REST。生产同源部署时由网关收窄。
 app.add_middleware(

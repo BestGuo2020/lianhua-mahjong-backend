@@ -161,6 +161,9 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'honba': mgr.honba if mgr else 0,
         'dice': mgr.dice if mgr else [1, 1],
         'wallCount': len(mgr.wall) if mgr else 0,
+        # 牌山整墙（摸牌顺序，已按骰子拆墙旋转）；拷贝避免 _take_tile 原地 pop 污染快照。
+        # 牌山背面朝上，下发不含作弊信息，无需按座位隐藏。
+        'wall': list(mgr.wall) if mgr else [],
         'currentPlayer': mgr.current_player if mgr else -1,
         'players': players,
         'seat': seat,

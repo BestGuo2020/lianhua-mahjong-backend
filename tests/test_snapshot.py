@@ -98,6 +98,10 @@ async def test_snapshot_precedes_turn_request(server, fresh_rooms):
         # 快照携带该局基础状态
         assert snap['round'] >= 1 and snap['dealer'] == 0
         assert isinstance(snap['wallCount'], int)
+        # 牌山整墙：数组长度与 wallCount 一致，元素为牌字符串（3D 牌山渲染数据源）
+        assert 0 <= snap['wallCount'] <= 136
+        assert len(snap['wall']) == snap['wallCount']
+        assert all(isinstance(t, str) and t for t in snap['wall'])
     finally:
         await safe_close(a)
 

@@ -97,9 +97,11 @@ BLOOD_FLOW_TIMING: dict[str, int] = {
 BLOOD_FLOW_PACE: dict[str, int] = {
     'aiThinkTurn': 650,            # AI 出牌思考（对齐 AI_DELAYS.turn）
     'aiThinkClaim': 500,           # AI 碰/杠/抢响应思考（对齐 AI_DELAYS.claim）
+    'aiThinkKong': 550,            # AI 杠后补摸再出牌（对齐 AI_DELAYS.after_kong）
     'afterDiscardToNextTurn': 450,  # 弃牌到下家
     'afterClaimPeng': 650,          # 碰/吃后
-    'afterClaimGang': 550,          # 明杠后
+    'afterClaimGang': 550,          # AI 明杠后
+    'afterClaimGangHuman': 350,     # 真人明杠后（经典对真人缩短）
     'afterKongSettle': 600,         # 暗杠/补杠/乱风杠后
     'beforeRobKong': 650,           # 补杠到抢杠窗口
     # 胡牌表现：血流本地 bloodFlowWinTiming（经典单胡无此档位，取本地为准）

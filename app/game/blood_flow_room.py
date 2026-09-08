@@ -337,8 +337,14 @@ class BloodFlowRoomSession:
             if seat in self.llm_seats:
                 action = await self._llm_action(engine, seat)
             if action is None:
-                # AI 思考停顿：出牌/碰杠响应分档（对齐经典 AI_DELAYS）。
-                await self._pace('aiThinkTurn' if engine.window['kind'] == 'turn' else 'aiThinkClaim')
+                # AI 思考停顿：出牌/杠后补摸/碰杠响应分档（对齐经典 AI_DELAYS）。
+                if engine.window['kind'] != 'turn':
+                    think_key = 'aiThinkClaim'
+                elif engine.kong_bloom:
+                    think_key = 'aiThinkKong'
+                else:
+                    think_key = 'aiThinkTurn'
+                await self._pace(think_key)
                 action = _bot_policy(self, engine, seat)
             if action is not None and engine.window and engine.window['id'] == window['id'] \
                     and engine.window['decisions'][seat] is None:
@@ -386,12 +392,13 @@ class BloodFlowRoomSession:
                 and len(engine.actions) == prev_action_count:
             return self.pace.get('beforeRobKong', 0)
         if len(engine.actions) > prev_action_count:
-            latest = engine.actions[-1]['type']
-            if latest == 'discard-gang':
-                return self.pace.get('afterClaimGang', 0)
-            if latest in ('concealed-gang', 'added-gang', 'wind-kong'):
+            latest = engine.actions[-1]
+            if latest['type'] == 'discard-gang':
+                return self.pace.get('afterClaimGangHuman' if self._human_seat(latest['actorIndex'])
+                                    else 'afterClaimGang', 0)
+            if latest['type'] in ('concealed-gang', 'added-gang', 'wind-kong'):
                 return self.pace.get('afterKongSettle', 0)
-            if latest in ('peng', 'chi'):
+            if latest['type'] in ('peng', 'chi'):
                 return self.pace.get('afterClaimPeng', 0)
         if len(engine.discard_actions) > prev_discard_count:
             return self.pace.get('afterDiscardToNextTurn', 0)

@@ -14,7 +14,7 @@ from typing import Optional
 
 from loguru import logger
 
-from app.core.blood_flow.config import BLOOD_FLOW_CONFIG
+from app.core.blood_flow.config import BLOOD_FLOW_CONFIG, BLOOD_FLOW_PACE, BLOOD_FLOW_TIMING
 from app.game.blood_flow_engine import (SEATS, BloodFlowEngine, next_seat,
                                         window_complete)
 from app.game.room import RoomError
@@ -92,9 +92,15 @@ class BloodFlowRoomSession:
         self.player_count = capacity
         self.ruleset_id = ruleset_id
         self.table_theme = 'jade'
-        # 经典房间 pace 是 dict；血流只用整数毫秒节奏（dict 一律视为 0/测试节奏）。
-        self.pace = pace if isinstance(pace, int) else 0
-        self.decision_ms = 15_000
+        # 节奏：经典房间注入的是经典节奏表（dict）→ 血流用自带节奏表；0 = 测试/无节奏。
+        if isinstance(pace, dict):
+            self.pace: dict[str, int] = dict(BLOOD_FLOW_PACE)
+        else:
+            self.pace = dict(BLOOD_FLOW_PACE) if pace else {}
+        # 联机决策窗口对齐前端 remoteDecisionMs（含网络余量）。
+        self.decision_ms = BLOOD_FLOW_TIMING['remoteDecisionMs']
+        # 真人回合倒计时（墙钟毫秒；无真人待决策的窗口为 0 → 前端不显示读秒）。
+        self._window_deadline_ms = 0
         # 开局动画：每局第一份快照带骰点，等在线真人回执 opening_done 再开打（兜底超时）。
         self.opening_timeout = 60.0
         self._round_opening: Optional[dict] = None
@@ -331,6 +337,8 @@ class BloodFlowRoomSession:
             if seat in self.llm_seats:
                 action = await self._llm_action(engine, seat)
             if action is None:
+                # AI 思考停顿：真人房间下让动作可读，避免机器人瞬移。
+                await self._pace('aiThink')
                 action = _bot_policy(self, engine, seat)
             if action is not None and engine.window and engine.window['id'] == window['id'] \
                     and engine.window['decisions'][seat] is None:
@@ -338,25 +346,84 @@ class BloodFlowRoomSession:
 
         await asyncio.gather(*(resolve(s) for s in pending))
 
+    async def _pace(self, key: str) -> None:
+        """节奏停顿（毫秒）；pace 为 0（测试）时直接返回。"""
+        if not self.pace:
+            return
+        delay = self.pace.get(key, 0)
+        if delay:
+            await asyncio.sleep(delay / 1000)
+
+    def _win_pause_ms(self, batch: dict) -> int:
+        """胡牌表现时长：对齐前端 bloodFlowWinTiming(tier).duration + 多响引言 + 交接余量。"""
+        tier = 0
+        for record in batch['winners']:
+            weights = [item.weight for item in record['score'].items] or [1]
+            weight = max(weights)
+            tier = max(tier, 3 if weight >= 16 else 2 if weight >= 8 else 1 if weight >= 4 else 0)
+        if tier >= 2:
+            base = self.pace.get('winEffectTop' if tier == 3 else 'winEffectLarge', 2600)
+            duration = base - self.pace.get('winEffectDeduct', 620) + self.pace.get('winEffectTail', 1200)
+        else:
+            duration = self.pace.get('winEffectBase', 1815) + self.pace.get('winEffectTail', 1200)
+        multi = self.pace.get('multiWinIntro', 0) \
+            if batch['source']['kind'] == 'discard' and len(batch['winners']) > 1 else 0
+        return duration + multi + self.pace.get('winHandoffMargin', 0)
+
+    def _step_delay_ms(self, engine: BloodFlowEngine, prev_win_count: int) -> int:
+        """按刚发生的事选择停顿（胡 > 抢杠窗口 > 杠 > 碰/吃 > 摸牌 > 弃牌），毫秒。"""
+        if not self.pace:
+            return 0
+        wins = [e['batch'] for e in engine.ledger if e['kind'] == 'win']
+        if len(wins) > prev_win_count:
+            return self._win_pause_ms(wins[-1])
+        window = engine.window
+        if window is not None and window['source']['kind'] == 'added-kong':
+            return self.pace.get('beforeRobKong', 0)
+        latest = engine.actions[-1]['type'] if engine.actions else ''
+        if latest == 'discard-gang':
+            return self.pace.get('afterClaimGang', 0)
+        if latest in ('concealed-gang', 'added-gang', 'wind-kong'):
+            return self.pace.get('afterKongSettle', 0)
+        if latest in ('peng', 'chi'):
+            return self.pace.get('afterClaimPeng', 0)
+        if engine.draw_source is not None:
+            return self.pace.get('afterDraw', 0)
+        return self.pace.get('afterDiscardToNextTurn', 0)
+
+    def _human_pending(self, window: Optional[dict]) -> bool:
+        return bool(window) and any(window['options'][s] and window['decisions'][s] is None
+                                    and self._human_seat(s) for s in SEATS)
+
     async def _play_round(self, engine: BloodFlowEngine) -> None:
         while not engine.result and not self.closed:
             deadline = time.monotonic() + self.decision_ms / 1000
             last_broadcast: Optional[str] = None
             while not engine.result and not self.closed:
+                prev_win_count = sum(1 for e in engine.ledger if e['kind'] == 'win')
+                prev_window_id = engine.window['id'] if engine.window else None
                 # 非真人席位持续决策（逐席重读窗口：提交可能解决旧窗口并开新窗口）。
                 await self._decide_bots(engine)
                 if engine.window is None or window_complete(engine.window):
                     break
                 if engine.window and engine.window['id'] != last_broadcast:
+                    # 真人待决策的窗口：从「窗口真正出现」起重新计时，避免机器人耗时吃掉真人时间。
+                    if self._human_pending(engine.window):
+                        deadline = time.monotonic() + self.decision_ms / 1000
+                        self._window_deadline_ms = int(time.time() * 1000) + self.decision_ms
                     self.broadcast_snapshot()
                     last_broadcast = engine.window['id']
                 if time.monotonic() >= deadline:
                     engine.expire()
                     break
+                # 步进节奏：窗口已推进才停顿，按刚发生的动作给表现留时间（胡牌含多响引言）。
+                if engine.window['id'] != prev_window_id:
+                    delay_ms = self._step_delay_ms(engine, prev_win_count)
+                    if delay_ms:
+                        await asyncio.sleep(delay_ms / 1000)
                 await asyncio.sleep(0.05)
+            self._window_deadline_ms = 0
             self.broadcast_snapshot()
-            if self.pace:
-                await asyncio.sleep(self.pace / 1000)
 
     # ── 客户端消息 ──
 
@@ -379,10 +446,10 @@ class BloodFlowRoomSession:
             await asyncio.sleep(0.05)
 
     def _confirm_opening(self, seat: int, round_: Optional[int]) -> tuple[bool, str]:
-        """客户端「opening_done」：标记本局开局动画完成。"""
+        """客户端「opening_done」：标记本局开局动画完成（局号 1-based）。"""
         if self._opening_round is None:
             return True, ''
-        if round_ is not None and round_ != self._opening_round:
+        if round_ is not None and round_ != self._opening_round + 1:
             return True, ''  # 过期回执直接忽略（不报错，避免客户端噪声）
         self._opening_confirmations.add(seat)
         return True, ''
@@ -411,7 +478,7 @@ class BloodFlowRoomSession:
         按「当前局号」接纳（不依赖屏障是否已建立）：结算快照会广播多次，
         客户端可能早于屏障建立就回执，去重后不会重发。
         """
-        if round_ is not None and round_ != self.round_index:
+        if round_ is not None and round_ != self.round_index + 1:
             return True, ''
         self._continue_confirmations.add(seat)
         return True, ''
@@ -488,8 +555,16 @@ class BloodFlowRoomSession:
             return {}
         players = []
         for index, p in enumerate(engine.players):
+            # 座位元数据来自房间（昵称/头像/角色/人类或 AI），而不是引擎占位名。
+            state = self.seats[index]
+            is_llm = index in self.llm_seats
             players.append({
-                'name': p['name'], 'avatar': p['avatar'], 'score': p['score'], 'seat': p['seat'],
+                'name': state.nickname if state is not None else p['name'],
+                'avatar': state.avatar if state is not None else '',
+                'characterId': state.character_id if state is not None else 'deepseek',
+                'playerKind': 'human' if state is not None else ('llm' if is_llm else 'bot'),
+                'isLlm': is_llm,
+                'score': p['score'], 'seat': p['seat'],
                 'hand': list(p['hand']) if (index == seat or engine.result) else [],
                 'concealedTileCount': len(p['hand']),
                 'discards': list(p['discards']),
@@ -510,8 +585,8 @@ class BloodFlowRoomSession:
             'wallBreakIndex': engine.wall_break_index,
             'window': None if window is None else {
                 'id': window['id'], 'version': window['version'], 'kind': window['kind'],
-                # deadlineAt 引擎内用 inf 表示无超时；JSON 不接受 Infinity，快照收敛为 0（前端只读展示）。
-                'deadlineAt': 0 if window['deadlineAt'] == float('inf') else window['deadlineAt'],
+                # 真人待决策的窗口下发墙钟截止时间（前端读秒）；否则 0（JSON 不接受 Infinity）。
+                'deadlineAt': self._window_deadline_ms if self._human_pending(window) else 0,
                 'opensAt': window['opensAt'],
                 'source': dict(window['source']),
             },
@@ -542,7 +617,8 @@ class BloodFlowRoomSession:
         return {
             'kind': 'bf_snapshot',
             'view': self._seat_view(seat),
-            'round': self.round_index,
+            # 局号对玩家 1-based（东1局…）；回执按同一口径校验。
+            'round': self.round_index + 1,
             'mode': self.mode,
             'dealer': self.round_index % 4,
             'opening': self._round_opening,

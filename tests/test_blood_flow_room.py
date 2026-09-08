@@ -1,11 +1,15 @@
 """血流房间会话测试 —— REST 生命周期契约 + 快照对齐前端 seatView 形状 + 真人动作回路。"""
 
 import asyncio
+import time
 
 import pytest
 
-from app.core.blood_flow.config import BLOOD_FLOW_CONFIG
+from app.core.blood_flow.config import BLOOD_FLOW_CONFIG, BLOOD_FLOW_PACE
+from app.game.blood_flow_engine import BloodFlowEngine
 from app.game.room import room_registry
+from app.rules.blood_flow import BloodFlowRuleSet
+from tests.test_blood_flow_engine import make_opening
 
 
 def choose(view: dict) -> dict:
@@ -129,7 +133,7 @@ async def test_round_opening_payload_and_ready_barrier():
 
     first = await asyncio.wait_for(queue.get(), timeout=10)
     assert first['kind'] == 'bf_snapshot'
-    assert first['round'] == 0
+    assert first['round'] == 1, '局号对玩家应为 1-based（东1局）'
     assert first['opening'] is not None, '首份快照必须携带开局骰点'
     for key in ('firstDice', 'secondDice'):
         dice = first['opening'][key]
@@ -148,7 +152,7 @@ async def test_round_opening_payload_and_ready_barrier():
     assert room._opening_confirmations == set()
 
     # 正确回执：屏障放行，窗口推进。
-    ok, err = room.handle_client_message(0, {'kind': 'opening_done', 'round': 0})
+    ok, err = room.handle_client_message(0, {'kind': 'opening_done', 'round': 1})
     assert ok, err
     for _ in range(200):
         if room.engine and room.engine.window['id'] != window_id:
@@ -222,7 +226,7 @@ async def test_inter_round_continue_barrier():
     assert ok is True
     assert room._continue_confirmations == set()
 
-    ok, err = room.handle_client_message(0, {'kind': 'continue', 'round': 0})
+    ok, err = room.handle_client_message(0, {'kind': 'continue', 'round': 1})
     assert ok, err
     for _ in range(400):
         if room.round_index == 1:
@@ -255,6 +259,80 @@ async def test_inter_round_barrier_times_out_without_confirmation():
         if room.round_index >= 1:
             break
     assert room.round_index >= 1, '局间超时后应自动进入下一局'
+
+
+def test_pace_table_wired_for_real_rooms():
+    """REST 建房注入的经典节奏表（dict）→ 血流用自带节奏表；测试用 0 → 无节奏。"""
+    room = room_registry.create('BF-PACE', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow',
+                                pace={'afterDiscardToNextTurn': 450})
+    assert room.pace == BLOOD_FLOW_PACE
+    assert set(BLOOD_FLOW_PACE) >= {'aiThink', 'afterDraw', 'afterDiscardToNextTurn',
+                                    'afterClaimPeng', 'afterClaimGang', 'afterKongSettle',
+                                    'beforeRobKong', 'winEffectBase', 'winEffectLarge',
+                                    'winEffectTop', 'multiWinIntro'}
+    quiet = room_registry.create('BF-PACE-0', mode='east', capacity=4,
+                                 ruleset_id='lotus-blood-flow', pace=0)
+    assert quiet.pace == {}
+
+
+def test_step_delay_matches_local_timing():
+    room = room_registry.create('BF-PACE-K', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow', pace=BLOOD_FLOW_PACE)
+    hands = [
+        ['m7', 'm8', 'm9', 'p7', 'p8', 'p9', 's7', 's8', 's9', 'north', 'west', 'south', 'p4', 'm5'],
+        ['m3', 'm4', 'm5', 'm5', 'm5', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'east'],
+        ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9', 'east', 'south', 'west', 'north'],
+        ['m2', 'm6', 'm8', 'p3', 'p6', 'p9', 's2', 's5', 's8', 'red', 'green', 'white', 'north'],
+    ]
+    engine = BloodFlowEngine(authority_epoch='t', round_id='pace', rules=BloodFlowRuleSet(),
+                             opening=make_opening(hands=hands, wall_front=['north']))
+    # 开局摸牌后的首个窗口：摸牌档位。
+    assert room._step_delay_ms(engine, 0) == BLOOD_FLOW_PACE['afterDraw']
+    assert engine.submit(engine.command(0, {'kind': 'discard', 'index': 13}))
+    assert engine.submit(engine.command(1, {'kind': 'peng'}))
+    assert room._step_delay_ms(engine, 0) == BLOOD_FLOW_PACE['afterClaimPeng']
+
+    win_engine = BloodFlowEngine(authority_epoch='t', round_id='pace-win', rules=BloodFlowRuleSet(),
+                                 opening=make_opening(hands=hands, wall_front=['north']))
+    assert win_engine.submit(win_engine.command(0, {'kind': 'discard', 'index': 13}))
+    assert win_engine.submit(win_engine.command(1, {'kind': 'win'}))
+    # 平胡档：1815 + 1200 尾量 + 100 交接余量（对齐前端 bloodFlowWinTiming）。
+    assert room._step_delay_ms(win_engine, 0) == 1815 + 1200 + 100
+
+
+@pytest.mark.asyncio
+async def test_snapshot_players_carry_room_identity_and_fresh_deadline():
+    """玩家信息来自房间座位（昵称/角色/人类或 AI）；真人窗口的倒计时从窗口出现起算。"""
+    room = room_registry.create('BF-ID', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow', pace=0)
+    room.join_or_rejoin('阿甲', None, 'p1')
+    room.ready_seat(0, True)
+    queue: asyncio.Queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    room.on_connect(0)
+    room.decision_ms = 5_000
+    await room.start()
+
+    human_view = None
+    for _ in range(80):
+        message = await asyncio.wait_for(queue.get(), timeout=10)
+        if message.get('opening'):
+            room.handle_client_message(0, {'kind': 'opening_done', 'round': message['round']})
+        view = message['view']
+        # 开局动画期间窗口尚未计时（deadlineAt=0）；屏障放行后驱动重播快照才带读秒。
+        if view.get('window') and view.get('ownActions') and view['window'].get('deadlineAt'):
+            human_view = view
+            break
+    assert human_view is not None, '未等到带读秒的真人窗口'
+    players = human_view['players']
+    assert players[0]['name'] == '阿甲'
+    assert players[0]['playerKind'] == 'human'
+    assert players[0]['characterId'] == 'deepseek'
+    assert players[1]['playerKind'] == 'bot'
+    assert players[1]['isLlm'] is False
+    remaining = human_view['window']['deadlineAt'] - int(time.time() * 1000)
+    assert 0 < remaining <= 5_000, f'真人窗口剩余时间应从窗口出现起算: {remaining}'
 
 
 def test_stale_and_invalid_actions_rejected():

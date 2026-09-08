@@ -84,3 +84,31 @@ class BloodFlowAiConfig:
 
 
 BLOOD_FLOW_AI = BloodFlowAiConfig()
+
+# 计时（毫秒）：对齐前端 config.ts BLOOD_FLOW_TIMING。
+BLOOD_FLOW_TIMING: dict[str, int] = {
+    'normalDecisionMs': 15_000,
+    'remoteDecisionMs': 25_000,   # 联机回合决策窗口（含网络往返余量）
+    'winBeatMs': 450,
+    'recoveryGraceMs': 12_000,
+}
+
+# 真人联机房间的视觉节奏（毫秒）：对齐本地 PACE_MS / BLOOD_FLOW_TIMING，
+# 避免机器人瞬移、动作与胡牌表现来不及播。0 = 测试/无节奏。
+BLOOD_FLOW_PACE: dict[str, int] = {
+    'aiThink': 650,                 # AI 每次决策前的思考停顿（本地 paceMs 同值）
+    'afterDraw': 450,               # 摸牌到出牌窗口
+    'afterDiscardToNextTurn': 450,  # 弃牌到下家
+    'afterClaimPeng': 650,          # 碰/吃后
+    'afterClaimGang': 550,          # 明杠后
+    'afterKongSettle': 600,         # 暗杠/补杠/乱风杠后
+    'beforeRobKong': 650,           # 补杠到抢杠窗口
+    # 胡牌表现：对齐前端 bloodFlowWinTiming（tier<2 3015ms；tier2 3180ms；tier3 3480ms）
+    'winEffectBase': 1815,
+    'winEffectLarge': 2600,
+    'winEffectTop': 2900,
+    'winEffectDeduct': 620,
+    'winEffectTail': 1200,
+    'winHandoffMargin': 100,
+    'multiWinIntro': 1500,
+}

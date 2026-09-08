@@ -50,8 +50,10 @@ class BloodFlowRuleSet:
 
     def begin_round(self, *, dealer: int, dice: list[int], second_dice: list[int],
                     random=None, ring: list[TileType] | None = None) -> dict:
+        from app.core.tiles import shuffle as shuffle_tiles
+        ring_tiles = list(ring) if ring is not None else shuffle_tiles(create_wall(), random)
         result = build_lotus_wall(dealer=dealer, dice=dice, second_dice=second_dice,
-                                  random=random, ring=ring)
+                                  random=random, ring=ring_tiles)
         self.round_state = BloodFlowRoundState()
         self.round_state.flip_tile = result['flipTile']
         self.round_state.joker_tiles = result['jokers']
@@ -61,6 +63,8 @@ class BloodFlowRuleSet:
         self.round_state.wall_break_index = result['wallBreakIndex']
         self.round_state.first_dice = list(dice)
         self.round_state.second_dice = list(second_dice)
+        # 指示牌 + 底张（不公开）：与前端 flipTiles 同口径，参与 136 张守恒。
+        result['flipTiles'] = [result['flipTile'], ring_tiles[result['flipStack'] * 2 + 1]]
         return result
 
     # ── 旧 GameRuleSet 兼容桩 ──
@@ -95,11 +99,14 @@ class BloodFlowRuleSet:
 
     def evaluate_waits(self, concealed: list[TileType], melds: list[Meld],
                        jokers: list[TileType]) -> list[dict]:
-        return evaluate_waits(win_input_from_dict({
-            'concealed': concealed, 'melds': [m.model_dump(by_alias=True) for m in melds],
-            'winningTile': concealed[-1] if concealed else 'm1', 'source': 'self-draw',
-            'jokers': jokers, 'opening': None,
-        }), BLOOD_FLOW_CONFIG)
+        from app.core.blood_flow.types import WinEvaluationInput
+        return evaluate_waits(WinEvaluationInput(
+            concealed=tuple(concealed),
+            melds=tuple({'type': m.type, 'tile': m.tile, 'tiles': m.tiles,
+                         **({'windKong': True} if m.windKong else {})} for m in melds),
+            winning_tile=concealed[-1] if concealed else 'm1',  # evaluate_waits 逐牌覆盖，仅占位
+            source='self-draw', jokers=tuple(jokers), opening=None,
+        ), BLOOD_FLOW_CONFIG)
 
     def resolve_win_batch(self, *, authority_epoch: str, round_id: str, sequence: int,
                           window_id: str, source: dict, winners: list[dict],

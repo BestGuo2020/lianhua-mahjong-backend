@@ -374,7 +374,10 @@ class BloodFlowRoomSession:
             duration = self.pace.get('winEffectBase', 1815) + self.pace.get('winEffectTail', 1200)
         multi = self.pace.get('multiWinIntro', 0) \
             if batch['source']['kind'] == 'discard' and len(batch['winners']) > 1 else 0
-        return duration + multi + self.pace.get('winHandoffMargin', 0)
+        # 多响抢杠（补杠被抢）额外再停一轮，对齐经典 betweenRobKongs 的「逐家」读感。
+        rob_multi = self.pace.get('betweenRobKongs', 0) \
+            if batch['source']['kind'] == 'added-kong' and len(batch['winners']) > 1 else 0
+        return duration + multi + rob_multi + self.pace.get('winHandoffMargin', 0)
 
     def _step_delay_ms(self, engine: BloodFlowEngine, prev_win_count: int,
                        prev_discard_count: int, prev_action_count: int) -> int:

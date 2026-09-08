@@ -105,6 +105,7 @@ BLOOD_FLOW_PACE: dict[str, int] = {
     'afterClaimGangHuman': 350,     # 真人明杠后（经典对真人缩短）
     'afterKongSettle': 600,         # 暗杠/补杠/乱风杠后
     'beforeRobKong': 650,           # 补杠到抢杠窗口
+    'betweenRobKongs': 450,         # 多响抢杠：赢家批次之间停顿（对齐 PLAY_PACE）
     # 胡牌表现：血流本地 bloodFlowWinTiming（经典单胡无此档位，取本地为准）
     'winEffectBase': 1815,
     'winEffectLarge': 2600,

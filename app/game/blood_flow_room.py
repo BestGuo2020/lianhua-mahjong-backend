@@ -85,7 +85,7 @@ def _bot_policy(room: 'BloodFlowRoomSession', engine: BloodFlowEngine, seat: int
 class BloodFlowRoomSession:
     def __init__(self, room_id: str, mode: str = 'east', capacity: int = 4,
                  ruleset_id: str = 'lotus-blood-flow', storage=None,
-                 pace: int = 0, llm_enabled: bool = False):
+                 pace: int = 0, llm_enabled: bool = False, llm_request_fn=None):
         self.room_id = room_id
         self.mode = mode
         self.capacity = capacity
@@ -101,6 +101,9 @@ class BloodFlowRoomSession:
         self.llm_enabled = bool(llm_enabled)
         self.effective_llm_enabled = False
         self.llm_available = False
+        # LLM 席位：seat → LlmProviderConfig（baseUrl/apiKey/model/style/timeoutMs/...）。
+        self.llm_seats: dict[int, dict] = {}
+        self.llm_request = llm_request_fn
         self.seats: list[Optional[_Seat]] = [None] * 4
         self.conn = ConnectionManager()
         self.engine: Optional[BloodFlowEngine] = None
@@ -211,9 +214,28 @@ class BloodFlowRoomSession:
             return
         if not all(state.ready for state in self.seats if state is not None):
             raise RoomError('NOT_ALL_READY')
+        self._resolve_llm_seats(llm_seats or [], default_provider)
         self.match_started = True
         self.status = 'playing'
         self._drive_task = asyncio.ensure_future(self._drive())
+
+    def _resolve_llm_seats(self, llm_seats: list, default_provider: Optional[str]) -> None:
+        """服务端供应商解析：每席位 providerId（空用默认）→ LlmProviderConfig 字典。"""
+        from app.llm.config import default_provider_id, load_llm_providers, llm_server_available
+        self.llm_available = llm_server_available()
+        providers = load_llm_providers()
+        self.llm_seats = {}
+        if not providers:
+            return
+        fallback_id = default_provider or default_provider_id()
+        for entry in llm_seats:
+            seat = entry.get('seat')
+            provider_id = (entry.get('providerId') or '').strip().lower() or fallback_id
+            provider = providers.get(provider_id)
+            if provider is None or not isinstance(seat, int) or not 0 <= seat < 4:
+                continue
+            self.llm_seats[seat] = provider.to_config((entry.get('style') or '').strip())
+        self.effective_llm_enabled = bool(self.llm_seats)
 
     async def _drive(self) -> None:
         total = BLOOD_FLOW_CONFIG.rounds[self.mode]
@@ -245,19 +267,65 @@ class BloodFlowRoomSession:
         finally:
             self.engine = None
 
+    async def _llm_action(self, engine: BloodFlowEngine, seat: int) -> Optional[dict]:
+        """LLM 席位决策：候选 + 提示词 → 真实模型；失败/超时/非法选择返回 None（调用方回退 EV）。"""
+        if self.llm_request is None:
+            from app.llm.client import request_llm_decision
+            self.llm_request = request_llm_decision
+        cfg = self.llm_seats[seat]
+        try:
+            from app.core.blood_flow.ai import decide_blood_flow_action_ev
+            from app.core.blood_flow.config import BLOOD_FLOW_AI
+            from app.llm.blood_flow_candidates import (build_blood_flow_candidates,
+                                                       build_blood_flow_prompt, ev_features_for)
+            view = self._seat_view(seat)
+            request_id = f'llm/{self.room_id}/{engine.round_id}/{engine.window["id"]}/{seat}'
+            suggestion = decide_blood_flow_action_ev(view, BLOOD_FLOW_AI)
+            built = build_blood_flow_candidates(view, request_id, suggestion=suggestion,
+                                                ev_by_key=ev_features_for(view))
+            candidate_ids = [c['id'] for c in built['candidates']]
+            if not candidate_ids:
+                return None
+            system, user = build_blood_flow_prompt(cfg.style, view, built)
+            timeout_ms = max(2_000, min(int(cfg.timeout_s * 1000), self.decision_ms - 500))
+            choice, _message = await asyncio.wait_for(
+                self.llm_request(cfg, system, user, candidate_ids, False),
+                timeout=timeout_ms / 1000)
+            match = next((c for c in built['candidates'] if c['id'] == choice), None)
+            return match['action'] if match is not None else None
+        except Exception as exc:  # noqa: BLE001 - 任何失败都回退 EV，不阻塞对局
+            logger.bind(room_id=self.room_id, seat=seat).warning(f'LLM 决策失败回退 EV：{exc}')
+            return None
+
+    async def _decide_bots(self, engine: BloodFlowEngine) -> None:
+        """非真人席位决策：LLM 席位走模型（并行），其余走 EV；提交前重验窗口。"""
+        window = engine.window
+        if not window:
+            return
+        pending = [s for s in SEATS if window['options'][s] and window['decisions'][s] is None
+                   and not self._human_seat(s)]
+        if not pending:
+            return
+
+        async def resolve(seat: int) -> None:
+            action: Optional[dict] = None
+            if seat in self.llm_seats:
+                action = await self._llm_action(engine, seat)
+            if action is None:
+                action = _bot_policy(self, engine, seat)
+            if action is not None and engine.window and engine.window['id'] == window['id'] \
+                    and engine.window['decisions'][seat] is None:
+                engine.submit(engine.command(seat, action))
+
+        await asyncio.gather(*(resolve(s) for s in pending))
+
     async def _play_round(self, engine: BloodFlowEngine) -> None:
         while not engine.result and not self.closed:
             deadline = time.monotonic() + self.decision_ms / 1000
             last_broadcast: Optional[str] = None
             while not engine.result and not self.closed:
-                # 机器人席位持续提交（逐席重读窗口：提交可能解决旧窗口并开新窗口）。
-                progressed = False
-                for seat in SEATS:
-                    window = engine.window
-                    if window and window['options'][seat] and window['decisions'][seat] is None \
-                            and not self._human_seat(seat):
-                        if engine.submit(engine.command(seat, _bot_policy(self, engine, seat))):
-                            progressed = True
+                # 非真人席位持续决策（逐席重读窗口：提交可能解决旧窗口并开新窗口）。
+                await self._decide_bots(engine)
                 if engine.window is None or window_complete(engine.window):
                     break
                 if engine.window and engine.window['id'] != last_broadcast:

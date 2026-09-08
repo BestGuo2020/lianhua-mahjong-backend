@@ -53,8 +53,8 @@ class BloodFlowRoomError(Exception):
     pass
 
 
-def _bot_policy(engine: BloodFlowEngine, seat: int) -> dict:
-    """空座代打策略（M4 替换为 EV 策略翻译）：锁手自动 + 见胡就胡 + 首张普通弃牌。"""
+def _fallback_policy(engine: BloodFlowEngine, seat: int) -> dict:
+    """兜底代打策略：锁手自动 + 见胡就胡 + 首张普通弃牌（EV 决策失败时使用）。"""
     window = engine.window
     options = window['options'][seat]
     win = next((a for a in options if a['kind'] == 'win'), None)
@@ -70,6 +70,19 @@ def _bot_policy(engine: BloodFlowEngine, seat: int) -> dict:
                     if engine.players[seat]['hand'][a['index']] not in {*engine.jokers, 'white'}]
         return (ordinary or discards)[0]
     return next((a for a in options if a['kind'] == 'pass'), options[0])
+
+
+def _bot_policy(room: 'BloodFlowRoomSession', engine: BloodFlowEngine, seat: int) -> dict:
+    """空座代打：EV 策略翻译版（M4）；异常/空决策回退规则策略。"""
+    try:
+        from app.core.blood_flow.ai import decide_blood_flow_action_ev
+        from app.core.blood_flow.config import BLOOD_FLOW_AI
+        decision = decide_blood_flow_action_ev(room._seat_view(seat), BLOOD_FLOW_AI)
+        if decision is not None and decision in engine.window['options'][seat]:
+            return decision
+    except Exception:
+        logger.bind(room_id=room.room_id, seat=seat).warning('EV 代打异常，回退规则策略')
+    return _fallback_policy(engine, seat)
 
 
 class BloodFlowRoomSession:
@@ -228,7 +241,7 @@ class BloodFlowRoomSession:
                     window = engine.window
                     if window and window['options'][seat] and window['decisions'][seat] is None \
                             and not self._human_seat(seat):
-                        if engine.submit(engine.command(seat, _bot_policy(engine, seat))):
+                        if engine.submit(engine.command(seat, _bot_policy(self, engine, seat))):
                             progressed = True
                 if engine.window is None or window_complete(engine.window):
                     break

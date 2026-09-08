@@ -61,3 +61,26 @@ class BloodFlowConfig:
 
 
 BLOOD_FLOW_CONFIG = BloodFlowConfig()
+
+
+@dataclass(frozen=True)
+class BloodFlowAiConfig:
+    """血流本地 AI 贪婪 EV 参数（对齐前端 config.ts BLOOD_FLOW_AI）。"""
+    strategy: str = 'ev'
+    minimum_first_payment: int = 0
+    self_draw_weight: int = 6
+    first_win_floor_early: int = 40
+    first_win_floor_mid: int = 20
+    first_win_floor_late: int = 10
+    late_game_wall_count: int = 15
+    early_game_wall_count: int = 40
+    potential_floor: float = 2.0
+    reform_gain_ratio: float = 1.2
+    chain_horizon: int = 8
+    safety_cost_none: float = 0.25
+    safety_cost_one: float = 0.1
+    safety_cost_safe: float = 0.0
+    llm_ev_features: bool = True
+
+
+BLOOD_FLOW_AI = BloodFlowAiConfig()

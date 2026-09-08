@@ -66,6 +66,7 @@ async def auto_player(ws, name: str) -> dict:
     snapshots = 0
     actions = 0
     windows = set()
+    continued: set[int] = set()
     errors = []
     kinds: dict[str, int] = {}
     final = None
@@ -79,6 +80,14 @@ async def auto_player(ws, name: str) -> dict:
             snapshots += 1
             view = msg.get('view') or {}
             windows.add((view.get('roundId'), view.get('window') and view['window'].get('id')))
+            if msg.get('opening'):
+                # 开局动画就绪回执（服务端屏障）。
+                await ws.send(json.dumps({'kind': 'opening_done', 'round': msg.get('round')}))
+            if (view.get('public') or {}).get('roundResult') \
+                    and (msg.get('round') or 0) not in continued:
+                # 局间过场回执：确认进入下一局（末局无需，服务端忽略）。
+                continued.add(msg.get('round') or 0)
+                await ws.send(json.dumps({'kind': 'continue', 'round': msg.get('round')}))
             if view.get('window') and view.get('ownActions'):
                 window_id = view['window']['id']
                 if window_id != handled:

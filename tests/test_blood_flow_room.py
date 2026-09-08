@@ -172,6 +172,82 @@ async def test_opening_barrier_times_out_without_confirmation():
     assert room.engine is not None and room.engine.window['id'] != window_id
 
 
+@pytest.mark.asyncio
+async def test_inter_round_continue_barrier():
+    """局末结算后等在线真人回执 continue 再开下一局；过期回执忽略，超时兜底。"""
+    room = room_registry.create('BF-CONT', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow', pace=0)
+    room.join_or_rejoin('玩家1', None, 'p1')
+    room.ready_seat(0, True)
+    queue: asyncio.Queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    room.on_connect(0)
+    room.opening_timeout = 0.2
+    room.decision_ms = 300
+    room.continue_timeout = 5.0
+    await room.start()
+
+    settlement = None
+    for _ in range(6000):  # 最多 ~120s 打完第一局
+        try:
+            message = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(0.02)
+            continue
+        if message.get('kind') != 'bf_snapshot':
+            continue
+        if message.get('opening'):
+            room.handle_client_message(0, {'kind': 'opening_done', 'round': message['round']})
+        if (message.get('view') or {}).get('public', {}).get('roundResult'):
+            settlement = message
+            break
+    assert settlement is not None, '未收到局末结算快照'
+    assert room.round_index == 0
+
+    # 屏障期：未回执不进下一局。
+    await asyncio.sleep(0.6)
+    assert room.round_index == 0
+
+    # 过期回执忽略（不报错、不放行）。
+    ok, _ = room.handle_client_message(0, {'kind': 'continue', 'round': 99})
+    assert ok is True
+    assert room._continue_confirmations == set()
+
+    ok, err = room.handle_client_message(0, {'kind': 'continue', 'round': 0})
+    assert ok, err
+    for _ in range(400):
+        if room.round_index == 1:
+            break
+        await asyncio.sleep(0.05)
+    assert room.round_index == 1, '回执后应进入下一局'
+
+
+@pytest.mark.asyncio
+async def test_inter_round_barrier_times_out_without_confirmation():
+    room = room_registry.create('BF-CONT-TO', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow', pace=0)
+    room.join_or_rejoin('玩家1', None, 'p1')
+    room.ready_seat(0, True)
+    queue: asyncio.Queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    room.on_connect(0)
+    room.opening_timeout = 0.2
+    room.decision_ms = 200
+    room.continue_timeout = 0.2  # 局间兜底极短
+    await room.start()
+    for _ in range(6000):
+        try:
+            message = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(0.02)
+            continue
+        if message.get('kind') == 'bf_snapshot' and message.get('opening'):
+            room.handle_client_message(0, {'kind': 'opening_done', 'round': message['round']})
+        if room.round_index >= 1:
+            break
+    assert room.round_index >= 1, '局间超时后应自动进入下一局'
+
+
 def test_stale_and_invalid_actions_rejected():
     room = room_registry.create('BF-ERR', mode='east', capacity=4,
                                 ruleset_id='lotus-blood-flow', pace=0)

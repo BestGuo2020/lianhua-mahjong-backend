@@ -40,6 +40,7 @@ async def auto_player(ws, timeout: float = 30.0) -> dict:
     snapshots = 0
     actions = 0
     handled: str | None = None
+    continued: set[int] = set()
     errors: list[str] = []
     final = None
     while True:
@@ -59,6 +60,11 @@ async def auto_player(ws, timeout: float = 30.0) -> dict:
         if msg.get('opening'):
             # 开局动画就绪回执：服务端屏障等所有在线真人确认后才开打。
             await ws.send(json.dumps({'kind': 'opening_done', 'round': msg.get('round')}))
+        round_result = (view.get('public') or {}).get('roundResult')
+        if round_result and (msg.get('round') or 0) not in continued:
+            # 局间过场回执：结算页确认下一局（末局由 matchFinished 收尾，不需回执）。
+            continued.add(msg.get('round') or 0)
+            await ws.send(json.dumps({'kind': 'continue', 'round': msg.get('round')}))
         if view.get('window') and view.get('ownActions'):
             window_id = view['window']['id']
             if window_id != handled:

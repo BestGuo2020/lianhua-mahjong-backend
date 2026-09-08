@@ -100,6 +100,9 @@ class BloodFlowRoomSession:
         self._round_opening: Optional[dict] = None
         self._opening_round: Optional[int] = None
         self._opening_confirmations: set[int] = set()
+        # 局间过场：结算后等在线真人回执 continue 再开下一局（兜底超时）。
+        self.continue_timeout = 60.0
+        self._continue_confirmations: set[int] = set()
         self.status = 'lobby'
         self.creator_seat: Optional[int] = None
         self.lifetime = 600
@@ -260,16 +263,18 @@ class BloodFlowRoomSession:
                 }
                 self._opening_round = round_index
                 self._opening_confirmations = set()
+                self._continue_confirmations = set()
                 self.broadcast_snapshot()
                 self._round_opening = None
                 await self._wait_for_openings()
                 await self._play_round(engine)
                 self.scores = list(engine.result['endingScores'])
                 self.round_result = engine.result
-                self.engine = None
+                # 结算快照：引擎仍在位，view 带 public.roundResult（前端据此弹结算面板）。
                 self.broadcast_snapshot()
-                if self.pace:
-                    await asyncio.sleep(self.pace / 1000 * 3)
+                if round_index + 1 < total:
+                    await self._wait_for_continues()
+                self.engine = None
             self.match_finished = True
             self.status = 'finished'
             self.broadcast_snapshot()
@@ -382,9 +387,40 @@ class BloodFlowRoomSession:
         self._opening_confirmations.add(seat)
         return True, ''
 
+    async def _wait_for_continues(self) -> None:
+        """局间过场屏障：等在线真人确认「下一局」再开新局，兜底超时防卡死。"""
+        humans = [s for s in range(self.capacity)
+                  if self.seats[s] is not None and self.seats[s].controller.connected]
+        if not humans:
+            return
+        deadline = time.monotonic() + self.continue_timeout
+        while not self.closed:
+            pending = [s for s in humans if s not in self._continue_confirmations
+                       and self.seats[s] is not None and self.seats[s].controller.connected]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                logger.bind(room_id=self.room_id).warning(
+                    f'局间等待超时，直接开下一局 pending={pending}')
+                return
+            await asyncio.sleep(0.05)
+
+    def _confirm_continue(self, seat: int, round_: Optional[int]) -> tuple[bool, str]:
+        """客户端「continue」：确认进入下一局。
+
+        按「当前局号」接纳（不依赖屏障是否已建立）：结算快照会广播多次，
+        客户端可能早于屏障建立就回执，去重后不会重发。
+        """
+        if round_ is not None and round_ != self.round_index:
+            return True, ''
+        self._continue_confirmations.add(seat)
+        return True, ''
+
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         if message.get('kind') == 'opening_done':
             return self._confirm_opening(seat, message.get('round'))
+        if message.get('kind') == 'continue':
+            return self._confirm_continue(seat, message.get('round'))
         if message.get('kind') != 'action':
             return False, 'INVALID_MESSAGE'
         engine = self.engine

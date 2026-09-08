@@ -95,6 +95,11 @@ class BloodFlowRoomSession:
         # 经典房间 pace 是 dict；血流只用整数毫秒节奏（dict 一律视为 0/测试节奏）。
         self.pace = pace if isinstance(pace, int) else 0
         self.decision_ms = 15_000
+        # 开局动画：每局第一份快照带骰点，等在线真人回执 opening_done 再开打（兜底超时）。
+        self.opening_timeout = 60.0
+        self._round_opening: Optional[dict] = None
+        self._opening_round: Optional[int] = None
+        self._opening_confirmations: set[int] = set()
         self.status = 'lobby'
         self.creator_seat: Optional[int] = None
         self.lifetime = 600
@@ -248,7 +253,16 @@ class BloodFlowRoomSession:
                     rules=rules, dealer=round_index % 4, scores=self.scores)
                 self.engine = engine
                 self.round_result = None
+                # 开局动画：首份快照携带骰点，随后清空（后续快照不带，避免重复触发动画）。
+                self._round_opening = {
+                    'firstDice': list(engine.dice or [1, 1]),
+                    'secondDice': list(engine.second_dice or [1, 1]),
+                }
+                self._opening_round = round_index
+                self._opening_confirmations = set()
                 self.broadcast_snapshot()
+                self._round_opening = None
+                await self._wait_for_openings()
                 await self._play_round(engine)
                 self.scores = list(engine.result['endingScores'])
                 self.round_result = engine.result
@@ -341,7 +355,36 @@ class BloodFlowRoomSession:
 
     # ── 客户端消息 ──
 
+    async def _wait_for_openings(self) -> None:
+        """开局就绪屏障：等在线真人回执 opening_done 再开打，兜底超时防卡死。"""
+        humans = [s for s in range(self.capacity)
+                  if self.seats[s] is not None and self.seats[s].controller.connected]
+        if not humans:
+            return
+        deadline = time.monotonic() + self.opening_timeout
+        while not self.closed:
+            pending = [s for s in humans if s not in self._opening_confirmations
+                       and self.seats[s] is not None and self.seats[s].controller.connected]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                logger.bind(room_id=self.room_id).warning(
+                    f'开局动画等待超时，直接开打 pending={pending}')
+                return
+            await asyncio.sleep(0.05)
+
+    def _confirm_opening(self, seat: int, round_: Optional[int]) -> tuple[bool, str]:
+        """客户端「opening_done」：标记本局开局动画完成。"""
+        if self._opening_round is None:
+            return True, ''
+        if round_ is not None and round_ != self._opening_round:
+            return True, ''  # 过期回执直接忽略（不报错，避免客户端噪声）
+        self._opening_confirmations.add(seat)
+        return True, ''
+
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
+        if message.get('kind') == 'opening_done':
+            return self._confirm_opening(seat, message.get('round'))
         if message.get('kind') != 'action':
             return False, 'INVALID_MESSAGE'
         engine = self.engine
@@ -464,6 +507,7 @@ class BloodFlowRoomSession:
             'round': self.round_index,
             'mode': self.mode,
             'dealer': self.round_index % 4,
+            'opening': self._round_opening,
             'matchFinished': self.match_finished,
             'roundResult': self._serializable_result(self.round_result) if self.round_result else None,
         }

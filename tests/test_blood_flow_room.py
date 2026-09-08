@@ -75,6 +75,11 @@ async def test_human_action_loop_over_snapshot_contract():
         view = message['view']
         seen_fields.update(view.keys())
         assert message['mode'] == 'east'
+        if message.get('opening'):
+            ok, err = room.handle_client_message(0, {
+                'kind': 'opening_done', 'round': message['round'],
+            })
+            assert ok, err
         if view.get('window') and view.get('ownActions'):
             window_id = view['window']['id']
             if window_id == handled_window:
@@ -97,6 +102,74 @@ async def test_human_action_loop_over_snapshot_contract():
             'public', 'actionEvents', 'lastDiscardAction', 'kongEvents'} <= seen_fields
     assert room.match_finished is True
     assert sum(room.scores) == BLOOD_FLOW_CONFIG.initial_score * 4
+
+
+@pytest.mark.asyncio
+async def test_round_opening_payload_and_ready_barrier():
+    """每局首份快照带骰点；真人未回执 opening_done 前不开打（回执后放行，超时兜底）。"""
+    room = room_registry.create('BF-OPEN', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow', pace=0)
+    room.join_or_rejoin('玩家1', None, 'p1')
+    room.ready_seat(0, True)
+    queue: asyncio.Queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    room.on_connect(0)
+    room.opening_timeout = 5.0
+    room.decision_ms = 1_000  # 屏障放行后靠过期推进窗口，测试不必等 15s
+    await room.start()
+
+    first = await asyncio.wait_for(queue.get(), timeout=10)
+    assert first['kind'] == 'bf_snapshot'
+    assert first['round'] == 0
+    assert first['opening'] is not None, '首份快照必须携带开局骰点'
+    for key in ('firstDice', 'secondDice'):
+        dice = first['opening'][key]
+        assert len(dice) == 2 and all(1 <= n <= 6 for n in dice), first['opening']
+    window_id = first['view']['window']['id']
+
+    # 未回执：屏障期内窗口不推进（机器人不下手、也不过期）。
+    await asyncio.sleep(0.6)
+    assert room.engine is not None
+    assert room.engine.window['id'] == window_id
+    assert room.engine.window['decisions'][0] is None
+
+    # 过期回执不报错也不放行。
+    ok, _ = room.handle_client_message(0, {'kind': 'opening_done', 'round': 99})
+    assert ok is True
+    assert room._opening_confirmations == set()
+
+    # 正确回执：屏障放行，窗口推进。
+    ok, err = room.handle_client_message(0, {'kind': 'opening_done', 'round': 0})
+    assert ok, err
+    for _ in range(200):
+        if room.engine and room.engine.window['id'] != window_id:
+            break
+        await asyncio.sleep(0.05)
+    assert room.engine is not None and room.engine.window['id'] != window_id
+
+
+@pytest.mark.asyncio
+async def test_opening_barrier_times_out_without_confirmation():
+    room = room_registry.create('BF-OPEN-TO', mode='east', capacity=4,
+                                ruleset_id='lotus-blood-flow', pace=0)
+    room.join_or_rejoin('玩家1', None, 'p1')
+    room.ready_seat(0, True)
+    room.conn.register(0, asyncio.Queue(), None)
+    room.on_connect(0)
+    room.opening_timeout = 0.2
+    room.decision_ms = 500
+    await room.start()
+    for _ in range(100):  # 等引擎建立，记下屏障期的窗口
+        if room.engine is not None:
+            break
+        await asyncio.sleep(0.05)
+    assert room.engine is not None
+    window_id = room.engine.window['id']
+    for _ in range(200):  # 兜底超时后照常开打：窗口推进
+        if room.engine is not None and room.engine.window['id'] != window_id:
+            break
+        await asyncio.sleep(0.05)
+    assert room.engine is not None and room.engine.window['id'] != window_id
 
 
 def test_stale_and_invalid_actions_rejected():

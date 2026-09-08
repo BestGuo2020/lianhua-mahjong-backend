@@ -77,10 +77,14 @@ class BloodFlowEngine:
     # ── 开局 ──
 
     def deal(self) -> dict:
+        # 骰子落定后留存于实例：房间快照需要下发开局动画用的第一/二次骰点。
+        first_dice = self.dice if self.dice is not None else self._roll_pair()
+        second_dice = self.second_dice if self.second_dice is not None else self._roll_pair()
+        self.dice, self.second_dice = first_dice, second_dice
         result = self.rules.begin_round(
             dealer=self.dealer,
-            dice=self.dice if self.dice is not None else self._roll_pair(),
-            second_dice=self.second_dice if self.second_dice is not None else self._roll_pair(),
+            dice=first_dice,
+            second_dice=second_dice,
             random=None, ring=self.ring,
         )
         wall = result['wall']

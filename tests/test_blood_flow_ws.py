@@ -56,6 +56,9 @@ async def auto_player(ws, timeout: float = 30.0) -> dict:
         if view:  # 开局前的大厅快照 view 为空，跳过形状断言
             assert {'authorityEpoch', 'roundId', 'seat', 'players', 'wallCount',
                     'jokers', 'window', 'ownActions', 'public'} <= set(view.keys())
+        if msg.get('opening'):
+            # 开局动画就绪回执：服务端屏障等所有在线真人确认后才开打。
+            await ws.send(json.dumps({'kind': 'opening_done', 'round': msg.get('round')}))
         if view.get('window') and view.get('ownActions'):
             window_id = view['window']['id']
             if window_id != handled:

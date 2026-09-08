@@ -101,6 +101,9 @@ class BloodFlowRoomSession:
         self.decision_ms = BLOOD_FLOW_TIMING['remoteDecisionMs']
         # 真人回合倒计时（墙钟毫秒；无真人待决策的窗口为 0 → 前端不显示读秒）。
         self._window_deadline_ms = 0
+        # 一次性公告（抢杠胡等）。
+        self._announcement: Optional[dict] = None
+        self._announcement_id = 0
         # 开局动画：每局第一份快照带骰点，等在线真人回执 opening_done 再开打（兜底超时）。
         self.opening_timeout = 60.0
         self._round_opening: Optional[dict] = None
@@ -413,6 +416,20 @@ class BloodFlowRoomSession:
         return bool(window) and any(window['options'][s] and window['decisions'][s] is None
                                     and self._human_seat(s) for s in SEATS)
 
+    def _set_rob_announcement(self, engine: BloodFlowEngine, prev_win_count: int) -> None:
+        """抢杠胡公告（对齐经典『{name} 抢杠胡』红字公告）。"""
+        wins = [e['batch'] for e in engine.ledger if e['kind'] == 'win']
+        if len(wins) <= prev_win_count:
+            return
+        batch = wins[-1]
+        if batch['source']['kind'] != 'added-kong':
+            return
+        winner = batch['winners'][0]['winner']
+        seat = self.seats[winner]
+        name = seat.nickname if seat is not None else f'玩家{winner + 1}'
+        self._announcement_id += 1
+        self._announcement = {'text': f'{name} 抢杠胡', 'tone': 'red', 'id': self._announcement_id}
+
     async def _play_round(self, engine: BloodFlowEngine) -> None:
         while not engine.result and not self.closed:
             deadline = time.monotonic() + self.decision_ms / 1000
@@ -431,7 +448,10 @@ class BloodFlowRoomSession:
                     if self._human_pending(engine.window):
                         deadline = time.monotonic() + self.decision_ms / 1000
                         self._window_deadline_ms = int(time.time() * 1000) + self.decision_ms
+                    # 抢杠胡公告：本窗口若刚结算了抢杠赢家，随快照下发一次。
+                    self._set_rob_announcement(engine, prev_win_count)
                     self.broadcast_snapshot()
+                    self._announcement = None  # 公告一次性展示
                     last_broadcast = engine.window['id']
                 if time.monotonic() >= deadline:
                     engine.expire()
@@ -620,6 +640,7 @@ class BloodFlowRoomSession:
             # 动作流水与最近弃牌：驱动前端动作字/语音、弃牌音效与牌名播报。
             'actionEvents': [dict(a) for a in engine.actions],
             'lastDiscardAction': dict(engine.discard_actions[-1]) if engine.discard_actions else None,
+            'announcement': self._announcement,
             'kongEvents': [e for e in engine.ledger if e['kind'] == 'kong'],
         }
         return view

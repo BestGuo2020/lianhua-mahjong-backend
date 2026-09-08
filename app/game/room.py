@@ -1475,7 +1475,11 @@ class RoomRegistry:
         self._maybe_sweep()
         if room_id in self._rooms:
             raise RoomError('ROOM_EXISTS')
-        room = RoomSession(room_id, **kwargs)
+        if kwargs.get('ruleset_id') == 'lotus-blood-flow':
+            from app.game.blood_flow_room import BloodFlowRoomSession
+            room = BloodFlowRoomSession(room_id, **kwargs)
+        else:
+            room = RoomSession(room_id, **kwargs)
         self._rooms[room_id] = room
         return room
 

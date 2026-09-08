@@ -399,6 +399,8 @@ class BloodFlowRoomSession:
             if latest['type'] in ('concealed-gang', 'added-gang', 'wind-kong'):
                 return self.pace.get('afterKongSettle', 0)
             if latest['type'] in ('peng', 'chi'):
+                if latest['type'] == 'peng' and self._human_seat(latest['actorIndex']):
+                    return self.pace.get('afterClaimPengHuman', 0)
                 return self.pace.get('afterClaimPeng', 0)
         if len(engine.discard_actions) > prev_discard_count:
             return self.pace.get('afterDiscardToNextTurn', 0)

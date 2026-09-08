@@ -99,7 +99,8 @@ BLOOD_FLOW_PACE: dict[str, int] = {
     'aiThinkClaim': 500,           # AI 碰/杠/抢响应思考（对齐 AI_DELAYS.claim）
     'aiThinkKong': 550,            # AI 杠后补摸再出牌（对齐 AI_DELAYS.after_kong）
     'afterDiscardToNextTurn': 450,  # 弃牌到下家
-    'afterClaimPeng': 650,          # 碰/吃后
+    'afterClaimPeng': 650,          # AI 碰/吃后（对齐 PLAY_PACE.afterClaimPeng）
+    'afterClaimPengHuman': 350,     # 真人碰后（对齐 PLAY_PACE.skipDrawPengDelay）
     'afterClaimGang': 550,          # AI 明杠后
     'afterClaimGangHuman': 350,     # 真人明杠后（经典对真人缩短）
     'afterKongSettle': 600,         # 暗杠/补杠/乱风杠后

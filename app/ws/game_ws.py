@@ -84,7 +84,10 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         'theme': room.table_theme,
         'rejoinCode': state.rejoin_code,
     })
-    await room.conn.send_to_seat(seat, build_snapshot(room, seat))
+    if room.ruleset_id == 'lotus-blood-flow':
+        await room.conn.send_to_seat(seat, room.snapshot_for(seat))
+    else:
+        await room.conn.send_to_seat(seat, build_snapshot(room, seat))
 
     try:
         while True:

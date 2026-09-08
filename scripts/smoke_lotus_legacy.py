@@ -81,8 +81,10 @@ async def play_full_match(base_http: str, base_ws: str) -> dict:
         assert resp.status_code == 200, resp.text
         rid = resp.json()['roomId']
         joins = []
-        for name in ('甲', '乙'):
-            j = (await http.post(f'/api/rooms/{rid}/join', json={'nickname': name})).json()
+        for index, name in enumerate(('甲', '乙')):
+            # 本地开发旁路按请求体 playerId 推导身份：两个客户端用不同身份占座。
+            j = (await http.post(f'/api/rooms/{rid}/join',
+                                 json={'nickname': name, 'playerId': f'smoke-lg-{index}'})).json()
             joins.append(j)
             await http.post(f'/api/rooms/{rid}/ready',
                             json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})

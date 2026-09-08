@@ -17,6 +17,7 @@ from loguru import logger
 from app.core.blood_flow.config import BLOOD_FLOW_CONFIG
 from app.game.blood_flow_engine import (SEATS, BloodFlowEngine, next_seat,
                                         window_complete)
+from app.game.room import RoomError
 from app.rules.blood_flow import BloodFlowRuleSet
 from app.ws.manager import ConnectionManager
 
@@ -47,10 +48,6 @@ class _Seat:
         self.connected_at: Optional[float] = None
         self.ready = False
         self.avatar = ''
-
-
-class BloodFlowRoomError(Exception):
-    pass
 
 
 def _fallback_policy(engine: BloodFlowEngine, seat: int) -> dict:
@@ -92,10 +89,18 @@ class BloodFlowRoomSession:
         self.room_id = room_id
         self.mode = mode
         self.capacity = capacity
+        self.player_count = capacity
         self.ruleset_id = ruleset_id
         self.table_theme = 'jade'
-        self.pace = pace  # 每步间隔毫秒（真人房间注入节奏；测试 0）
-        self.decision_ms = BLOOD_FLOW_CONFIG.base_points * 0 + 15_000
+        # 经典房间 pace 是 dict；血流只用整数毫秒节奏（dict 一律视为 0/测试节奏）。
+        self.pace = pace if isinstance(pace, int) else 0
+        self.decision_ms = 15_000
+        self.status = 'lobby'
+        self.creator_seat: Optional[int] = None
+        self.lifetime = 600
+        self.llm_enabled = bool(llm_enabled)
+        self.effective_llm_enabled = False
+        self.llm_available = False
         self.seats: list[Optional[_Seat]] = [None] * 4
         self.conn = ConnectionManager()
         self.engine: Optional[BloodFlowEngine] = None
@@ -118,25 +123,32 @@ class BloodFlowRoomSession:
         return not self.has_humans() and self.is_past_deadline(now)
 
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
-                       player_id: Optional[str] = None, character_id: str = 'deepseek'):
-        for state in self.seats:
-            if state is not None and state.player_id == player_id and player_id is not None:
-                return state
+                       player_id: Optional[str] = None, character_id: str = 'deepseek',
+                       avatar: str = ''):
+        """与 RoomSession 同契约：返回 (seat, is_rejoin, state)；重进码恢复原座位。"""
         if rejoin_code:
-            return self.resume_by_code(rejoin_code)[1]
+            seat, state = self.resume_by_code(rejoin_code)
+            state.nickname = nickname or state.nickname
+            return seat, True, state
+        for state in self.seats:
+            if state is not None and player_id is not None and state.player_id == player_id:
+                return state.seat, True, state
         seat = next((s for s in range(self.capacity) if self.seats[s] is None), None)
         if seat is None:
-            raise BloodFlowRoomError('ROOM_FULL')
+            raise RoomError('ROOM_FULL')
         code = _make_rejoin_code()
         state = _Seat(seat, nickname, code, player_id, character_id)
+        state.avatar = avatar
         self.seats[seat] = state
-        return state
+        if self.creator_seat is None:
+            self.creator_seat = seat
+        return seat, False, state
 
     def resume_by_code(self, rejoin_code: str):
         for state in self.seats:
             if state is not None and state.rejoin_code == rejoin_code:
                 return state.seat, state
-        raise BloodFlowRoomError('REJOIN_CODE_INVALID')
+        raise RoomError('REJOIN_CODE_INVALID')
 
     def check_rejoin_rate(self, rejoin_code: str) -> bool:
         now = time.monotonic()
@@ -163,7 +175,7 @@ class BloodFlowRoomSession:
     def set_character(self, seat: int, character_id: str) -> str:
         state = self.seats[seat]
         if state is None:
-            raise BloodFlowRoomError('SEAT_EMPTY')
+            raise RoomError('SEAT_EMPTY')
         state.character_id = character_id
         return character_id
 
@@ -193,12 +205,14 @@ class BloodFlowRoomSession:
 
     # ── 开局与驱动 ──
 
-    def start(self, llm_seats: Optional[list] = None) -> None:
+    async def start(self, llm_seats: Optional[list] = None, default_provider: Optional[str] = None) -> None:
+        """开局（与 RoomSession 同契约）：所有已占座位 ready 后触发。"""
         if self.match_started:
             return
         if not all(state.ready for state in self.seats if state is not None):
-            raise BloodFlowRoomError('NOT_ALL_READY')
+            raise RoomError('NOT_ALL_READY')
         self.match_started = True
+        self.status = 'playing'
         self._drive_task = asyncio.ensure_future(self._drive())
 
     async def _drive(self) -> None:
@@ -221,6 +235,7 @@ class BloodFlowRoomSession:
                 if self.pace:
                     await asyncio.sleep(self.pace / 1000 * 3)
             self.match_finished = True
+            self.status = 'finished'
             self.broadcast_snapshot()
         except asyncio.CancelledError:
             raise
@@ -289,6 +304,37 @@ class BloodFlowRoomSession:
             'paymentPerPayer': score.payment_per_payer,
         }
 
+    def _serializable_public(self, public: dict) -> dict:
+        """public 快照深转换：批次与局末账本里的 PublicWinScore 转 JSON 字典。"""
+        batches = []
+        for batch in public.get('batches', []):
+            clean = dict(batch)
+            clean['winners'] = [{**dict(w), 'score': self._public_score(w['score'])}
+                                for w in batch['winners']]
+            batches.append(clean)
+        result = public.get('roundResult')
+        clean_result = None
+        if result:
+            clean_result = dict(result)
+            ledger = []
+            for entry in result['ledger']:
+                if entry['kind'] == 'win':
+                    clean_entry = dict(entry)
+                    clean_batch = dict(entry['batch'])
+                    clean_batch['winners'] = [
+                        {**dict(w), 'score': self._public_score(w['score'])}
+                        for w in entry['batch']['winners']]
+                    clean_entry['batch'] = clean_batch
+                    ledger.append(clean_entry)
+                else:
+                    ledger.append(dict(entry))
+            clean_result['ledger'] = ledger
+        return {
+            'ruleVersion': public['ruleVersion'], 'roundId': public['roundId'],
+            'status': public['status'], 'seats': public['seats'],
+            'batches': batches, 'roundResult': clean_result,
+        }
+
     def _seat_view(self, seat: int) -> dict:
         engine = self.engine
         if engine is None:
@@ -326,23 +372,35 @@ class BloodFlowRoomSession:
             if seat in engine.evaluation and window is not None and window['decisions'][seat] is None else None,
             'waitingSeats': [s for s in SEATS if window is not None and window['options'][s]
                              and window['decisions'][s] is None],
-            'public': engine.public_state(),
+            'public': self._serializable_public(engine.public_state()),
             'actionEvents': [], 'lastDiscardAction': None,
             'kongEvents': [e for e in engine.ledger if e['kind'] == 'kong'],
         }
         return view
+
+    def _serializable_result(self, result: dict) -> dict:
+        """局末结果深转换（ledger 批次里的 PublicWinScore → JSON 字典）。"""
+        return self._serializable_public({
+            'ruleVersion': result['ruleVersion'], 'roundId': result['roundId'],
+            'status': 'settled', 'seats': result.get('seats', []), 'batches': [],
+            'roundResult': result,
+        })['roundResult']
+
+    def snapshot_for(self, seat: int) -> dict:
+        """单座全量快照（game_ws 重进握手用；形状同 broadcast）。"""
+        return {
+            'kind': 'bf_snapshot',
+            'view': self._seat_view(seat),
+            'round': self.round_index,
+            'mode': self.mode,
+            'dealer': self.round_index % 4,
+            'matchFinished': self.match_finished,
+            'roundResult': self._serializable_result(self.round_result) if self.round_result else None,
+        }
 
     def broadcast_snapshot(self) -> None:
         for seat in range(self.capacity):
             state = self.seats[seat]
             if state is None or not state.controller.connected:
                 continue
-            self.conn.send_to_seat_nowait(seat, {
-                'kind': 'bf_snapshot',
-                'view': self._seat_view(seat),
-                'round': self.round_index,
-                'mode': self.mode,
-                'dealer': self.round_index % 4,
-                'matchFinished': self.match_finished,
-                'roundResult': self.round_result,
-            })
+            self.conn.send_to_seat_nowait(seat, self.snapshot_for(seat))

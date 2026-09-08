@@ -337,8 +337,8 @@ class BloodFlowRoomSession:
             if seat in self.llm_seats:
                 action = await self._llm_action(engine, seat)
             if action is None:
-                # AI 思考停顿：真人房间下让动作可读，避免机器人瞬移。
-                await self._pace('aiThink')
+                # AI 思考停顿：出牌/碰杠响应分档（对齐经典 AI_DELAYS）。
+                await self._pace('aiThinkTurn' if engine.window['kind'] == 'turn' else 'aiThinkClaim')
                 action = _bot_policy(self, engine, seat)
             if action is not None and engine.window and engine.window['id'] == window['id'] \
                     and engine.window['decisions'][seat] is None:
@@ -370,26 +370,32 @@ class BloodFlowRoomSession:
             if batch['source']['kind'] == 'discard' and len(batch['winners']) > 1 else 0
         return duration + multi + self.pace.get('winHandoffMargin', 0)
 
-    def _step_delay_ms(self, engine: BloodFlowEngine, prev_win_count: int) -> int:
-        """按刚发生的事选择停顿（胡 > 抢杠窗口 > 杠 > 碰/吃 > 摸牌 > 弃牌），毫秒。"""
+    def _step_delay_ms(self, engine: BloodFlowEngine, prev_win_count: int,
+                       prev_discard_count: int, prev_action_count: int) -> int:
+        """按刚发生的动作选择停顿（对齐经典 PLAY_PACE：胡 > 杠 > 碰吃 > 弃牌），毫秒。
+
+        用各流水计数差判断「刚发生了什么」：动作流水（碰/杠/胡）、弃牌流水、赢批次。
+        """
         if not self.pace:
             return 0
         wins = [e['batch'] for e in engine.ledger if e['kind'] == 'win']
         if len(wins) > prev_win_count:
             return self._win_pause_ms(wins[-1])
-        window = engine.window
-        if window is not None and window['source']['kind'] == 'added-kong':
+        # 补杠窗口刚打开（尚未裁决）：抢杠前停顿。
+        if engine.window is not None and engine.window['source']['kind'] == 'added-kong' \
+                and len(engine.actions) == prev_action_count:
             return self.pace.get('beforeRobKong', 0)
-        latest = engine.actions[-1]['type'] if engine.actions else ''
-        if latest == 'discard-gang':
-            return self.pace.get('afterClaimGang', 0)
-        if latest in ('concealed-gang', 'added-gang', 'wind-kong'):
-            return self.pace.get('afterKongSettle', 0)
-        if latest in ('peng', 'chi'):
-            return self.pace.get('afterClaimPeng', 0)
-        if engine.draw_source is not None:
-            return self.pace.get('afterDraw', 0)
-        return self.pace.get('afterDiscardToNextTurn', 0)
+        if len(engine.actions) > prev_action_count:
+            latest = engine.actions[-1]['type']
+            if latest == 'discard-gang':
+                return self.pace.get('afterClaimGang', 0)
+            if latest in ('concealed-gang', 'added-gang', 'wind-kong'):
+                return self.pace.get('afterKongSettle', 0)
+            if latest in ('peng', 'chi'):
+                return self.pace.get('afterClaimPeng', 0)
+        if len(engine.discard_actions) > prev_discard_count:
+            return self.pace.get('afterDiscardToNextTurn', 0)
+        return 0
 
     def _human_pending(self, window: Optional[dict]) -> bool:
         return bool(window) and any(window['options'][s] and window['decisions'][s] is None
@@ -401,6 +407,8 @@ class BloodFlowRoomSession:
             last_broadcast: Optional[str] = None
             while not engine.result and not self.closed:
                 prev_win_count = sum(1 for e in engine.ledger if e['kind'] == 'win')
+                prev_discard_count = len(engine.discard_actions)
+                prev_action_count = len(engine.actions)
                 prev_window_id = engine.window['id'] if engine.window else None
                 # 非真人席位持续决策（逐席重读窗口：提交可能解决旧窗口并开新窗口）。
                 await self._decide_bots(engine)
@@ -418,7 +426,7 @@ class BloodFlowRoomSession:
                     break
                 # 步进节奏：窗口已推进才停顿，按刚发生的动作给表现留时间（胡牌含多响引言）。
                 if engine.window['id'] != prev_window_id:
-                    delay_ms = self._step_delay_ms(engine, prev_win_count)
+                    delay_ms = self._step_delay_ms(engine, prev_win_count, prev_discard_count, prev_action_count)
                     if delay_ms:
                         await asyncio.sleep(delay_ms / 1000)
                 await asyncio.sleep(0.05)

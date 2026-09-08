@@ -267,7 +267,7 @@ def test_pace_table_wired_for_real_rooms():
                                 ruleset_id='lotus-blood-flow',
                                 pace={'afterDiscardToNextTurn': 450})
     assert room.pace == BLOOD_FLOW_PACE
-    assert set(BLOOD_FLOW_PACE) >= {'aiThink', 'afterDraw', 'afterDiscardToNextTurn',
+    assert set(BLOOD_FLOW_PACE) >= {'aiThinkTurn', 'aiThinkClaim', 'afterDiscardToNextTurn',
                                     'afterClaimPeng', 'afterClaimGang', 'afterKongSettle',
                                     'beforeRobKong', 'winEffectBase', 'winEffectLarge',
                                     'winEffectTop', 'multiWinIntro'}
@@ -287,18 +287,18 @@ def test_step_delay_matches_local_timing():
     ]
     engine = BloodFlowEngine(authority_epoch='t', round_id='pace', rules=BloodFlowRuleSet(),
                              opening=make_opening(hands=hands, wall_front=['north']))
-    # 开局摸牌后的首个窗口：摸牌档位。
-    assert room._step_delay_ms(engine, 0) == BLOOD_FLOW_PACE['afterDraw']
+    # 开局摸牌后的首个窗口：无额外停顿（AI 思考 650ms 覆盖，对齐经典无 afterDraw）。
+    assert room._step_delay_ms(engine, 0, 0, 0) == 0
     assert engine.submit(engine.command(0, {'kind': 'discard', 'index': 13}))
     assert engine.submit(engine.command(1, {'kind': 'peng'}))
-    assert room._step_delay_ms(engine, 0) == BLOOD_FLOW_PACE['afterClaimPeng']
+    assert room._step_delay_ms(engine, 0, 0, 0) == BLOOD_FLOW_PACE['afterClaimPeng']
 
     win_engine = BloodFlowEngine(authority_epoch='t', round_id='pace-win', rules=BloodFlowRuleSet(),
                                  opening=make_opening(hands=hands, wall_front=['north']))
     assert win_engine.submit(win_engine.command(0, {'kind': 'discard', 'index': 13}))
     assert win_engine.submit(win_engine.command(1, {'kind': 'win'}))
     # 平胡档：1815 + 1200 尾量 + 100 交接余量（对齐前端 bloodFlowWinTiming）。
-    assert room._step_delay_ms(win_engine, 0) == 1815 + 1200 + 100
+    assert room._step_delay_ms(win_engine, 0, 0, 0) == 1815 + 1200 + 100
 
 
 @pytest.mark.asyncio

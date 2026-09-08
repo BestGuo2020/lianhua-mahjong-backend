@@ -85,25 +85,24 @@ class BloodFlowAiConfig:
 
 BLOOD_FLOW_AI = BloodFlowAiConfig()
 
-# 计时（毫秒）：对齐前端 config.ts BLOOD_FLOW_TIMING。
+# 计时（毫秒）：对齐经典联机（非血流）与前端 config.ts。
 BLOOD_FLOW_TIMING: dict[str, int] = {
     'normalDecisionMs': 15_000,
-    'remoteDecisionMs': 25_000,   # 联机回合决策窗口（含网络往返余量）
+    'remoteDecisionMs': 12_000,   # 联机回合决策窗口：对齐经典房间 turn_timeout=12s
     'winBeatMs': 450,
     'recoveryGraceMs': 12_000,
 }
 
-# 真人联机房间的视觉节奏（毫秒）：对齐本地 PACE_MS / BLOOD_FLOW_TIMING，
-# 避免机器人瞬移、动作与胡牌表现来不及播。0 = 测试/无节奏。
+# 真人联机房间的视觉节奏（毫秒）：对齐经典房间 PLAY_PACE + AI_DELAYS（非血流玩法）。
 BLOOD_FLOW_PACE: dict[str, int] = {
-    'aiThink': 650,                 # AI 每次决策前的思考停顿（本地 paceMs 同值）
-    'afterDraw': 450,               # 摸牌到出牌窗口
+    'aiThinkTurn': 650,            # AI 出牌思考（对齐 AI_DELAYS.turn）
+    'aiThinkClaim': 500,           # AI 碰/杠/抢响应思考（对齐 AI_DELAYS.claim）
     'afterDiscardToNextTurn': 450,  # 弃牌到下家
     'afterClaimPeng': 650,          # 碰/吃后
     'afterClaimGang': 550,          # 明杠后
     'afterKongSettle': 600,         # 暗杠/补杠/乱风杠后
     'beforeRobKong': 650,           # 补杠到抢杠窗口
-    # 胡牌表现：对齐前端 bloodFlowWinTiming（tier<2 3015ms；tier2 3180ms；tier3 3480ms）
+    # 胡牌表现：血流本地 bloodFlowWinTiming（经典单胡无此档位，取本地为准）
     'winEffectBase': 1815,
     'winEffectLarge': 2600,
     'winEffectTop': 2900,

@@ -66,6 +66,8 @@ async def test_human_action_loop_over_snapshot_contract():
     actions = 0
     snapshots = 0
     seen_fields: set[str] = set()
+    action_types: set[str] = set()
+    saw_discard = False
     handled_window: str | None = None
     while not room.match_finished:
         message = await asyncio.wait_for(queue.get(), timeout=90)
@@ -75,6 +77,9 @@ async def test_human_action_loop_over_snapshot_contract():
         view = message['view']
         seen_fields.update(view.keys())
         assert message['mode'] == 'east'
+        if view.get('lastDiscardAction'):
+            saw_discard = True
+        action_types.update(a['type'] for a in view.get('actionEvents') or [])
         if message.get('opening'):
             ok, err = room.handle_client_message(0, {
                 'kind': 'opening_done', 'round': message['round'],
@@ -96,6 +101,10 @@ async def test_human_action_loop_over_snapshot_contract():
             actions += 1
     assert actions > 40
     assert snapshots > 40
+    # 局内过场数据齐备：弃牌流水 + 碰/杠/胡等动作流水（前端据此播动作字/语音/牌名播报）。
+    assert saw_discard is True
+    assert action_types & {'peng', 'chi', 'discard-gang', 'concealed-gang', 'added-gang', 'wind-kong'}
+    assert action_types & {'self-draw', 'discard-win', 'robbed-kong-win'}
     assert {'authorityEpoch', 'roundId', 'version', 'seat', 'players', 'currentPlayer',
             'wallCount', 'headDrawn', 'flipTile', 'jokers', 'flipStack', 'flipSeat',
             'wallBreakIndex', 'window', 'ownActions', 'ownScore', 'waitingSeats',

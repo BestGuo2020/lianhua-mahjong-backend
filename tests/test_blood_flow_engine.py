@@ -51,6 +51,42 @@ def make_opening(*, hands: list[list[str]], wall_front: list[str], melds: list[l
     }
 
 
+def test_action_events_and_discard_actions_recorded():
+    """动作流水与弃牌流水：驱动前端动作字/语音、弃牌音效与牌名播报。"""
+    hands = [
+        ['m7', 'm8', 'm9', 'p7', 'p8', 'p9', 's7', 's8', 's9', 'north', 'west', 'south', 'p4', 'm5'],
+        ['m3', 'm4', 'm5', 'm5', 'm5', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'east'],
+        ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9', 'east', 'south', 'west', 'north'],
+        ['m2', 'm6', 'm8', 'p3', 'p6', 'p9', 's2', 's5', 's8', 'red', 'green', 'white', 'north'],
+    ]
+    engine = BloodFlowEngine(authority_epoch='t', round_id='events', rules=BloodFlowRuleSet(),
+                             opening=make_opening(hands=hands, wall_front=['north']))
+    assert engine.actions == []
+    assert engine.submit(engine.command(0, {'kind': 'discard', 'index': 13}))
+    assert engine.discard_actions[-1]['seat'] == 0
+    assert engine.discard_actions[-1]['tile'] == 'm5'
+    assert engine.discard_actions[-1]['id'].startswith('t/events/tile/')
+    assert engine.submit(engine.command(1, {'kind': 'peng'}))
+    assert engine.actions == [{'id': 1, 'type': 'peng', 'actorIndex': 1, 'sourceIndex': 0,
+                               'tile': 'm5', 'meldIndex': 0}]
+
+
+def test_action_events_record_win_source_types():
+    hands = [
+        ['m7', 'm8', 'm9', 'p7', 'p8', 'p9', 's7', 's8', 's9', 'north', 'west', 'south', 'p4', 'm5'],
+        ['m3', 'm4', 'm5', 'm5', 'm5', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'east'],
+        ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9', 'east', 'south', 'west', 'north'],
+        ['m2', 'm6', 'm8', 'p3', 'p6', 'p9', 's2', 's5', 's8', 'red', 'green', 'white', 'north'],
+    ]
+    engine = BloodFlowEngine(authority_epoch='t', round_id='win-events', rules=BloodFlowRuleSet(),
+                             opening=make_opening(hands=hands, wall_front=['north']))
+    assert engine.submit(engine.command(0, {'kind': 'discard', 'index': 13}))
+    assert engine.submit(engine.command(1, {'kind': 'win'}))
+    win_events = [a for a in engine.actions if a['type'] == 'discard-win']
+    assert win_events and win_events[-1]['actorIndex'] == 1
+    assert win_events[-1]['sourceIndex'] == 0 and win_events[-1]['tile'] == 'm5'
+
+
 def stress_policy(engine: BloodFlowEngine, seat: int) -> dict:
     """锁手全自动 + 见胡就胡 + 首张可打弃牌；用于整局冒烟。"""
     window = engine.window

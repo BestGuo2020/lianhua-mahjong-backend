@@ -57,6 +57,9 @@ class BloodFlowEngine:
         self.archives: list[dict] = []
         self.ledger: list[dict] = []
         self.discard_actions: list[dict] = []
+        # 动作流水（碰/吃/杠/补杠/暗杠/乱风杠/胡）：驱动前端动作字与语音，逐局自增 id。
+        self.actions: list[dict] = []
+        self.action_serial = 0
         self.window: Optional[dict] = None
         self.result: Optional[dict] = None
         self.version = 0
@@ -207,6 +210,15 @@ class BloodFlowEngine:
 
     # ── 窗口裁决 ──
 
+    def _event(self, type_: str, actor: int, tile: str,
+               source_index: Optional[int] = None, meld_index: int = -1) -> None:
+        """记录一次桌面动作（与前端 engine.ts event() 同形状，id 逐局自增）。"""
+        self.action_serial += 1
+        self.actions.append({
+            'id': self.action_serial, 'type': type_, 'actorIndex': actor,
+            'sourceIndex': source_index, 'tile': tile, 'meldIndex': meld_index,
+        })
+
     def resolve_window(self) -> None:
         window = self.window
         winners = [s for s in SEATS if window['decisions'][s] and window['decisions'][s]['kind'] == 'win']
@@ -288,6 +300,8 @@ class BloodFlowEngine:
             player['hand'].remove(tile)
         meld_type = 'chi' if action['kind'] == 'chi' else 'gang' if action['kind'] == 'gang' else 'peng'
         player['melds'].append({'type': meld_type, 'tile': source['tile'], 'tiles': tiles, 'from': source['seat']})
+        self._event('chi' if meld_type == 'chi' else 'discard-gang' if meld_type == 'gang' else 'peng',
+                    seat, source['tile'], source['seat'], len(player['melds']) - 1)
         self.opening_bonus = False
         self.current_player = seat
         self.draw_source = None
@@ -319,6 +333,8 @@ class BloodFlowEngine:
             player['hand'].remove(tile)
         player['melds'].append({'type': 'angang', 'tile': tiles[0], 'tiles': tiles,
                                 **({'windKong': True} if wind else {})})
+        self._event('wind-kong' if wind else 'concealed-gang', seat, tiles[0], None,
+                    len(player['melds']) - 1)
         self.opening_bonus = False
         self.pay_kong(seat, 'wind' if wind else 'concealed')
         player['drawnTileIndex'] = -1
@@ -331,6 +347,7 @@ class BloodFlowEngine:
         meld['added'] = True
         meld['tiles'] = [*meld['tiles'], pending['source']['tile']]
         self.players[pending['seat']]['melds'][pending['meldIndex']] = meld
+        self._event('added-gang', pending['seat'], pending['source']['tile'], None, pending['meldIndex'])
         self.pending_kong = None
         self.opening_bonus = False
         self.pay_kong(pending['seat'], 'added')
@@ -382,6 +399,11 @@ class BloodFlowEngine:
                 'firstWinSequence': previous['firstWinSequence'] if previous['firstWinSequence'] is not None else batch['sequence'],
                 'recordIds': [*previous['recordIds'], record['id']],
             }
+            win_source = record['score'].source
+            self._event('self-draw' if win_source in ('self-draw', 'kong-bloom')
+                        else 'robbed-kong-win' if win_source == 'robbed-kong' else 'discard-win',
+                        record['winner'], window['source']['tile'],
+                        None if window['source']['kind'] == 'draw' else window['source']['seat'])
         for i, p in enumerate(self.players):
             p['score'] = batch['scoresAfter'][i]
         self.ledger.append({'kind': 'win', 'batch': batch})

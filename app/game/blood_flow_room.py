@@ -522,7 +522,9 @@ class BloodFlowRoomSession:
             'waitingSeats': [s for s in SEATS if window is not None and window['options'][s]
                              and window['decisions'][s] is None],
             'public': self._serializable_public(engine.public_state()),
-            'actionEvents': [], 'lastDiscardAction': None,
+            # 动作流水与最近弃牌：驱动前端动作字/语音、弃牌音效与牌名播报。
+            'actionEvents': [dict(a) for a in engine.actions],
+            'lastDiscardAction': dict(engine.discard_actions[-1]) if engine.discard_actions else None,
             'kongEvents': [e for e in engine.ledger if e['kind'] == 'kong'],
         }
         return view

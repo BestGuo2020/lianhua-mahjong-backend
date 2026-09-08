@@ -37,7 +37,7 @@ def _clear_registry():
 async def test_all_bot_match_settles_four_rounds():
     room = room_registry.create('BF-BOT', mode='east', capacity=4,
                                 ruleset_id='lotus-blood-flow', pace=0)
-    room.start()
+    await room.start()
     for _ in range(2400):  # 最多 120s
         if room.match_finished:
             break
@@ -46,20 +46,22 @@ async def test_all_bot_match_settles_four_rounds():
     assert sum(room.scores) == BLOOD_FLOW_CONFIG.initial_score * 4
     assert room.round_result is not None
     assert room.round_result['reason'] == 'wall-exhausted'
+    assert room.status == 'finished'
 
 
 @pytest.mark.asyncio
 async def test_human_action_loop_over_snapshot_contract():
     room = room_registry.create('BF-HUM', mode='east', capacity=4,
                                 ruleset_id='lotus-blood-flow', pace=0)
-    state = room.join_or_rejoin('玩家1', None, 'p1')
-    assert state.seat == 0
+    state = None
+    seat, is_rejoin, state = room.join_or_rejoin('玩家1', None, 'p1')
+    assert seat == 0 and is_rejoin is False
     assert room.ready_seat(0, True)
 
     queue: asyncio.Queue = asyncio.Queue()
     room.conn.register(0, queue, None)
     room.on_connect(0)
-    room.start()
+    await room.start()
     actions = 0
     snapshots = 0
     seen_fields: set[str] = set()

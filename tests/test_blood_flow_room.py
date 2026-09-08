@@ -61,6 +61,7 @@ async def test_human_action_loop_over_snapshot_contract():
     queue: asyncio.Queue = asyncio.Queue()
     room.conn.register(0, queue, None)
     room.on_connect(0)
+    room.decision_ms = 60_000  # 负载下避免 15s 窗口过期与提交竞态（慢机回归 flake）
     await room.start()
     actions = 0
     snapshots = 0

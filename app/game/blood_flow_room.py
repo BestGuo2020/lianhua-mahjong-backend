@@ -431,7 +431,9 @@ class BloodFlowRoomSession:
             'wallBreakIndex': engine.wall_break_index,
             'window': None if window is None else {
                 'id': window['id'], 'version': window['version'], 'kind': window['kind'],
-                'deadlineAt': window['deadlineAt'], 'opensAt': window['opensAt'],
+                # deadlineAt 引擎内用 inf 表示无超时；JSON 不接受 Infinity，快照收敛为 0（前端只读展示）。
+                'deadlineAt': 0 if window['deadlineAt'] == float('inf') else window['deadlineAt'],
+                'opensAt': window['opensAt'],
                 'source': dict(window['source']),
             },
             'ownActions': [] if window is None or window['decisions'][seat] is not None

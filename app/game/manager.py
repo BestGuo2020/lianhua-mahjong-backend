@@ -698,6 +698,10 @@ class GameManager:
 
         self.phase = 'thinking'
         player = self.players[player_index]
+        turn_origin = 'kong-draw' if from_tail else (after_claim or ('opening' if skip_draw else 'draw'))
+        # 庄家开局首回合：引擎跳摸，但庄家已持 14 张（跳牌），视作「已摸牌」——
+        # 与单机 localTurnOrchestrator 的 preDrawn 同口径（天胡可胡、暗杠/风杠可用）。
+        drawn_turn = not skip_draw or turn_origin == 'opening'
         ctx = TurnContext(
             hand=player.hand,
             melds=player.melds,
@@ -705,7 +709,7 @@ class GameManager:
             kongBloom=self.kong_draw_player_index == player_index,
             skipDraw=skip_draw,
             afterKong=from_tail,
-            turnOrigin='kong-draw' if from_tail else (after_claim or ('opening' if skip_draw else 'draw')),
+            turnOrigin=turn_origin,
             drawnTile=(player.hand[player.drawnTileIndex]
                        if not skip_draw and player.drawnTileIndex >= 0 else None),
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
@@ -715,12 +719,12 @@ class GameManager:
             upperLastDiscard=self._upper_last_discard_for(player_index),
             earlyRound=self._early_round_for(player_index),
             wallCount=len(self.wall),
-            canHu=(not skip_draw and self.rules.is_winning_hand(
+            canHu=(drawn_turn and self.rules.is_winning_hand(
                 player.hand, structural_meld_count(player))),
             canWindKong=bool(
                 self.rules.code == 'lotus-legacy'
                 and getattr(self.rules, 'wind_kong', lambda _hand: False)(player.hand)
-                and not skip_draw
+                and drawn_turn
             ),
             **self._llm_meta(player_index, 'turn'),
         )

@@ -79,7 +79,7 @@ class TestGameManagerState:
 
     @pytest.mark.asyncio
     async def test_dealer_advances(self):
-        """每局结束后庄位轮转（庄家胡牌连庄时保持不变）"""
+        """每局结束后庄位轮转（庄家胡牌 / 流局且庄家听牌时连庄）"""
         manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)])
         await manager.start_game('east')
         assert manager.phase == 'settled'
@@ -87,8 +87,12 @@ class TestGameManagerState:
         first_result = manager.result
         dealer_before = manager.dealer
         await manager.next_round()
-        # 庄家胡 → 连庄不变；闲家胡/流局 → 庄位 +1（与 TS 端 advanceMatchState 一致）
-        if not first_result.get('draw') and first_result.get('winnerIndex') == dealer_before:
+        # 与 TS 端 advanceMatchState 一致：庄家胡 → 连庄；流局且庄家听牌 → 连庄；否则庄位 +1。
+        keeps_seat = (
+            (not first_result.get('draw') and first_result.get('winnerIndex') == dealer_before)
+            or (first_result.get('draw') and first_result.get('dealerTenpai'))
+        )
+        if keeps_seat:
             assert manager.dealer == dealer_before
         else:
             assert manager.dealer == (dealer_before + 1) % 4
@@ -256,3 +260,63 @@ def test_is_human_distinguishes_remote_from_ai():
     assert manager._is_human(0) is True
     assert manager._is_human(1) is False
     assert manager._is_human(3) is False
+
+
+@pytest.mark.asyncio
+async def test_opening_turn_counts_as_drawn_for_can_hu():
+    """庄家开局首回合视作已摸牌（天胡可胡）；吃碰后跳摸的回合不算已摸牌。
+
+    对齐单机 localTurnOrchestrator 的 preDrawn：庄家开局跳摸但已持 14 张，
+    此前后端 `canHu=(not skip_draw and ...)` 恒为 false，联机天胡永远没有「胡」按钮。
+    """
+    captured: dict = {}
+
+    class _Capture:
+        def __init__(self, action):
+            self.action = action
+
+        async def request_turn(self, ctx):
+            captured[ctx.turnOrigin] = ctx
+            return self.action
+
+        async def request_claim(self, ctx):
+            return {'kind': 'pass'}
+
+        async def request_rob_kong(self, ctx):
+            return 'pass'
+
+        def on_discarded(self):
+            pass
+
+        def reset(self):
+            pass
+
+    winning14 = ['m1', 'm1', 'm1', 'm2', 'm2', 'm2', 'm3', 'm3', 'm3', 's1', 's1', 's1', 's2', 's2']
+    junk13 = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9', 's5', 's6', 's7', 's8']
+    manager = GameManager(mode='east', controllers=[
+        _Capture({'kind': 'win'}),
+        _Capture({'kind': 'discard', 'handIndex': 0}),
+        _Capture({'kind': 'discard', 'handIndex': 0}),
+        _Capture({'kind': 'discard', 'handIndex': 0}),
+    ])
+    manager.players = [
+        GamePlayer(name=f'P{i}', avatar='', score=1000, seat=i,
+                   hand=list(winning14 if i in (0, 1) else junk13),
+                   discards=[], melds=[], redCount=0, drawnTileIndex=13)
+        for i in range(4)
+    ]
+    manager._table_context.players = manager.players
+    manager.dealer = 0
+    manager.wall = ['m9'] * 30
+
+    await manager.begin_turn(0, skip_draw=True)
+    opening = captured['opening']
+    assert opening.skipDraw is True
+    assert opening.canHu is True
+
+    captured.clear()
+    manager.phase = 'drawing'   # 第一段已结算：复位阶段以便再取一次上下文
+    await manager.begin_turn(1, skip_draw=True, after_claim='peng')
+    after_claim = captured['peng']
+    assert after_claim.skipDraw is True
+    assert after_claim.canHu is False

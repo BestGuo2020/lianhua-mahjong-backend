@@ -1418,11 +1418,8 @@ class RoomSession:
                 'finalScores': final_scores,
             })
             await self._persist_match_end(final_scores)
-            # 对局结束：解除各座位准备态（房间保留，房主可再开一局）。
-            # 不回 lobby 状态，保留 finished 供记录/重连快照展示。
-            for state in self.seats:
-                if state is not None:
-                    state.ready = False
+            # 准备态保留（2026-09-10 用户决定：一场结束后各座位仍是「已准备」，房主可
+            # 直接再开一场，不必全员重新点准备）。不回 lobby 状态，保留 finished 供记录/重连快照展示。
             # 对局结束时已超过 60 分钟限时 → 自动释放房间（close 内会广播 room_closed）
             if self.is_past_deadline():
                 room_registry.remove(self.room_id)

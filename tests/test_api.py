@@ -290,12 +290,13 @@ async def test_human_avatar_persists_ai_unchanged(server, fresh_rooms, temp_stor
         assert stub_avatar_fetch['n'] == 2   # 只在首次进房取图
 
         # 持久化落库 + 跨房间复用（同一登录身份不再重新取图）。
-        # 一人只能在一间房（ALREADY_IN_ROOM）：甲先离房（房主离开，房间解散）再进新房
+        # 一人只能在一间房（ALREADY_IN_ROOM）：甲先离房（乙仍在座，原房间保留）后，
+        # 甲才能用同一身份另开新房。
         assert temp_storage.get_player_avatar('wakudemo-guest-1') == 'https://example.com/avatar/fake-1.jpg'
         await http.post(f'/api/rooms/{room_id}/leave',
                         json={'seat': joins['甲']['seat'], 'rejoinCode': joins['甲']['rejoinCode']})
-        room2 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})).json()['roomId']
         http.cookies.set('lgm_wakudemo_session', 'guest-1')
+        room2 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})).json()['roomId']
         await http.post(f'/api/rooms/{room2}/join', json={'nickname': '甲', 'playerId': 'guest-1'})
         seeds2 = rooms.get(room2)._seeds()
         assert seeds2[0]['avatar'] == 'https://example.com/avatar/fake-1.jpg'
@@ -386,21 +387,32 @@ async def test_join_rejects_duplicate_nickname(server, fresh_rooms, temp_storage
 
 
 @pytest.mark.asyncio
-async def test_creator_leave_in_lobby_dissolves_room(server, fresh_rooms, temp_storage):
-    """房主在非对局中离开 → 房间自动解散（GET 404）。"""
+async def test_creator_leave_in_lobby_keeps_room_and_transfers(server, fresh_rooms, temp_storage):
+    """房主在非对局中离开 → 房间保留、房主顺延给下一座位（2026-09-10 用户决定）。
+
+    此前「非对局中房主离开即解散」，会让前端「返回大厅」的暂离/退出误解散整间房。
+    现在只有「全员离开」「房主显式关闭房间」「房间限时回收」才解散。
+    """
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         http.cookies.set('lgm_wakudemo_session', 'p-1')
         join_a = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '甲'})).json()
         http.cookies.set('lgm_wakudemo_session', 'p-2')
-        await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})
+        join_b = (await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})).json()
         info = (await http.get(f'/api/rooms/{room_id}')).json()
         assert info['creatorSeat'] == 0
 
-        # 房主（甲）在 lobby 离开 → 房间解散
+        # 房主（甲）在 lobby 离开 → 房间保留，房主顺延给乙
         resp = await http.post(f'/api/rooms/{room_id}/leave',
                                json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
+        assert resp.status_code == 200
+        info = (await http.get(f'/api/rooms/{room_id}')).json()
+        assert info['creatorSeat'] == join_b['seat']
+
+        # 最后一人离开 → 房间才解散
+        resp = await http.post(f'/api/rooms/{room_id}/leave',
+                               json={'seat': join_b['seat'], 'rejoinCode': join_b['rejoinCode']})
         assert resp.status_code == 200
         resp = await http.get(f'/api/rooms/{room_id}')
         assert resp.status_code == 404
@@ -731,7 +743,7 @@ async def test_db_outage_does_not_abort_match(server, fresh_rooms, temp_storage,
 
 @pytest.mark.asyncio
 async def test_room_can_restart_after_match(server, fresh_rooms, temp_storage):
-    """对局结束后房间保留（finished）且座位解除准备态，可再准备再开一局。"""
+    """对局结束后房间保留（finished）且**准备态保留**，可以直接再开一局。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
@@ -745,8 +757,10 @@ async def test_room_can_restart_after_match(server, fresh_rooms, temp_storage):
 
         async def ready_and_start():
             for j in joins.values():
+                # 显式 ready=true：准备态在一场结束后保留，toggle 会把已准备翻成未准备。
                 resp = await http.post(f'/api/rooms/{room_id}/ready',
-                                       json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
+                                       json={'seat': j['seat'], 'rejoinCode': j['rejoinCode'],
+                                             'ready': True})
                 assert resp.status_code == 200
             resp = await http.post(f'/api/rooms/{room_id}/start')
             assert resp.status_code == 200, resp.text
@@ -757,8 +771,8 @@ async def test_room_can_restart_after_match(server, fresh_rooms, temp_storage):
         # 第一场
         await ready_and_start()
         assert rooms.get(room_id) is not None   # 房间保留，未被释放
-        # 对局结束：座位解除准备态（再开一局需重新准备）
-        assert all(s.ready is False for s in room.seats if s is not None)
+        # 对局结束：准备态保留（2026-09-10 用户决定：不必全员重新点准备）
+        assert all(s.ready is True for s in room.seats if s is not None)
 
         # 再开一局
         await ready_and_start()
@@ -823,7 +837,7 @@ async def test_all_leave_releases_room(server, fresh_rooms, temp_storage):
         await http.post(f'/api/rooms/{room_id}/leave',
                         json={'seat': joins['乙']['seat'], 'rejoinCode': joins['乙']['rejoinCode']})
         assert rooms.get(room_id) is not None
-        # 房主再离 → 房间解散
+        # 最后一人（此时已是房主）再离 → 房间解散
         await http.post(f'/api/rooms/{room_id}/leave',
                         json={'seat': joins['甲']['seat'], 'rejoinCode': joins['甲']['rejoinCode']})
         assert rooms.get(room_id) is None
@@ -942,7 +956,7 @@ async def test_stats_survive_leaving_room(server, fresh_rooms, temp_storage):
         await http.post(f'/api/rooms/{room_id}/start')
         await wait_until(lambda: room.status == 'finished', timeout=30)
         # 对局结束后全部离房 → room_seats 行被删。
-        # 先离非房主（乙），再房主（甲）离房触发房间解散 —— 房主一离，房间即从注册表移除，
+        # 先离非房主（乙），再离最后一人（甲）→ 房间即从注册表移除，
         # 其余玩家将无法再对该房间发请求。
         for j in reversed(list(joins.values())):
             await http.post(f'/api/rooms/{room_id}/leave',

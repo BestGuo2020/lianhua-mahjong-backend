@@ -273,16 +273,14 @@ def leave_room(room_id: str, body: SeatActionRequest) -> dict:
 
     释放后若房间已无任何真人座位 → 立即解散（无论对局状态）：避免全员离开后
     空房间一直占着注册表槽位（对局中全员退出时同样生效，取消这场没人看的对局）。
-    房主在非对局中（大厅/场次结束）离开 → 房间自动解散；对局中房主离开但仍有
-    其他玩家 → AI 代打、房间保留（房主转移给下一座位）。
+    房主离开但仍有其他真人 → 房间保留、房主顺延给下一座位（`release_seat` 内转移）；
+    解散只来自房主显式「关闭房间」、全员离开或房间限时回收——2026-09-10 用户决定
+    去掉「非对局中房主离开即解散」，否则「返回大厅」的暂离/退出会误解散整间房。
     """
     room = _room_or_404(room_id)
     _verify_seat(room, body.seat, body.rejoinCode)
-    was_creator = room.creator_seat == body.seat
     room.release_seat(body.seat)
     if not room.has_humans():
-        room_registry.remove(room_id)
-    elif was_creator and room.status != 'playing':
         room_registry.remove(room_id)
     logger.bind(room_id=room_id, seat=body.seat).info("离开房间")
     return {'roomId': room.room_id, 'seat': body.seat, 'left': True}

@@ -1,5 +1,6 @@
 """血流 LLM 候选构建/校验测试（M4）—— 候选形状、默认推荐、动作复核、提示词与 EV 注入。"""
 
+import asyncio
 import json
 
 import pytest
@@ -183,7 +184,76 @@ async def test_llm_seat_failure_falls_back_to_ev():
         raise RuntimeError('provider down')
 
     room.llm_request = broken_request
+    queue: asyncio.Queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
     await room._decide_bots(engine)
     # 失败回退 EV：胡（该点炮 EV 高于门槛）。
     assert engine.seats[1]['locked'] is True
     assert engine.ledger[-1]['kind'] == 'win'
+    # 失败只发问号气泡（对齐经典 _on_llm_fallback），不创建 TTS。
+    messages = _drain(queue)
+    assert [m['text'] for m in messages if m.get('kind') == 'llm_message'] == ['？']
+    assert [m for m in messages if m.get('kind') == 'llm_audio'] == []
+
+
+def _drain(queue: asyncio.Queue) -> list[dict]:
+    messages = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+    return messages
+
+
+@pytest.mark.asyncio
+async def test_llm_message_and_tts_audio_are_broadcast(monkeypatch):
+    """模型原话随决策即时下发：气泡 llm_message + 服务端合成 llm_audio（对齐经典房间）。
+
+    联机血流此前丢弃模型回复、由客户端拼模板台词；这里断言原话文本与音频 URL 都下发。
+    """
+    engine = claim_rig()
+    room = make_room(engine)
+    from app.llm.config import LlmServerConfig
+    room.llm_seats = {1: LlmServerConfig(enabled=True, base_url='x', api_key='x', model='x',
+                                         style='稳健', timeout_s=40.0, timeout_enabled=True)}
+    view = room._seat_view(1)
+    built = build_blood_flow_candidates(view, 'x')
+    pass_id = next(c['id'] for c in built['candidates'] if c['action']['kind'] == 'pass')
+
+    async def fake_request(cfg, system, user, candidate_ids, reasoning=False):
+        return pass_id, '  这张先走。  '   # 原文带空白：服务端归一后下发
+
+    class FakeAudio:
+        audio_url = '/api/local-tts/audio/abc.mp3'
+        cached = True
+        size_bytes = 1200
+
+    class FakeTts:
+        available = True
+
+        async def ensure_audio(self, text, style, provider_id):
+            assert text == '这张先走。'
+            assert style == '稳健'
+            return FakeAudio()
+
+    monkeypatch.setattr('app.game.blood_flow_room.get_tts_service', lambda: FakeTts())
+    room.llm_request = fake_request
+    queue: asyncio.Queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+
+    await room._decide_bots(engine)
+    await asyncio.sleep(0.01)   # 让 TTS 任务跑完
+
+    messages = _drain(queue)
+    speech = [m for m in messages if m.get('kind') == 'llm_message']
+    audio = [m for m in messages if m.get('kind') == 'llm_audio']
+    assert len(speech) == 1
+    assert speech[0]['seat'] == 1 and speech[0]['text'] == '这张先走。'
+    assert speech[0]['speechSource'] == 'model-message'
+    # 过（pass）属 commentary（不对外泄露动作键），与经典 _model_speech_metadata 同口径。
+    assert speech[0]['purpose'] == 'commentary' and 'actionKind' not in speech[0]
+    assert len(audio) == 1
+    assert audio[0]['messageId'] == speech[0]['id']
+    assert audio[0]['audioUrl'] == '/api/local-tts/audio/abc.mp3'
+    assert audio[0]['cached'] is True and audio[0]['priority'] == 'normal'
+    # 统计口径与经典房间一致（请求/命中）。
+    assert room._tts_match_stats == {'requests': 1, 'hits': 1, 'misses': 0,
+                                     'successes': 1, 'failures': 0}

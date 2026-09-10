@@ -157,8 +157,13 @@ class BloodFlowEngine:
                                 'heaven' if self.opening_bonus and self.first_discard and seat == self.dealer else None)
             if win:
                 self.evaluation[seat] = win
-                moves.extend([{'kind': 'win'}, {'kind': 'pass'}])
-        if not self.seats[seat]['locked'] and self.wall:
+                moves.append({'kind': 'win'})
+                # 锁手后不得过胡（用户确认）：自摸窗口也不给「过」，只能胡或打掉摸牌。
+                if not self.seats[seat]['locked']:
+                    moves.append({'kind': 'pass'})
+        # 开杠（暗杠/风杠/补杠）只在「本手来自摸牌」时提供：碰/吃之后的这一手必须先出牌，
+        # 与经典玩法的 userDrewThisTurn 门控同口径（此前碰完就能立刻开杠，用户报为错误）。
+        if self.draw_source and not self.seats[seat]['locked'] and self.wall:
             for tile in concealed_kongs(player['hand'], self.jokers):
                 moves.append({'kind': 'concealed-kong', 'tile': tile})
             if wind_kong(player['hand']):
@@ -192,13 +197,18 @@ class BloodFlowEngine:
         return True
 
     def expire(self) -> None:
-        """本地回退：未决定的座位 回合→摸打/兜底弃牌，其余→过。"""
+        """本地回退：未决定的座位 回合→摸打/兜底弃牌，其余→过；锁手座位有胡则必胡。"""
         window = self.window
         if self.interrupted or not window:
             return
         for seat in SEATS:
             if window['options'][seat] and window['decisions'][seat] is None:
-                if window['kind'] == 'turn':
+                # 锁手座位的胡是唯一选项（不得过胡）：兜底也必须走胡，否则等于「过」。
+                forced_win = next((a for a in window['options'][seat]
+                                   if a['kind'] == 'win' and self.seats[seat]['locked']), None)
+                if forced_win is not None:
+                    window['decisions'][seat] = forced_win
+                elif window['kind'] == 'turn':
                     index = self.players[seat]['drawnTileIndex'] if self.seats[seat]['locked'] else fallback_discard(
                         self.players[seat]['hand'], self.jokers,
                         [a['index'] for a in window['options'][seat] if a['kind'] == 'discard'])
@@ -280,7 +290,8 @@ class BloodFlowEngine:
                 if seat == next_seat(source['seat']):
                     for chi in lotus_chi_options(hand, source['tile']):
                         actions.append({'kind': 'chi', 'tiles': chi['tiles']})
-            if actions:
+            # 锁手后不得过胡：已胡过的座位仍可点炮/抢杠继续胡，但「过」不再是选项（用户确认）。
+            if actions and not (self.seats[seat]['locked'] and win):
                 actions.append({'kind': 'pass'})
             options[seat] = actions
         if any(options):
@@ -516,9 +527,10 @@ def summarize_round(rule_version: str, round_id: str, opening: list[int], ending
             for s in SEATS:
                 kong_net[s] += entry['deltas'][s]
     order = sorted(SEATS, key=lambda s: (-ending[s], s))
+    # 名次 1 基（与前端 roundLifecycle.summarizeRound 一致）：结算「N 名」与冠军高亮依赖它。
     ranks = [0] * 4
     for rank, seat in enumerate(order):
-        ranks[seat] = rank
+        ranks[seat] = rank + 1
     return {
         'ruleVersion': rule_version, 'roundId': round_id, 'reason': 'wall-exhausted',
         'openingScores': opening, 'endingScores': ending,

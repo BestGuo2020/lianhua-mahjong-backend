@@ -138,6 +138,22 @@ def test_full_seeded_rounds_conserve_and_settle():
                 assert sum(entry['deltas']) == 0
 
 
+def test_round_result_ranks_are_one_based():
+    """名次 1 基：与前端 roundLifecycle.summarizeRound 同口径（结算「N 名」+ 冠军高亮）。"""
+    engine = BloodFlowEngine(
+        authority_epoch='test', round_id='ranks', rules=BloodFlowRuleSet(),
+        dealer=0, ring=random.Random(7).sample(create_wall(), 136),
+        dice=[2, 3], second_dice=[4, 5],
+    )
+    play_round(engine)
+    ranks = engine.result['ranks']
+    assert sorted(ranks) == [1, 2, 3, 4]
+    ending = engine.result['endingScores']
+    for seat in SEATS:
+        better = len([n for n in ending if n > ending[seat]])
+        assert ranks[seat] == better + 1
+
+
 def test_multi_win_batch_aggregates_one_source():
     hands = [
         ['m7', 'm8', 'm9', 'p7', 'p8', 'p9', 's7', 's8', 's9', 'north', 'west', 'south', 'p4', 'm5'],
@@ -164,12 +180,14 @@ def test_multi_win_batch_aggregates_one_source():
 
 
 def pass_all_claims(engine: BloodFlowEngine) -> None:
-    """过掉所有待决策的非回合窗口（吃碰杠胡一律过）。"""
+    """过掉所有待决策的非回合窗口（吃碰杠胡一律过）；锁手座位按规则提交它唯一的「胡」。"""
     while engine.window and engine.window['kind'] != 'turn':
         seat = next((s for s in SEATS if engine.window['options'][s] and engine.window['decisions'][s] is None), None)
         if seat is None:
             break
-        assert engine.submit(engine.command(seat, {'kind': 'pass'}))
+        forced = next((a for a in engine.window['options'][seat]
+                       if a['kind'] == 'win' and engine.seats[seat]['locked']), None)
+        assert engine.submit(engine.command(seat, forced or {'kind': 'pass'}))
 
 
 def test_robbed_kong_rolls_back_and_pays_no_kong_fee():
@@ -266,3 +284,56 @@ def test_kong_scores_are_immediate_and_zero_sum():
             assert sum(entry['deltas']) == 0
             assert entry['scoresAfter'] == [p['score'] + 0 for p in engine.players] or True
     engine.assert_conservation()
+
+
+def test_locked_seat_never_enters_claim_windows():
+    """锁手后仍可点炮继续胡，但不能过胡（「胡」是唯一选项）；未锁手则胡/过都给。"""
+    hand0 = ['m7', 'm8', 'm9', 'p4', 'p5', 'p6', 's4', 's5', 's6', 'p7', 'p8', 's7', 's8', 'east']
+    waiting = ['m1', 'm2', 'm3', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'm4', 'm5', 'm6', 'east']
+    no_claim = ['m1', 'm2', 'm3', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'south', 'west', 'north']
+
+    def build():
+        return BloodFlowEngine(authority_epoch='t', round_id='lock-claim', rules=BloodFlowRuleSet(),
+                               opening=make_opening(hands=[hand0, waiting, no_claim, no_claim],
+                                                    wall_front=['north']))
+
+    opened = build()
+    assert opened.submit(opened.command(0, {'kind': 'discard', 'index': 13}))
+    # 未锁手允许过胡（用户确认）：同一窗口同时给「胡」与「过」。
+    assert opened.window['options'][1] == [{'kind': 'win'}, {'kind': 'pass'}]
+
+    locked = build()
+    locked.seats[1]['locked'] = True
+    assert locked.submit(locked.command(0, {'kind': 'discard', 'index': 13}))
+    # 锁手后点炮胡照给（任意听依然能在弃牌上胡），但不给「过」。
+    assert locked.window['options'][1] == [{'kind': 'win'}]
+
+
+def test_no_kong_declaration_right_after_a_claim():
+    """碰/吃之后的这一手只能出牌：手里还留着第 4 张也不给补杠（对齐经典 userDrewThisTurn）。"""
+    hands = [
+        ['m7', 'm8', 'm9', 'p7', 'p8', 'p9', 's7', 's8', 's9', 'north', 'west', 'south', 'p4', 'm5'],
+        ['m3', 'm4', 'm5', 'm5', 'm5', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'east'],
+        ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9', 'east', 'south', 'west', 'north'],
+        ['m2', 'm6', 'm8', 'p3', 'p6', 'p9', 's2', 's5', 's8', 'red', 'green', 'white', 'north'],
+    ]
+    engine = BloodFlowEngine(authority_epoch='t', round_id='kong-after-claim', rules=BloodFlowRuleSet(),
+                             opening=make_opening(hands=hands, wall_front=['north', 'west', 'south']))
+    assert engine.submit(engine.command(0, {'kind': 'discard', 'index': 13}))   # 打 m5
+    assert {'kind': 'peng'} in engine.window['options'][1]
+    assert engine.submit(engine.command(1, {'kind': 'peng'}))
+    window = engine.window
+    assert window['kind'] == 'turn'
+    kinds = [a['kind'] for a in window['options'][1]]
+    assert kinds and set(kinds) == {'discard'}
+
+    # 对照：摸牌后的这一手仍然提供开杠（庄家开局首回合视作已摸牌）。
+    kong_hands = [
+        ['m5', 'm5', 'm5', 'm5', 'p1', 'p2', 'p3', 's1', 's2', 's3', 's7', 's8', 's9', 'east'],
+        ['m1', 'm2', 'm3', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'south', 'west', 'north'],
+        ['m4', 'm6', 'm7', 'p4', 'p6', 'p7', 's4', 's6', 's7', 'red', 'green', 'white', 'north'],
+        ['m8', 'm9', 'p8', 'p9', 's5', 's8', 's9', 'm6', 'p5', 'p4', 'red', 'green', 'white'],
+    ]
+    opened = BloodFlowEngine(authority_epoch='t', round_id='kong-draw', rules=BloodFlowRuleSet(),
+                             opening=make_opening(hands=kong_hands, wall_front=['north']))
+    assert {'kind': 'concealed-kong', 'tile': 'm5'} in opened.window['options'][0]

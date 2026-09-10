@@ -93,19 +93,18 @@ BLOOD_FLOW_TIMING: dict[str, int] = {
     'recoveryGraceMs': 12_000,
 }
 
-# 真人联机房间的视觉节奏（毫秒）：对齐经典房间 PLAY_PACE + AI_DELAYS（非血流玩法）。
+# 真人联机房间的视觉节奏（毫秒）：以单机血流为基准逐项对齐——前端引擎 engine.ts
+# 消费共享 PACE_MS，机器人思考是 useBloodFlowGame.schedule 的统一 650ms（不分窗口类型）。
+# 不再对齐经典联机的以下专属档位：claim 500 / after_kong 550 分档、真人碰/明杠 350
+# 缩短（skipDrawPengDelay 等）、多响抢杠 betweenRobKongs 450（单机引擎无此停顿）。
 BLOOD_FLOW_PACE: dict[str, int] = {
-    'aiThinkTurn': 650,            # AI 出牌思考（对齐 AI_DELAYS.turn）
-    'aiThinkClaim': 500,           # AI 碰/杠/抢响应思考（对齐 AI_DELAYS.claim）
-    'aiThinkKong': 550,            # AI 杠后补摸再出牌（对齐 AI_DELAYS.after_kong）
+    'aiThink': 650,                # 机器人决策前统一停顿（LLM 座位也先等再发请求，同单机 actBot）
+    'afterDraw': 450,              # 摸牌到出牌窗口（对齐单机 PACE_MS.afterDraw）
     'afterDiscardToNextTurn': 450,  # 弃牌到下家
-    'afterClaimPeng': 650,          # AI 碰/吃后（对齐 PLAY_PACE.afterClaimPeng）
-    'afterClaimPengHuman': 350,     # 真人碰后（对齐 PLAY_PACE.skipDrawPengDelay）
-    'afterClaimGang': 550,          # AI 明杠后
-    'afterClaimGangHuman': 350,     # 真人明杠后（经典对真人缩短）
+    'afterClaimPeng': 650,          # 碰/吃后（单机不分真人/AI）
+    'afterClaimGang': 550,          # 明杠后（单机不分真人/AI）
     'afterKongSettle': 600,         # 暗杠/补杠/乱风杠后
     'beforeRobKong': 650,           # 补杠到抢杠窗口
-    'betweenRobKongs': 450,         # 多响抢杠：赢家批次之间停顿（对齐 PLAY_PACE）
     # 胡牌表现：血流本地 bloodFlowWinTiming（经典单胡无此档位，取本地为准）
     'winEffectBase': 1815,
     'winEffectLarge': 2600,

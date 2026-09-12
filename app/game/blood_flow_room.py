@@ -17,6 +17,7 @@ from loguru import logger
 from app.core.blood_flow.config import BLOOD_FLOW_CONFIG, BLOOD_FLOW_PACE, BLOOD_FLOW_TIMING
 from app.game.anime_characters import (DEFAULT_ANIME_CHARACTER_ID,
                                        resolve_anime_character_id)
+from app.game.avatars import resolve_seat_avatar
 from app.game.blood_flow_engine import (SEATS, BloodFlowEngine, next_seat,
                                         window_complete)
 from app.game.manager import PLAYER_SEED
@@ -114,6 +115,8 @@ class BloodFlowRoomSession:
         self.capacity = capacity
         self.player_count = capacity
         self.ruleset_id = ruleset_id
+        # 座位头像落库用（player_avatars）：与经典房间共用同一 player_id → 同一张头像。
+        self.storage = storage
         self.table_theme = 'jade'
         # 节奏：经典房间注入的是经典节奏表（dict）→ 血流用自带节奏表；0 = 测试/无节奏。
         if isinstance(pace, dict):
@@ -190,20 +193,30 @@ class BloodFlowRoomSession:
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
                        player_id: Optional[str] = None, character_id: str = 'deepseek',
                        avatar: str = ''):
-        """与 RoomSession 同契约：返回 (seat, is_rejoin, state)；重进码恢复原座位。"""
+        """与 RoomSession 同契约：返回 (seat, is_rejoin, state)；重进码恢复原座位。
+
+        头像与经典房间同源（app.game.avatars.resolve_seat_avatar）：平台登录头像优先，
+        否则复用该 player_id 已落库的头像，再否则取一次随机头像并落库；空串由前端回退
+        座位默认头像。两个玩法共用同一 player_id，因此同一玩家在经典/血流房间是同一张脸。
+        重进（重进码 / 同 player_id）与经典房间一致，只补落库/随机头像，不覆盖平台头像。
+        """
         if rejoin_code:
             seat, state = self.resume_by_code(rejoin_code)
             state.nickname = nickname or state.nickname
+            if not state.avatar:
+                state.avatar = resolve_seat_avatar('', state.player_id, self.storage)
             return seat, True, state
         for state in self.seats:
             if state is not None and player_id is not None and state.player_id == player_id:
+                if not state.avatar:
+                    state.avatar = resolve_seat_avatar('', state.player_id, self.storage)
                 return state.seat, True, state
         seat = next((s for s in range(self.capacity) if self.seats[s] is None), None)
         if seat is None:
             raise RoomError('ROOM_FULL')
         code = _make_rejoin_code()
         state = _Seat(seat, nickname, code, player_id, character_id)
-        state.avatar = avatar
+        state.avatar = resolve_seat_avatar(avatar, player_id, self.storage)
         self.seats[seat] = state
         self.auto_seats.discard(seat)   # 新玩家接管空座：清掉上一任的托管标记
         if self.creator_seat is None:

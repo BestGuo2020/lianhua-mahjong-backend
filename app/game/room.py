@@ -13,11 +13,9 @@ WSEvents 是 GameManager 的 GameEvents 真实实现：表动作/分数/公告�
 """
 
 import asyncio
-import json
 import os
 import secrets
 import time
-import urllib.request
 from typing import Optional
 
 from loguru import logger
@@ -26,6 +24,7 @@ from app.game.anime_characters import (
     DEFAULT_ANIME_CHARACTER_ID,
     resolve_anime_character_id,
 )
+from app.game.avatars import resolve_seat_avatar
 from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.llm_player import LLMPlayer
@@ -115,27 +114,6 @@ def _model_speech_metadata(action_kind: str | None) -> tuple[str, str | None]:
 def _make_rejoin_code() -> str:
     """8 位重进码：4+4 随机 hex，大写带连字符（如 'K7Q3-M9XP'）。"""
     return f'{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}'
-
-
-# 外部随机头像 API（可环境变量覆盖；测试在 conftest 里 monkeypatch 不触网）。
-AVATAR_API_URL = os.environ.get(
-    'AVATAR_API_URL', 'https://api.ruseo.cn/api/tx?type=1&imgtype=5')
-
-
-def _fetch_random_avatar() -> str:
-    """从外部 API 取一个随机头像图片 URL；网络/解析失败返回 ''（前端回退座位默认头像）。
-
-    接口返回 JSON：{"code":0,"data":{"msg":"https://res.apihz.cn/img/tx/<hash>.jpg"}}。
-    每次请求返回不同图片，因此必须把返回的 URL 落库（player_avatars）才能跨房间/场次稳定。
-    """
-    try:
-        with urllib.request.urlopen(AVATAR_API_URL, timeout=3) as resp:
-            payload = json.loads(resp.read().decode('utf-8'))
-        url = payload.get('data', {}).get('msg', '')
-        return url if isinstance(url, str) and url.startswith('http') else ''
-    except Exception:
-        logger.warning("随机头像获取失败，回退默认头像")
-        return ''
 
 
 class SeatState:
@@ -384,22 +362,12 @@ class RoomSession:
         """确保座位带持久化头像：优先平台登录头像（preferred），否则按 player_id
         首次进房从外部 API 取一次并落库，之后跨房间/场次复用（同一玩家头像稳定）。
         无 player_id / 无存储 / 取图失败时保持空串，由前端回退座位默认头像。
+
+        解析规则与血流房间共用同一个实现（app.game.avatars.resolve_seat_avatar）。
         """
-        if state.avatar or not state.player_id:
+        if state.avatar:
             return
-        if preferred:
-            state.avatar = preferred
-            if self.storage is not None:
-                self.storage.set_player_avatar(state.player_id, preferred)
-            return
-        if self.storage is None:
-            return   # 纯内存态（测试/单机）：不触网
-        avatar = self.storage.get_player_avatar(state.player_id)
-        if not avatar:
-            avatar = _fetch_random_avatar()
-            if avatar:
-                self.storage.set_player_avatar(state.player_id, avatar)
-        state.avatar = avatar
+        state.avatar = resolve_seat_avatar(preferred, state.player_id, self.storage)
 
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
                        player_id: Optional[str] = None,

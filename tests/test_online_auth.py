@@ -209,6 +209,71 @@ async def test_join_rejects_non_http_avatar(client, fake_auth, fresh_rooms,
         assert stub_avatar_fetch['n'] == 1
 
 
+# ─── 血流房间头像：与经典房间同源（同一 player_id → 同一张脸）────
+
+async def _join_blood_flow_room(http) -> tuple[str, dict]:
+    """建一个血流房间并加入，返回 (roomId, join 响应体)。"""
+    created = await http.post('/api/rooms',
+                              json={'mode': 'east', 'rulesetId': 'lotus-blood-flow'})
+    assert created.status_code == 200
+    room_id = created.json()['roomId']
+    joined = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '阿莲'})
+    assert joined.status_code == 200
+    return room_id, joined.json()
+
+
+@pytest.mark.asyncio
+async def test_blood_flow_join_uses_platform_avatar_and_persists(
+        client, fake_auth, online_storage, fresh_rooms, stub_avatar_fetch):
+    """平台登录头像优先：血流座位直接用平台头像并落库，不再取随机图。"""
+    fake_auth['account'] = {
+        'id': '10086', 'displayName': '玩家',
+        'avatarUrl': 'https://cdn.wakudemo.cn/avatars/10086.png',
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client),
+                                 base_url='http://test', cookies=COOKIE) as http:
+        room_id, body = await _join_blood_flow_room(http)
+
+    seat = room_registry.get(room_id).seats[body['seat']]
+    assert seat.avatar == 'https://cdn.wakudemo.cn/avatars/10086.png'
+    assert stub_avatar_fetch['n'] == 0
+    assert online_storage.get_player_avatar('wakudemo-10086') == \
+        'https://cdn.wakudemo.cn/avatars/10086.png'
+
+
+@pytest.mark.asyncio
+async def test_blood_flow_reuses_avatar_persisted_by_classic_room(
+        client, fake_auth, online_storage, fresh_rooms, stub_avatar_fetch):
+    """回归：经典房间已落库的头像（无登录头像时取随机图），血流房间复用同一张。"""
+    fake_auth['account'] = {'id': '10086', 'displayName': '玩家', 'avatarUrl': None}
+    # 经典房间路径落库结果（等价于该账号先打过经典联机）
+    online_storage.set_player_avatar('wakudemo-10086',
+                                     'https://example.com/avatar/from-classic.jpg')
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client),
+                                 base_url='http://test', cookies=COOKIE) as http:
+        room_id, body = await _join_blood_flow_room(http)
+
+    seat = room_registry.get(room_id).seats[body['seat']]
+    assert seat.avatar == 'https://example.com/avatar/from-classic.jpg'
+    assert stub_avatar_fetch['n'] == 0   # 复用落库头像，不再取随机图
+
+
+@pytest.mark.asyncio
+async def test_blood_flow_falls_back_to_random_avatar_and_persists(
+        client, fake_auth, online_storage, fresh_rooms, stub_avatar_fetch):
+    """无登录头像且无落库：首次取一次随机头像并落库（与经典房间同口径）。"""
+    fake_auth['account'] = {'id': '10086', 'displayName': '玩家', 'avatarUrl': None}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client),
+                                 base_url='http://test', cookies=COOKIE) as http:
+        room_id, body = await _join_blood_flow_room(http)
+
+    seat = room_registry.get(room_id).seats[body['seat']]
+    assert seat.avatar.startswith('https://example.com/avatar/fake-')
+    assert stub_avatar_fetch['n'] == 1
+    assert online_storage.get_player_avatar('wakudemo-10086') == seat.avatar
+
+
 # ─── 座位操作保持 rejoinCode（不强制登录）─────────────────
 
 @pytest.mark.asyncio

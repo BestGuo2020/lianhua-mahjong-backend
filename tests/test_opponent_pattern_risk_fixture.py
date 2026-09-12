@@ -77,7 +77,9 @@ def test_fixture_case_matches_ts_expectation(case: dict):
     profiles = _profiles_of(case)
     summary = [{'tier': p.tier, 'factor': p.factor, 'signals': list(p.signals),
                 'suspectSuit': p.suspect_suit, 'locked': p.locked,
-                'avoidsHonorTerminals': p.avoids_honor_terminals} for p in profiles]
+                'avoidsHonorTerminals': p.avoids_honor_terminals,
+                'axisSource': p.axis_source, 'honorsInFlush': p.honors_in_flush,
+                'honorEmphasis': p.honor_emphasis} for p in profiles]
     assert summary == case['expectedProfiles'], f"{case['id']} profiles"
 
     visible = case['visibleTiles']
@@ -105,8 +107,57 @@ def test_fixture_payment_is_integer_points(case: dict):
 
 
 def test_fixture_ids_cover_the_required_scenarios():
-    """七个 case 覆盖：无信号等价旧口径 / 染手+锁手 / 三组箭牌 tier3 / 半染手 / 门清短牌河弱信号 /
-    门清十三幺（v2 危险轴 + 多现不归零）/ 门清九莲清一色（v2 嫌疑花色）。"""
+    """九个 case 覆盖：无信号等价旧口径 / 染手+锁手 / 三组箭牌 tier3 / 半染手 / 门清短牌河弱信号 /
+    门清十三幺（v2 危险轴 + 多现不归零）/ 门清九莲清一色（v2 嫌疑花色）/
+    已公开十三幺（v3 known 轴对锁手家成立）/ 已公开大三元（v3 字牌刻子轴）。"""
     assert [case['id'] for case in CASES] == \
         ['quiet', 'flush-and-locked', 'three-dragons', 'half-flush', 'sparse-suit',
-         'concealed-thirteen-orphans', 'concealed-flush']
+         'concealed-thirteen-orphans', 'concealed-flush',
+         'known-thirteen-orphans', 'known-big-three-dragons']
+
+
+def _case(case_id: str) -> dict:
+    return next(case for case in CASES if case['id'] == case_id)
+
+
+def test_known_wins_fixture_drives_axis_source_and_honor_emphasis():
+    """v3：已公开番型必须真的进入 fixture 的 opponents 并驱动轴字段（不是空断言）。"""
+    orphans = _case('known-thirteen-orphans')
+    assert orphans['opponents'][0]['knownWins'] == [
+        {'id': 'thirteenOrphans', 'label': '十三幺', 'multiplier': 16}]
+    profile = _profiles_of(orphans)[0]
+    assert (profile.tier, profile.factor) == (3, 32)
+    assert profile.signals == ['已胡十三幺', '已胡3次仍听']
+    assert (profile.axis_source, profile.avoids_honor_terminals) == ('known', True)
+    assert (profile.honors_in_flush, profile.honor_emphasis) == (False, False)
+
+    dragons = _case('known-big-three-dragons')
+    assert dragons['opponents'][0]['knownWins'][0]['id'] == 'big-three-dragons'
+    profile = _profiles_of(dragons)[0]
+    assert (profile.tier, profile.factor) == (2, 16)
+    assert profile.signals == ['已胡大三元', '已胡1次仍听']
+    assert (profile.axis_source, profile.honor_emphasis) == ('known', True)
+    assert profile.avoids_honor_terminals is False
+
+
+def test_v3_numeric_anchors_match_ts():
+    """v3 数值锚点（与 TS 侧 fixture 断言同源）：known 轴对锁手家成立、字牌刻子轴字牌更贵。
+
+    known-thirteen-orphans：锁手（inferred 轴本会一律同价）但轴来自已公开番型 →
+    字牌/幺九 320、中张 80，仍有分辨力。
+    known-big-three-dragons：字牌刻子轴 → 字牌 160、普通数牌 80。
+    sparse-suit（v1/v2 回归）：嫌疑花色 40、非嫌疑花色 20。
+    """
+    orphans = _case('known-thirteen-orphans')
+    exposure = opponent_pattern_exposure(_profiles_of(orphans), orphans['visibleTiles'])
+    assert (exposure('north'), exposure('m9'), exposure('p5')) == (320, 320, 80)
+    assert orphans['expectedExposure'] == {'north': 320, 'm9': 320, 'p5': 80}
+
+    dragons = _case('known-big-three-dragons')
+    exposure = opponent_pattern_exposure(_profiles_of(dragons), dragons['visibleTiles'])
+    assert (exposure('east'), exposure('m5')) == (160, 80)
+    assert dragons['expectedExposure'] == {'east': 160, 'm5': 80}
+
+    sparse = _case('sparse-suit')
+    exposure = opponent_pattern_exposure(_profiles_of(sparse), sparse['visibleTiles'])
+    assert (exposure('s5'), exposure('m5')) == (40, 20)

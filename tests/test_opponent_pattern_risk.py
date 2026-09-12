@@ -54,6 +54,10 @@ def test_default_tuning_matches_blood_flow_config():
     assert OPPONENT_RISK.suit_avoid_share == 0.1
     assert OPPONENT_RISK.suit_zero_river == 12
     assert OPPONENT_RISK.middle_heavy_share == 0.75
+    # v3 公开番型调参（与 TS OPPONENT_RISK 同名同值）。
+    assert OPPONENT_RISK.honor_emphasis_number_factor == 0.5
+    assert (OPPONENT_RISK.known_tier1_multiplier, OPPONENT_RISK.known_tier2_multiplier,
+            OPPONENT_RISK.known_tier3_multiplier) == (4, 8, 16)
     assert (BLOOD_FLOW_AI.risk_factor_tier1, BLOOD_FLOW_AI.risk_factor_tier2,
             BLOOD_FLOW_AI.risk_factor_tier3) == (4, 16, 32)
     assert BLOOD_FLOW_AI.risk_off_suit_factor == 0.5
@@ -306,8 +310,184 @@ def test_deterministic_repeated_calls():
 
     def fields(profile):
         return (profile.tier, profile.factor, profile.signals, profile.suspect_suit,
-                profile.locked, profile.avoids_honor_terminals)
+                profile.locked, profile.avoids_honor_terminals, profile.axis_source,
+                profile.honors_in_flush, profile.honor_emphasis)
 
     first = opponent_risk_profiles([opponent], 60)
     second = opponent_risk_profiles([opponent], 60)
     assert [fields(p) for p in first] == [fields(p) for p in second]
+
+
+# ── v3：已公开番型（OpponentKnownWin 等价结构） ──
+
+def known_win(pattern_id: str, label: str, multiplier: float, tile: str = None) -> dict:
+    return {'id': pattern_id, 'label': label, 'multiplier': multiplier, 'tile': tile}
+
+
+def test_known_wins_lower_bounds_the_threat_tier():
+    """已公开番型的倍率 4/8/16 → 威胁档下限 tier1/2/3，signal 文案为「已胡{label}」。"""
+    light = opponent_risk_profiles(
+        [{'discards': [], 'melds': [], 'knownWins': [known_win('mixed-suit', '混一色', 4)]}], 60)[0]
+    assert (light.tier, light.factor) == (1, 4)
+    assert light.signals == ['已胡混一色']
+    mid = opponent_risk_profiles(
+        [{'discards': [], 'melds': [],
+          'knownWins': [known_win('big-three-dragons', '大三元', 8)]}], 60)[0]
+    assert (mid.tier, mid.factor) == (2, 16)
+    assert mid.signals == ['已胡大三元']
+    top = opponent_risk_profiles(
+        [{'discards': [], 'melds': [],
+          'knownWins': [known_win('nine-gates', '九莲宝灯', 16)]}], 60)[0]
+    assert (top.tier, top.factor) == (3, 32)
+    assert top.signals == ['已胡九莲宝灯']
+
+
+def test_known_wins_take_the_strongest_multiplier_only_for_the_bound():
+    """档位下限取最强的那次已胡番型，但 honorEmphasis 等轴判定看整份 knownWins。"""
+    profile = opponent_risk_profiles(
+        [{'discards': [], 'melds': [], 'knownWins': [
+            known_win('pinghu', '平胡', 1), known_win('big-four-winds', '大四喜', 16)]}], 60)[0]
+    assert (profile.tier, profile.factor) == (3, 32)
+    assert profile.signals == ['已胡大四喜']
+    assert (profile.axis_source, profile.honor_emphasis) == ('known', True)
+
+
+def test_known_win_below_threshold_keeps_signal_out_and_no_axis():
+    """倍率低于 4（平胡量级）不设档、也不产生 known 轴。"""
+    profile = opponent_risk_profiles(
+        [{'discards': [], 'melds': [], 'knownWins': [known_win('pinghu', '平胡', 1)]}], 60)[0]
+    assert (profile.tier, profile.factor) == (0, 1)
+    assert profile.signals == []
+    assert profile.axis_source is None
+
+
+def test_known_honor_terminal_axis_applies_to_locked_opponent():
+    """v3 核心：已公开十三幺 → known 轴对锁手家同样成立（字牌幺九贵、中张便宜）。"""
+    locked = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'winCount': 3, 'locked': True,
+        'knownWins': [known_win('thirteenOrphans', '十三幺', 16)]}], 40)[0]
+    assert (locked.tier, locked.factor) == (3, 32)
+    assert locked.signals == ['已胡十三幺', '已胡3次仍听']
+    assert locked.locked is True
+    assert (locked.axis_source, locked.avoids_honor_terminals) == ('known', True)
+    assert locked.suspect_suit is None
+    exposure = exposure_of([locked])
+    assert exposure('north') == 320
+    assert exposure('m9') == 320
+    assert exposure('p5') == 80
+
+    # 对照：同一牌河但没有公开番型 → inferred 轴对锁手家不可用，一律同价（160）。
+    inferred = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'winCount': 3, 'locked': True}], 40)[0]
+    costs = [exposure_of([inferred])(tile) for tile in ('north', 'm9', 'p5', 'east')]
+    assert set(costs) == {160}
+
+
+def test_known_honor_emphasis_axis_prices_honors_higher():
+    """v3 字牌刻子轴：大三元（8 倍）→ 字牌照价 160、普通数牌 ×0.5 = 80。"""
+    profile = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'winCount': 1, 'locked': True,
+        'knownWins': [known_win('big-three-dragons', '大三元', 8, tile='red')]}], 40)[0]
+    assert (profile.tier, profile.factor) == (2, 16)
+    assert profile.signals == ['已胡大三元', '已胡1次仍听']
+    assert (profile.axis_source, profile.honor_emphasis) == ('known', True)
+    assert profile.avoids_honor_terminals is False
+    exposure = exposure_of([profile])
+    assert exposure('east') == 160
+    assert exposure('m5') == 80
+    assert exposure('north') == 160
+
+
+def test_known_flush_axis_uses_the_winning_tile_suit():
+    """v3 花色轴：九莲宝灯（tile=s9）→ 嫌疑花色由公开胡牌牌面确定（比牌河推断可靠）。
+
+    注意：``off_suit`` 折扣要求轴「可用」——已知花色轴对锁手家成立（s 仍最贵），
+    但锁手家的非嫌疑花色折扣不生效（锁手可能停在单吊任意听），与 TS 逐位一致。
+    """
+    locked = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'winCount': 2, 'locked': True,
+        'knownWins': [known_win('nine-gates', '九莲宝灯', 16, tile='s9')]}], 40)[0]
+    assert (locked.tier, locked.factor) == (3, 32)
+    assert locked.suspect_suit == 's'
+    assert locked.axis_source == 'known'
+    assert locked.honors_in_flush is False
+    exposure = exposure_of([locked])
+    assert exposure('s5') == 320    # 嫌疑花色中张照价（锁手但 known 轴成立）
+    assert exposure('m5') == 160    # 锁手：非嫌疑花色折扣不生效
+    assert exposure('north') == 160
+
+    # 未锁手（同牌河同公开番型）：非嫌疑花色 ×0.5 生效 → 中张 80、字牌 160。
+    unlocked = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'knownWins': [known_win('nine-gates', '九莲宝灯', 16, tile='s9')]}], 40)[0]
+    assert unlocked.locked is False
+    exposure = exposure_of([unlocked])
+    assert exposure('s5') == 320
+    assert exposure('m5') == 160    # 非嫌疑花色：权重 32 × 0.5 仍高于基线 → 32 × 0.5 × 0.25 × 40
+    assert exposure('north') == 160  # 非嫌疑花色字牌：32 × 0.5（保留下限 ≥ 生张档）
+
+def test_known_mixed_suit_counts_honors_as_the_same_suit():
+    """v3 混一色：honorsInFlush 为真 → 字牌算「本门」，不享受非嫌疑花色折扣。
+
+    该牌河的推断部分是「牌河几乎未打条」（tier 2 / 嫌疑条），随后被公开番型改写：
+    axisSource = known、honorsInFlush = true、嫌疑花色由胡牌牌面确定为 m。
+    """
+    profile = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'winCount': 1, 'locked': True,
+        'knownWins': [known_win('mixed-suit', '混一色', 2, tile='m3')]}], 40)[0]
+    assert (profile.tier, profile.factor) == (2, 16)     # 2 倍低于 knownTier1Multiplier=4 → 档位来自读牌河
+    assert profile.axis_source == 'known'
+    assert profile.honors_in_flush is True
+    assert profile.suspect_suit == 'm'
+    exposure = exposure_of([profile])
+    assert exposure('north') == 160   # 字牌算本门：不 ×0.5（16 × 0.25 × 40）
+    assert exposure('m5') == 160      # 嫌疑花色：16 × 0.25 × 40（中张不在字牌幺九轴上）
+    assert exposure('s5') == 80       # 锁手：非嫌疑花色折扣不生效，但字牌刻子/中张轴都不适用 → 16 × 0.5 × 0.25
+
+    unlocked = opponent_risk_profiles([{
+        'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],
+        'melds': [], 'knownWins': [known_win('mixed-suit', '混一色', 2, tile='m3')]}], 40)[0]
+    exposure = exposure_of([unlocked])
+    assert exposure('north') == 10    # 未锁手且只有 known 轴（无档位）→ 字牌算本门：不 ×0.5（1 × 0.25 × 40）
+    assert exposure('m5') == 10       # 嫌疑花色
+    assert exposure('s5') == 10       # 无档位权重 1 → ×0.5 后仍不过基线，保持 40 × 0.25
+
+
+def test_known_flush_without_tile_falls_back_to_river_inference():
+    """公开胡牌牌面拿不到时，花色轴退回牌河推断（不硬造嫌疑花色）。"""
+    profile = opponent_risk_profiles([{
+        'discards': ['m1', 'm2', 'm3', 'm4', 'p1', 'p2', 'p3', 'p4', 'east', 'south'],
+        'melds': [], 'knownWins': [known_win('pure-suit', '清一色', 4)]}], 60)[0]
+    assert profile.axis_source == 'known'
+    assert profile.suspect_suit == 's'        # 牌河一张条子没打 → 退回推断
+    assert profile.tier == 2
+
+
+def test_known_wins_accept_opponent_known_win_objects():
+    """``OpponentKnownWin`` 等价结构：dataclass 与 dict 都可作为 knownWins 输入。"""
+    from app.core.opponent_pattern_risk import OpponentKnownWin
+    profile = opponent_risk_profiles([{
+        'discards': [], 'melds': [],
+        'knownWins': [OpponentKnownWin(id='big-three-dragons', label='大三元',
+                                       multiplier=8, tile='red')]}], 60)[0]
+    assert (profile.tier, profile.axis_source, profile.honor_emphasis) == (2, 'known', True)
+    assert profile.signals == ['已胡大三元']
+
+
+def test_known_wins_are_deterministic_and_public_only():
+    """只读公共信息：同样的输入两次结果逐位一致。"""
+    opponent = {'discards': ['m1', 'p9', 'm4', 'm5'], 'melds': [],
+                'winCount': 1, 'locked': True,
+                'knownWins': [known_win('thirteenOrphans', '十三幺', 16)]}
+
+    def fields(profile):
+        return (profile.tier, profile.factor, profile.signals, profile.axis_source,
+                profile.honors_in_flush, profile.honor_emphasis, profile.suspect_suit)
+
+    assert [fields(p) for p in opponent_risk_profiles([opponent], 40)] == \
+        [fields(p) for p in opponent_risk_profiles([opponent], 40)]

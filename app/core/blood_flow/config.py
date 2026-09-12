@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.core.blood_flow.types import PatternDefinition
-
 # 16 番型 + 特殊手（权重与排除关系与前端 config.ts 完全一致）。
 PATTERNS: dict[str, PatternDefinition] = {
     'pure-suit': PatternDefinition('pure-suit', '清一色', 4),
@@ -64,6 +63,32 @@ BLOOD_FLOW_CONFIG = BloodFlowConfig()
 
 
 @dataclass(frozen=True)
+class DefensePolicyConfig:
+    """兜/弃政策阈值（v3）—— 对齐前端 config.ts 的 DefensePolicyConfig。
+
+    规则来自用户定稿（2026-09-12）：
+      ① 只要能在本巡转成**精吊任意听**就继续走（锁手后每张摸到的牌都能胡、永不弃牌）；
+      ② 未听牌且可达听口过窄 → 立即弃胡：只打最小赔付张、停吃碰杠；
+      ③ 我方上限不低于对手已知/推断的牌型倍率 → 可以赌（继续进攻）。
+    """
+    # 触发「兜」的最低对手威胁档（3 = 十六倍级 / 门清大牌）。
+    fold_threat_tier: int = 3
+    # 我方上限认定：番型方向接近度 ≥ 该值才算「真有机会做成」。
+    ceiling_progress: float = 0.35
+    # 我方上限认定：该方向的番型倍率权重下限（与对手对比用）。
+    ceiling_weight_floor: float = 4
+    # 兜牌硬约束：'hard' = 候选层撤掉吃碰杠 + 弃牌只留安全档（引擎与 LLM 共用同一份候选）；
+    # 'off' = 只在引擎侧选择最小赔付张，候选不收敛。
+    mode: str = 'hard'
+    # 兜牌时允许的弃牌安全档容差（0 = 只留放炮成本最小档）。
+    fold_discard_tolerance: float = 0
+
+
+# 兜/弃政策默认值（v3；与前端 BLOOD_FLOW_DEFENSE 同名同值）。
+BLOOD_FLOW_DEFENSE = DefensePolicyConfig()
+
+
+@dataclass(frozen=True)
 class BloodFlowAiConfig:
     """血流本地 AI 贪婪 EV 参数（对齐前端 config.ts BLOOD_FLOW_AI）。"""
     strategy: str = 'ev'
@@ -89,6 +114,8 @@ class BloodFlowAiConfig:
     risk_factor_tier3: float = 32
     # 染手（花色集中）嫌疑对手：非嫌疑花色牌的系数。
     risk_off_suit_factor: float = 0.5
+    # 兜/弃政策阈值（v3）。
+    defense: DefensePolicyConfig = BLOOD_FLOW_DEFENSE
     llm_ev_features: bool = True
 
 

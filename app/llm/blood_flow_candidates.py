@@ -74,17 +74,14 @@ def protected_discards(view: dict) -> set[str]:
 
 
 def candidate_actions(view: dict) -> list[dict]:
-    """候选动作：锁手不动；未锁手时过滤受保护弃牌（全保护时兜底保留）。"""
-    actions = [dict(a) for a in (view.get('ownActions') or [])]
-    if view['public']['seats'][view['seat']]['locked']:
-        return actions
-    protected = protected_discards(view)
-    hand = view['players'][view['seat']]['hand']
-    discards = [a for a in actions if a['kind'] == 'discard']
-    ordinary = [a for a in discards if hand[a['index']] not in protected]
-    allowed_discards = ordinary or discards
-    allowed = {('discard', a['index']) for a in allowed_discards}
-    return [a for a in actions if a['kind'] != 'discard' or ('discard', a['index']) in allowed]
+    """候选动作：与前端 ``bloodFlowAiActions(view, BLOOD_FLOW_AI, defense)`` 同源。
+
+    锁手不动；未锁手时先按血流规则过滤受保护弃牌（全保护时兜底保留），再套兜/弃政策的
+    候选层硬约束（v3：兜牌时撤掉全部吃碰杠、弃牌只留放炮成本最小档；两个出口不受限）。
+    引擎侧 ``decide_blood_flow_action_ev`` 与 LLM 候选共用这一份。
+    """
+    from app.core.blood_flow.ai import blood_flow_ai_actions
+    return blood_flow_ai_actions(view, BLOOD_FLOW_AI)
 
 
 def build_blood_flow_candidates(view: dict, request_id: str,
@@ -202,6 +199,7 @@ def validate_blood_flow_action(view: dict, action: dict) -> bool:
 
 
 def blood_flow_prompt_rules() -> str:
+    """规则摘要（逐字对齐前端 ``BLOOD_FLOW_PROMPT_RULES``，含 v3 的兜/弃政策段）。"""
     return ('莲花麻将血流：沿用翻精、白板受限替代、数牌吃和字牌顺；支持平胡、七对、十三幺、十三烂、'
             '七星十三烂及清一色、混一色、碰碰胡、大小三元、大小四喜、九莲宝灯、绿一色、清幺九、混幺九、'
             '三暗刻、四暗刻、字一色、三杠、四杠。自然成立硬胡×2；真实倍率、封顶和收益以 currentWin 为准。'
@@ -210,7 +208,16 @@ def blood_flow_prompt_rules() -> str:
             '抢杠两值），仅作依据；早局低番胡会锁手，可结合潜力考虑改张或过。'
             '点炮赔付=底分10×番型倍率×事件倍率（点炮×1、自摸/抢杠×2、杠上开花×4），单家封顶64倍；'
             '同一张牌打给在做大牌（清一色/三元/四喜等）的对手，代价可达平胡的8~32倍；'
-            '候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。')
+            '候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。'
+            '门清对手也能读牌河：整局不打字牌与幺九＝十三幺/字一色嫌疑，整局不打某花色＝九莲/清一色嫌疑，'
+            '此时字牌幺九与嫌疑花色才是贵的，中张相对便宜——必打一张时应按这个方向选损失最小的牌。'
+            '对手已胡过的番型同样是公开信息（features.opponentRisk.signals 里的「已胡十三幺」等）：'
+            '已公开番型限定了他的牌型，锁手后依然成立，因此比读牌河更可靠。'
+            '兜/弃政策：state.defense.mode 为 fold 时，本家未听牌且可达听口过窄而对手已做成十六倍级大牌'
+            '——此时应只打最安全的牌、不要吃碰杠；若 ownAnyWaitReachable 为真'
+            '（打一张即单吊任意听，此后每巡必胡、永不弃牌）或 ownCeiling 不低于对手倍率，则应继续进攻。'
+            'state.defense.restricted 为真时，候选已在本地下游收窄（吃碰杠不会出现、弃牌只留安全档），'
+            '只需在给出的候选里选择，不要因为缺少选项而报错。')
 
 
 def ev_features_for(view: dict) -> dict:
@@ -264,6 +271,8 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, s
     )
     seat = view['seat']
     player = view['players'][seat]
+    from app.core.blood_flow.ai import blood_flow_defense_policy, blood_flow_known_wins
+    defense = blood_flow_defense_policy(view, BLOOD_FLOW_AI)
     user_payload = {
         'ruleSummary': blood_flow_prompt_rules(),
         'requestId': built['requestId'],
@@ -286,6 +295,20 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, s
         'opponentRisk': [{'seat': seat, 'tier': profile.tier, 'signals': list(profile.signals)}
                          for seat, profile in _risk_profiles_with_seats(view)
                          if profile.tier > 0],
+        # 对手已公开的番型（谁已胡过十三幺/九莲等，玩家视角本就公开）——对齐前端
+        # bloodFlowDecisionPrompt 的 opponentPatterns。
+        'opponentPatterns': blood_flow_known_wins(view),
+        # 本地兜/弃政策结论（v3）：mode=fold 时应只打最安全张并不再吃碰杠。
+        'defense': {
+            'mode': defense['result'].mode, 'reasons': list(defense['result'].reasons),
+            'ownShanten': 0 if defense['own'].can_tenpai else 1,
+            'ownCanTenpai': defense['own'].can_tenpai,
+            'ownBestWait': defense['own'].best_wait_remaining,
+            'ownAnyWaitReachable': defense['own'].any_wait_reachable,
+            'ownCeiling': defense['own'].ceiling_multiplier,
+            # true = 候选已在引擎侧收窄（吃碰杠已撤、弃牌只剩安全档），模型只能在此范围内选择。
+            'restricted': defense['result'].mode == 'fold' and BLOOD_FLOW_AI.defense.mode == 'hard',
+        },
         'engineSuggestion': built['engineSuggestion'],
         'candidates': [{
             'id': c['id'], 'label': c['label'], 'features': c['features'],

@@ -60,6 +60,8 @@ class OpponentRiskTuning:
     # 十三幺 / 字一色轴上字牌与幺九的公开张数下限：这类牌型每种只需要一张，
     # 「我手里有两张」只降低概率、不等于安全，所以现物折扣不得归零。
     honor_terminal_ladder_floor: float = 0.1
+    # 字牌刻子轴（三元 / 四喜 / 字一色）：非字牌数牌的系数（字牌照价）。
+    honor_emphasis_number_factor: float = 0.5
     # 花色回避：牌河 ≥ concealed_river_min 且该花色占比 ≤ 该值 → 九莲 / 门清清一色嫌疑。
     suit_avoid_share: float = 0.1
     # 短牌河兜底：某花色张数 ≤ 该值（占比可能高于 suit_avoid_share）→ 弱信号（v1 灵敏度）。
@@ -69,6 +71,10 @@ class OpponentRiskTuning:
     suit_zero_river: int = 12
     # 七对嫌疑（弱信号）：中张占牌河 ≥ 该比例。
     middle_heavy_share: float = 0.75
+    # v3：已公开番型的倍率下限 → 威胁档下限（4 / 8 / 16 对应 tier1 / tier2 / tier3）。
+    known_tier1_multiplier: float = 4
+    known_tier2_multiplier: float = 8
+    known_tier3_multiplier: float = 16
     # 档位 → 中文标签（1/2/3）。
     tier_labels: dict[int, str] = field(
         default_factory=lambda: {1: '低', 2: '中', 3: '高'})
@@ -83,10 +89,28 @@ TUNING_FIELDS: tuple[str, ...] = (
     'late_game_wall_count', 'late_threat_wall_count', 'tier_labels',
     'concealed_river_min', 'honor_terminal_quiet', 'honor_terminal_zero_river',
     'honor_terminal_middle_factor', 'honor_terminal_ladder_floor',
+    'honor_emphasis_number_factor',
     'suit_avoid_share', 'suit_sparse_count', 'suit_zero_river', 'middle_heavy_share',
+    'known_tier1_multiplier', 'known_tier2_multiplier', 'known_tier3_multiplier',
 )
 
 RISK_TIER_LABELS: dict[int, str] = {1: '低', 2: '中', 3: '高'}
+
+# 已公开番型 → 逐张危险轴（与 TS 的 HONOR_TERMINAL_PATTERNS / FLUSH_PATTERNS /
+# HONORS_IN_FLUSH / HONOR_EMPHASIS_PATTERNS 逐项一致）。
+# 只吃字牌与幺九（十三幺 / 字一色 / 清幺九 / 混幺九）→ 中张便宜。
+HONOR_TERMINAL_PATTERNS: frozenset[str] = frozenset(
+    ('thirteenOrphans', 'all-honors', 'pure-terminals', 'mixed-terminals'))
+# 单花色轴：非嫌疑花色便宜（其中混一色的字牌仍算「本门」）。
+FLUSH_PATTERNS: frozenset[str] = frozenset(
+    ('pure-suit', 'nine-gates', 'all-green', 'mixed-suit'))
+HONORS_IN_FLUSH: frozenset[str] = frozenset(('mixed-suit',))
+# 字牌刻子轴：三元 / 四喜 / 字一色一类，字牌才是他要的，普通数牌相对便宜。
+HONOR_EMPHASIS_PATTERNS: frozenset[str] = frozenset(
+    ('little-three-dragons', 'big-three-dragons', 'little-four-winds',
+     'big-four-winds', 'all-honors'))
+
+AxisSource = str                # 'inferred' | 'known'
 
 
 def tuning_of(partial=None) -> OpponentRiskTuning:
@@ -207,6 +231,24 @@ def _weakest_suit(counts: dict[SuitKey, int]) -> Optional[SuitKey]:
 
 
 @dataclass
+class OpponentKnownWin:
+    """对手已公开的胡牌番型（来自 PublicWinScore.items + patternMultiplier，玩家视角本就公开）。
+
+    与 TS 的 ``OpponentKnownWin`` 同形；也接受同名字段的 dict（``_known_win_attr`` 读取）。
+    """
+    id: str
+    label: str
+    multiplier: float
+    tile: Optional[Tile] = None
+
+
+def _known_win_attr(win, name: str, default=None):
+    if isinstance(win, dict):
+        return win.get(name, default)
+    return getattr(win, name, default)
+
+
+@dataclass
 class OpponentRiskProfile:
     """逐家风险档。``index`` 为传入数组下标；调用方负责映射到座位 / 相对方位。"""
     index: int
@@ -217,6 +259,13 @@ class OpponentRiskProfile:
     locked: bool
     # 十三幺 / 字一色 / 混清幺九嫌疑：该家几乎不打字牌与幺九 → 中张反而便宜。
     avoids_honor_terminals: bool = False
+    # v3 危险轴来源：'inferred' = 由牌河读牌推断（对锁手家不适用，锁手可能是单吊任意听）；
+    # 'known' = 由对手已公开番型确定（已公开番型限定了牌型，锁手后同样适用）。
+    axis_source: Optional[AxisSource] = None
+    # 混一色：字牌也算「本门」，不享受非嫌疑花色折扣。
+    honors_in_flush: bool = False
+    # 三元 / 四喜 / 字一色一类：字牌照价，普通数牌相对便宜（字牌刻子轴）。
+    honor_emphasis: bool = False
 
 
 def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
@@ -299,6 +348,46 @@ def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
                 raise_tier(1, '牌河中张密集')
         if wall <= resolved.late_game_wall_count and 1 <= len(discards) <= 7:
             raise_tier(1, '残局少牌河')
+        # 已公开番型（比读牌河更确定）：给威胁档设下限，并按牌型选定逐张危险轴。
+        # 轴判定顺序必须与 TS 一致：字牌幺九轴 → 花色轴（花色由 tile 的 suit 确定）→ 字牌刻子轴。
+        known_wins = list(_meld_attr(opponent, 'knownWins', None) or [])
+        axis_source: Optional[AxisSource] = None
+        honors_in_flush = False
+        honor_emphasis = False
+        if known_wins:
+            strongest = known_wins[0]
+            for win in known_wins:
+                if (_known_win_attr(win, 'multiplier', 0) or 0) > \
+                        (_known_win_attr(strongest, 'multiplier', 0) or 0):
+                    strongest = win
+            strongest_multiplier = _known_win_attr(strongest, 'multiplier', 0) or 0
+            pattern_tier = 3 if strongest_multiplier >= resolved.known_tier3_multiplier else \
+                2 if strongest_multiplier >= resolved.known_tier2_multiplier else \
+                1 if strongest_multiplier >= resolved.known_tier1_multiplier else 0
+            if pattern_tier > 0:
+                raise_tier(pattern_tier, f"已胡{_known_win_attr(strongest, 'label', '')}")
+            honor_emphasis = any(_known_win_attr(win, 'id') in HONOR_EMPHASIS_PATTERNS
+                                 for win in known_wins)
+            if any(_known_win_attr(win, 'id') in HONOR_TERMINAL_PATTERNS for win in known_wins):
+                avoids_honor_terminals = True
+                axis_source = 'known'
+            elif any(_known_win_attr(win, 'id') in FLUSH_PATTERNS for win in known_wins):
+                axis_source = 'known'
+                honors_in_flush = any(_known_win_attr(win, 'id') in HONORS_IN_FLUSH
+                                      for win in known_wins)
+                # 哪一门由公开的胡牌牌面确定（比牌河推断可靠）；拿不到就退回牌河推断。
+                for win in known_wins:
+                    if _known_win_attr(win, 'id') not in FLUSH_PATTERNS:
+                        continue
+                    tile = _known_win_attr(win, 'tile')
+                    flush_suit = suit_of_tile(tile) if tile else None
+                    if flush_suit:
+                        suspect_suit = flush_suit
+                        break
+            elif honor_emphasis:
+                axis_source = 'known'
+        if axis_source is None and (avoids_honor_terminals or suspect_suit is not None):
+            axis_source = 'inferred'
         win_count = _meld_attr(opponent, 'winCount', 0) or 0
         locked = bool(_meld_attr(opponent, 'locked', False) and win_count > 0)
         if locked:
@@ -306,7 +395,8 @@ def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
         profiles.append(OpponentRiskProfile(
             index=index, tier=tier, factor=_factor_for(tier, resolved),
             signals=list(dict.fromkeys(signals)), suspect_suit=suspect_suit, locked=locked,
-            avoids_honor_terminals=avoids_honor_terminals,
+            avoids_honor_terminals=avoids_honor_terminals, axis_source=axis_source,
+            honors_in_flush=honors_in_flush, honor_emphasis=honor_emphasis,
         ))
     return profiles
 
@@ -355,29 +445,38 @@ def opponent_pattern_exposure(profiles: Optional[Sequence[OpponentRiskProfile]],
             return resolved.exposure_unit * ladder
         suit = suit_of_tile(tile)
         middle = is_middle_tile(tile)
+        honor = is_honor_tile(tile)
         weight = 1
         chosen: Optional[OpponentRiskProfile] = None
         for profile in active:
-            # 已锁手的家可能停在单吊任意听（任何一张都能胡）：现物折扣、花色折扣与危险轴折扣都不适用。
-            off_suit = (not profile.locked and profile.suspect_suit is not None
-                        and suit != profile.suspect_suit)
+            # 危险轴是否可用：'known'（已公开番型）对锁手家同样成立——已公开番型限定了牌型；
+            # 'inferred'（读牌河）对锁手家不可用，因为锁手可能是单吊任意听（任何一张都能胡）。
+            axis_applies = profile.axis_source == 'known' or not profile.locked
+            # 混一色的字牌算「本门」：不享受非嫌疑花色折扣。
+            honor_on_off_suit_axis = profile.honors_in_flush and honor
+            off_suit = (axis_applies and profile.suspect_suit is not None
+                        and suit != profile.suspect_suit and not honor_on_off_suit_axis)
             in_suspect_suit = profile.suspect_suit is not None and suit == profile.suspect_suit
             tile_factor = resolved.off_suit_factor if off_suit else 1
             # 逐张危险轴：十三幺 / 字一色嫌疑下中张几乎不被需要 → 便宜；但嫌疑花色内的中张
             # 照价（九莲要同一花色 1-9）。
-            if (not profile.locked and profile.avoids_honor_terminals and middle
-                    and not in_suspect_suit):
+            if axis_applies and profile.avoids_honor_terminals and middle and not in_suspect_suit:
                 tile_factor *= resolved.honor_terminal_middle_factor
+            # 字牌刻子轴（三元 / 四喜 / 字一色）：字牌照价，普通数牌便宜。
+            if axis_applies and profile.honor_emphasis and not honor:
+                tile_factor *= resolved.honor_emphasis_number_factor
             candidate = profile.factor * tile_factor
             if candidate > weight:
                 weight = candidate
                 chosen = profile
         # 一次弃牌最多被一家胡：取权重最高的一家的口径。
+        chosen_axis = chosen is not None and (chosen.axis_source == 'known' or not chosen.locked)
         if chosen is None:
             ratio = ladder
-        elif chosen.locked:
+        elif chosen.locked and chosen.axis_source != 'known':
+            # 已锁手的家可能停在单吊任意听：现物折扣不适用。
             ratio = resolved.safety_cost_none
-        elif chosen.avoids_honor_terminals and not middle:
+        elif chosen.avoids_honor_terminals and chosen_axis and not middle:
             # 十三幺/字一色轴上字牌与幺九保留下限：多现 ≠ 安全（该牌型每种只要一张）。
             ratio = max(ladder, resolved.honor_terminal_ladder_floor)
         else:

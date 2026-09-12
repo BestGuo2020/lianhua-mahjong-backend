@@ -10,14 +10,16 @@ from typing import Callable, Optional
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
 from app.core.lotus_ai import decide_turn as lotus_decide_turn
 from app.core.lotus_rules import waiting_tiles as lotus_waiting_tiles
-from app.core.opponent_pattern_risk import (OpponentRiskProfile,
+from app.core.opponent_pattern_risk import (OPPONENT_RISK, OpponentRiskProfile,
                                             max_opponent_risk_tier,
                                             opponent_pattern_exposure,
                                             opponent_risk_profiles)
 from app.core.tiles import TILE_TYPES
 from app.models.game import TileType
 
-from .config import BLOOD_FLOW_AI, BLOOD_FLOW_CONFIG, BloodFlowAiConfig
+from .config import (BLOOD_FLOW_AI, BLOOD_FLOW_CONFIG, BLOOD_FLOW_DEFENSE,
+                     BloodFlowAiConfig)
+from .defense_policy import decide_defense_policy, own_hand_facts
 
 HONORS: tuple[str, ...] = ('east', 'south', 'west', 'north', 'red', 'green', 'white')
 DRAGONS: tuple[str, ...] = ('red', 'green', 'white')
@@ -415,7 +417,55 @@ def blood_flow_risk_tuning(config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> dict:
         'safety_cost_one': config.safety_cost_one,
         'safety_cost_safe': config.safety_cost_safe,
         'late_game_wall_count': config.late_game_wall_count,
+        'known_tier1_multiplier': OPPONENT_RISK.known_tier1_multiplier,
+        'known_tier2_multiplier': OPPONENT_RISK.known_tier2_multiplier,
+        'known_tier3_multiplier': OPPONENT_RISK.known_tier3_multiplier,
     }
+
+
+def _known_wins_of(view: dict, seat: int) -> list[dict]:
+    """从公共批次里取某座位的历次胡牌番型（PublicWinScore.items + patternMultiplier）。
+
+    与前端 ``knownWinsOf`` 逐项同源：每个 item 展开成 ``{id, label, multiplier, tile}``，
+    ``multiplier`` 取该次胡的 ``patternMultiplier``，``tile`` 取该批次来源牌（公共信息）。
+    """
+    wins: list[dict] = []
+    batches = (view.get('public') or {}).get('batches') or []
+    for batch in batches:
+        source_tile = (batch.get('source') or {}).get('tile')
+        for win in batch.get('winners') or []:
+            if win.get('winner') != seat:
+                continue
+            score = win.get('score') or {}
+            for item in score.get('items') or []:
+                wins.append({'id': item.get('id'), 'label': item.get('label'),
+                             'multiplier': score.get('patternMultiplier'),
+                             'tile': source_tile})
+    return wins
+
+
+def _known_wins_by_seat(view: dict) -> dict:
+    """一次性把每个座位的公开番型摊平（``_known_wins_of`` 的批处理版）。"""
+    return {player.get('seat'): _known_wins_of(view, player.get('seat'))
+            for player in (view.get('players') or [])}
+
+
+def blood_flow_known_wins(view: dict, known_wins: Optional[dict] = None) -> list[dict]:
+    """每座位的公开番型（供 prompt、政策与后端镜像共用）。
+
+    对齐前端 ``bloodFlowKnownWins``：``[{'seat': …, 'patterns': [{'label', 'multiplier'}]}]``；
+    只保留已胡过（patterns 非空）的座位。``known_wins`` 可传入 ``_known_wins_by_seat`` 的结果复用。
+    """
+    known: list[dict] = []
+    if known_wins is None:
+        known_wins = _known_wins_by_seat(view)
+    for player in view.get('players') or []:
+        seat = player.get('seat')
+        patterns = [{'label': win['label'], 'multiplier': win['multiplier']}
+                    for win in known_wins.get(seat) or []]
+        if patterns:
+            known.append({'seat': seat, 'patterns': patterns})
+    return known
 
 
 def _seat_field(view: dict, seat: int, name: str, default=None):
@@ -430,7 +480,7 @@ def _seat_field(view: dict, seat: int, name: str, default=None):
 
 def blood_flow_opponent_risk(view: dict,
                              config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> list[dict]:
-    """对手牌型风险档（只用公共信息）。血流额外带入已胡次数与锁手。
+    """对手牌型风险档（只用公共信息）。血流额外带入已胡次数、锁手与**已公开番型**。
 
     ``opponent_pattern_risk == 'off'`` 时返回空列表，调用方回退旧口径（对齐前端
     bloodFlowOpponentRisk）。返回 dict 列表：风险档字段 + ``seat``（绝对座位）。
@@ -440,6 +490,7 @@ def blood_flow_opponent_risk(view: dict,
     seat = view['seat']
     players = view.get('players') or []
     seats = [p.get('seat', index) for index, p in enumerate(players) if index != seat]
+    known_wins = _known_wins_by_seat(view)
     opponents = []
     for index in range(len(players)):
         if index == seat:
@@ -450,6 +501,7 @@ def blood_flow_opponent_risk(view: dict,
             'melds': player.get('melds') or [],
             'winCount': _seat_field(view, index, 'winCount', 0),
             'locked': _seat_field(view, index, 'locked', False),
+            'knownWins': known_wins.get(index) or [],
         })
     profiles = opponent_risk_profiles(opponents, view.get('wallCount', 0),
                                       blood_flow_risk_tuning(config))
@@ -461,17 +513,23 @@ def blood_flow_opponent_risk(view: dict,
             'signals': list(profile.signals), 'suspectSuit': profile.suspect_suit,
             'locked': profile.locked,
             'avoidsHonorTerminals': profile.avoids_honor_terminals,
+            'axisSource': profile.axis_source,
+            'honorsInFlush': profile.honors_in_flush,
+            'honorEmphasis': profile.honor_emphasis,
             'seat': seats[position] if position < len(seats) else position,
         })
     return result
 
 
 def _profiles_of(profiles: list[dict]) -> list[OpponentRiskProfile]:
-    """dict 形态 → 风险模块档案（字段同名映射，含 v2 的 avoidsHonorTerminals）。"""
+    """dict 形态 → 风险模块档案（字段同名映射，含 v2 危险轴与 v3 公开番型轴）。"""
     return [OpponentRiskProfile(index=p['index'], tier=p['tier'], factor=p['factor'],
                                 signals=list(p['signals']), suspect_suit=p.get('suspectSuit'),
                                 locked=p['locked'],
-                                avoids_honor_terminals=bool(p.get('avoidsHonorTerminals', False)))
+                                avoids_honor_terminals=bool(p.get('avoidsHonorTerminals', False)),
+                                axis_source=p.get('axisSource'),
+                                honors_in_flush=bool(p.get('honorsInFlush', False)),
+                                honor_emphasis=bool(p.get('honorEmphasis', False)))
             for p in profiles]
 
 
@@ -488,6 +546,78 @@ def blood_flow_safety_exposure(view: dict, config: BloodFlowAiConfig = BLOOD_FLO
         return _safety_exposure_for(config, tiles)
     return opponent_pattern_exposure(_profiles_of(profiles), tiles,
                                      blood_flow_risk_tuning(config))
+
+
+def blood_flow_defense_policy(view: dict,
+                              config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> dict:
+    """兜/弃政策（v3）：对手已做成大牌时本家「继续走」还是「弃胡兜安全张」。
+
+    规则见 defense_policy.py 顶部注释（用户定稿的两条兜牌法 + 一条赌的出口）。
+    返回 ``{'own': OwnHandFacts, 'result': DefensePolicyResult}``（对齐前端
+    ``bloodFlowDefensePolicy``）。
+    """
+    seat = view['seat']
+    player = (view.get('players') or [])[seat]
+    visible = _exposure_visible_tiles(view)
+    profiles = blood_flow_opponent_risk(view, config)
+    known_wins = _known_wins_by_seat(view)
+    own = own_hand_facts(
+        player.get('hand') or [], player.get('melds') or [], list(view.get('jokers') or []),
+        visible, config.defense,
+        directions=[{'weight': d['weight'], 'progress': d['progress'],
+                     'label': BLOOD_FLOW_CONFIG.patterns[d['id']].label}
+                    for d in pattern_potentials(player.get('hand') or [],
+                                                player.get('melds') or [],
+                                                list(view.get('jokers') or []))])
+    opponents = []
+    for index in range(len(view.get('players') or [])):
+        if index == seat:
+            continue
+        profile = next((p for p in profiles if p['seat'] == index), None)
+        opponents.append({
+            'tier': profile['tier'] if profile else 0,
+            'locked': _seat_field(view, index, 'locked', False),
+            'knownMultiplier': max((win['multiplier'] or 0
+                                    for win in known_wins.get(index) or []), default=0),
+            'signals': list(profile['signals']) if profile else [],
+        })
+    return {'own': own, 'result': decide_defense_policy(own, opponents, config.defense)}
+
+
+CLAIM_KINDS: frozenset[str] = frozenset(
+    ('peng', 'chi', 'gang', 'added-kong', 'concealed-kong', 'wind-kong'))
+
+
+def _apply_defense_constraint(view: dict, actions: list[dict], config: BloodFlowAiConfig,
+                              precomputed: Optional[dict] = None) -> list[dict]:
+    """兜牌模式的硬约束（v3，用户定稿方案 c）：候选层直接收窄，引擎与 LLM 共用同一份候选——
+
+      ① 撤掉全部吃碰杠候选（不给自己制造「必须打危险张」的局面）；
+      ② 弃牌候选只保留放炮成本最小档的那些（让模型只能在安全张里挑怎么打）；
+      ③ 两个出口不受限：能打一张即精吊任意听、或我方上限不低于对手时，政策本身就是 push，
+         不触发约束。胡永远保留（不会因为兜牌而放过已经能胡的牌）。
+    """
+    if config.defense.mode == 'off':
+        return actions
+    defense = precomputed if precomputed is not None else blood_flow_defense_policy(view, config)
+    if defense['result'].mode != 'fold':
+        return actions
+
+    def keep_win_pass(action: dict) -> bool:
+        return action['kind'] in ('win', 'pass')
+
+    discards = [action for action in actions if action['kind'] == 'discard']
+    if not discards:
+        return [action for action in actions if keep_win_pass(action)]
+    exposure = blood_flow_safety_exposure(view, config, _exposure_visible_tiles(view))
+    hand = (view.get('players') or [])[view['seat']].get('hand') or []
+    costs = [exposure(hand[action['index']]) for action in discards]
+    floor = min(costs)
+    safe = {action['index'] for position, action in enumerate(discards)
+            if costs[position] <= floor + config.defense.fold_discard_tolerance}
+    return [action for action in actions
+            if (action['index'] in safe if action['kind'] == 'discard'
+                else keep_win_pass(action))]
 
 
 # ── EV 上下文与决策 ──
@@ -615,8 +745,23 @@ def _fallback_discard(hand: list[str], jokers: list[str], discards: list[dict]) 
     return (ordinary or discards)[0] if (ordinary or discards) else {'kind': 'pass'}
 
 
+def blood_flow_ai_actions(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI,
+                          defense: Optional[dict] = None) -> list[dict]:
+    """血流合法/锁手动作的候选层（对齐前端 ``bloodFlowAiActions(view, config, defense)``）。
+
+    只适配血流合法/锁手动作；牌型策略属于 lotus_ai。``defense`` 为调用方已算过的政策
+    （避免一次决策里重复算全手牌型 / 听口）。兜牌硬约束在此收窄候选，引擎与 LLM 共用同一份。
+    """
+    if view['public']['seats'][view['seat']]['locked']:
+        return [dict(a) for a in (view.get('ownActions') or [])]
+    legal = _legal_actions(view)
+    return _apply_defense_constraint(view, legal, config, defense)
+
+
 def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> Optional[dict]:
-    moves = _legal_actions(view)
+    # 政策一次决策只算一遍；候选构造与兜牌分支共用（硬约束下候选必须用同一份 config）。
+    defense = None if config.defense.mode == 'off' else blood_flow_defense_policy(view, config)
+    moves = blood_flow_ai_actions(view, config, defense)
     if not moves:
         return None
     if len(moves) == 1:
@@ -719,5 +864,13 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
         return win
 
     if discards:
+        # 兜/弃政策（v3）：对手已做成十六倍级大牌、本家未听牌且可达听口过窄 → 弃胡，改打最小赔付张。
+        # 有胡的窗口在前面就返回了，所以这里不会「放过已经能胡的牌」。
+        if defense and defense['result'].mode == 'fold':
+            exposure = extras['safetyExposure']
+            return sorted(discards, key=lambda a: (exposure(hand[a['index']]), a['index']))[0]
         return decide_discard()
+    # 兜牌模式下停吃碰杠（不给自己制造必须打危险张的局面）。
+    if defense and defense['result'].mode == 'fold':
+        return next((a for a in moves if a['kind'] == 'pass'), None) or moves[0]
     return decide_claim_turn()

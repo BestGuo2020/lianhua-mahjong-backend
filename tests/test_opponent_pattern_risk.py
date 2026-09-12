@@ -417,8 +417,8 @@ def test_known_flush_axis_uses_the_winning_tile_suit():
     assert locked.honors_in_flush is False
     exposure = exposure_of([locked])
     assert exposure('s5') == 320    # 嫌疑花色中张照价（锁手但 known 轴成立）
-    assert exposure('m5') == 160    # 锁手：非嫌疑花色折扣不生效
-    assert exposure('north') == 160
+    assert exposure('m5') == 32     # 轴外（非嫌疑花色）：known 轴压到 0.1 倍
+    assert exposure('north') == 32
 
     # 未锁手（同牌河同公开番型）：非嫌疑花色 ×0.5 生效 → 中张 80、字牌 160。
     unlocked = opponent_risk_profiles([{
@@ -427,8 +427,8 @@ def test_known_flush_axis_uses_the_winning_tile_suit():
     assert unlocked.locked is False
     exposure = exposure_of([unlocked])
     assert exposure('s5') == 320
-    assert exposure('m5') == 160    # 非嫌疑花色：权重 32 × 0.5 仍高于基线 → 32 × 0.5 × 0.25 × 40
-    assert exposure('north') == 160  # 非嫌疑花色字牌：32 × 0.5（保留下限 ≥ 生张档）
+    assert exposure('m5') == 32     # 非嫌疑花色：已知番型 → 权重 32 × 0.1（实测该轴外牌对锁手清一色是"不能胡"）
+    assert exposure('north') == 32  # 非嫌疑花色字牌：同样走 known 轴的轴外系数 0.1
 
 def test_known_mixed_suit_counts_honors_as_the_same_suit():
     """v3 混一色：honorsInFlush 为真 → 字牌算「本门」，不享受非嫌疑花色折扣。
@@ -447,7 +447,7 @@ def test_known_mixed_suit_counts_honors_as_the_same_suit():
     exposure = exposure_of([profile])
     assert exposure('north') == 160   # 字牌算本门：不 ×0.5（16 × 0.25 × 40）
     assert exposure('m5') == 160      # 嫌疑花色：16 × 0.25 × 40（中张不在字牌幺九轴上）
-    assert exposure('s5') == 80       # 锁手：非嫌疑花色折扣不生效，但字牌刻子/中张轴都不适用 → 16 × 0.5 × 0.25
+    assert exposure('s5') == 16       # 轴外（非本门且非字牌）：已知番型压到 0.1 倍
 
     unlocked = opponent_risk_profiles([{
         'discards': ['m1', 'p9', 'm4', 'm5', 'p4', 'p5', 's4', 's5', 'east', 'south'],

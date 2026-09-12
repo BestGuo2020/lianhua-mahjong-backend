@@ -62,6 +62,10 @@ class OpponentRiskTuning:
     honor_terminal_ladder_floor: float = 0.1
     # 字牌刻子轴（三元 / 四喜 / 字一色）：非字牌数牌的系数（字牌照价）。
     honor_emphasis_number_factor: float = 0.5
+    # 已公开番型（axis_source='known'）时，该番型「用不到的那一类牌」的系数。
+    # 实测：锁手清一色对手对非本门牌根本不能胡（0 点）、对本门牌 80 点，因此轴外应压到接近 0，
+    # 而不是只打五折。注意十三幺轴的轴外牌（中张）仍能以七星十三烂胡 80 点，所以那条轴不用这个系数。
+    known_off_axis_factor: float = 0.1
     # 花色回避：牌河 ≥ concealed_river_min 且该花色占比 ≤ 该值 → 九莲 / 门清清一色嫌疑。
     suit_avoid_share: float = 0.1
     # 短牌河兜底：某花色张数 ≤ 该值（占比可能高于 suit_avoid_share）→ 弱信号（v1 灵敏度）。
@@ -89,7 +93,7 @@ TUNING_FIELDS: tuple[str, ...] = (
     'late_game_wall_count', 'late_threat_wall_count', 'tier_labels',
     'concealed_river_min', 'honor_terminal_quiet', 'honor_terminal_zero_river',
     'honor_terminal_middle_factor', 'honor_terminal_ladder_floor',
-    'honor_emphasis_number_factor',
+    'honor_emphasis_number_factor', 'known_off_axis_factor',
     'suit_avoid_share', 'suit_sparse_count', 'suit_zero_river', 'middle_heavy_share',
     'known_tier1_multiplier', 'known_tier2_multiplier', 'known_tier3_multiplier',
 )
@@ -457,7 +461,10 @@ def opponent_pattern_exposure(profiles: Optional[Sequence[OpponentRiskProfile]],
             off_suit = (axis_applies and profile.suspect_suit is not None
                         and suit != profile.suspect_suit and not honor_on_off_suit_axis)
             in_suspect_suit = profile.suspect_suit is not None and suit == profile.suspect_suit
-            tile_factor = resolved.off_suit_factor if off_suit else 1
+            # 已知番型的轴外牌压到接近 0（实测：锁手清一色对非本门牌 0 点）；推断出来的轴仍只打五折。
+            off_axis_factor = (resolved.known_off_axis_factor if profile.axis_source == 'known'
+                               else resolved.off_suit_factor)
+            tile_factor = off_axis_factor if off_suit else 1
             # 逐张危险轴：十三幺 / 字一色嫌疑下中张几乎不被需要 → 便宜；但嫌疑花色内的中张
             # 照价（九莲要同一花色 1-9）。
             if axis_applies and profile.avoids_honor_terminals and middle and not in_suspect_suit:

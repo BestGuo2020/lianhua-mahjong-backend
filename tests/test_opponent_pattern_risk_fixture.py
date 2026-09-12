@@ -107,13 +107,14 @@ def test_fixture_payment_is_integer_points(case: dict):
 
 
 def test_fixture_ids_cover_the_required_scenarios():
-    """九个 case 覆盖：无信号等价旧口径 / 染手+锁手 / 三组箭牌 tier3 / 半染手 / 门清短牌河弱信号 /
+    """十个 case 覆盖：无信号等价旧口径 / 染手+锁手 / 三组箭牌 tier3 / 半染手 / 门清短牌河弱信号 /
     门清十三幺（v2 危险轴 + 多现不归零）/ 门清九莲清一色（v2 嫌疑花色）/
-    已公开十三幺（v3 known 轴对锁手家成立）/ 已公开大三元（v3 字牌刻子轴）。"""
+    已公开十三幺（v3 known 轴对锁手家成立）/ 已公开大三元（v3 字牌刻子轴）/
+    已公开清一色 + 锁手（v3 known 花色轴的轴外牌压到 0.1 倍，对应实测"对非本门牌根本不能胡 0 点"）。"""
     assert [case['id'] for case in CASES] == \
         ['quiet', 'flush-and-locked', 'three-dragons', 'half-flush', 'sparse-suit',
          'concealed-thirteen-orphans', 'concealed-flush',
-         'known-thirteen-orphans', 'known-big-three-dragons']
+         'known-thirteen-orphans', 'known-big-three-dragons', 'known-pure-suit-locked']
 
 
 def _case(case_id: str) -> dict:

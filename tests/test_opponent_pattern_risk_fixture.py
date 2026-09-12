@@ -76,7 +76,8 @@ def _profiles_of(case: dict):
 def test_fixture_case_matches_ts_expectation(case: dict):
     profiles = _profiles_of(case)
     summary = [{'tier': p.tier, 'factor': p.factor, 'signals': list(p.signals),
-                'suspectSuit': p.suspect_suit, 'locked': p.locked} for p in profiles]
+                'suspectSuit': p.suspect_suit, 'locked': p.locked,
+                'avoidsHonorTerminals': p.avoids_honor_terminals} for p in profiles]
     assert summary == case['expectedProfiles'], f"{case['id']} profiles"
 
     visible = case['visibleTiles']
@@ -104,6 +105,8 @@ def test_fixture_payment_is_integer_points(case: dict):
 
 
 def test_fixture_ids_cover_the_required_scenarios():
-    """四个 case 覆盖：无信号等价旧口径 / 染手+锁手 / 三组箭牌 tier3 / 半染手。"""
+    """七个 case 覆盖：无信号等价旧口径 / 染手+锁手 / 三组箭牌 tier3 / 半染手 / 门清短牌河弱信号 /
+    门清十三幺（v2 危险轴 + 多现不归零）/ 门清九莲清一色（v2 嫌疑花色）。"""
     assert [case['id'] for case in CASES] == \
-        ['quiet', 'flush-and-locked', 'three-dragons', 'half-flush']
+        ['quiet', 'flush-and-locked', 'three-dragons', 'half-flush', 'sparse-suit',
+         'concealed-thirteen-orphans', 'concealed-flush']

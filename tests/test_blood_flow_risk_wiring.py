@@ -31,8 +31,11 @@ HANDS = [
 # 花色均衡、牌型不集中：用于构造「无任何公共信号」的对手牌河。
 BALANCED = ['m1', 'm4', 'm7', 'p1', 'p4', 'p7', 's1', 's4', 's7', 'east', 'south',
             'west', 'north', 'red', 'green']
-# 条子只出现 1 张（≥8 张牌河）→ 门清弱信号「牌河未见条」（tier 1）。
-WEAK = ['m1', 'm2', 'm3', 'p2', 'p3', 'p4', 's5', 'east', 'south']
+# v2 门清弱信号：12 张牌河里 9 张中张（占比 0.75）→ tier 1「牌河中张密集」（七对嫌疑），
+# 三花色均衡且带 3 张字牌 → 既不触发字牌/幺九回避，也不带花色嫌疑。
+MIDDLE_HEAVY = ['m3', 'm4', 'm5', 'p3', 'p4', 'p5', 's3', 's4', 's5', 'east', 'south', 'north']
+# v2 门清花色回避（tier 3）：12 张牌河、条子一张没打 → 九莲/清一色量级嫌疑。
+CONCEALED_FLUSH = ['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'p2', 'p3', 'p4', 'p5', 'p6']
 
 
 def room_for(engine: BloodFlowEngine) -> BloodFlowRoomSession:
@@ -100,6 +103,7 @@ def test_opponent_risk_profiles_use_public_evidence_only():
     assert profiles[0]['signals'] == ['副露染手嫌疑', '副露少牌河快听']
     assert profiles[0]['suspectSuit'] == 'p'
     assert profiles[0]['locked'] is False
+    assert profiles[0]['avoidsHonorTerminals'] is False
     assert [p['tier'] for p in profiles[1:]] == [0, 0]
 
 
@@ -134,17 +138,37 @@ def test_no_signal_is_bit_identical_to_legacy_exposure():
         assert exposure(tile) == legacy(tile)
 
 
-def test_single_weak_signal_only_scales_that_suit():
-    """门清弱信号（牌河未见条）：只有条子 ×4，其余按旧口径。"""
+def test_single_concealed_weak_signal_scales_every_suit():
+    """v2 门清弱信号（牌河中张密集）：只有档位 ×4，三花色与字牌同价（无嫌疑花色）。"""
     engine = make_rig('risk-weak')
-    seat_discards(engine, 1, list(WEAK))
+    seat_discards(engine, 1, list(MIDDLE_HEAVY))
     view = room_for(engine)._seat_view(0)
     profiles = blood_flow_opponent_risk(view)
     assert profiles[0]['tier'] == 1
-    assert profiles[0]['signals'] == ['牌河未见条']
+    assert profiles[0]['signals'] == ['牌河中张密集']
+    assert profiles[0]['suspectSuit'] is None
+    assert profiles[0]['avoidsHonorTerminals'] is False
     exposure = blood_flow_safety_exposure(view, BLOOD_FLOW_AI, [])
-    assert exposure('s9') == 40      # 40 × 4 × 0.25（嫌疑花色）
-    assert exposure('m9') == 20      # 非嫌疑花色 ×0.5 → 40 × 4 × 0.5 × 0.25
+    assert exposure('s9') == 40      # 40 × 4 × 0.25（生张）
+    assert exposure('m9') == 40
+    assert exposure('east') == 40
+
+
+def test_concealed_flush_river_prices_suspect_suit_higher():
+    """v2 门清读牌接线：12 张牌河、条子一张没打 → tier 3（九莲/清一色），嫌疑花色 = 条。"""
+    engine = make_rig('risk-concealed-flush')
+    seat_discards(engine, 1, list(CONCEALED_FLUSH))
+    view = room_for(engine)._seat_view(0)
+    profiles = blood_flow_opponent_risk(view)
+    assert profiles[0]['tier'] == 3
+    assert profiles[0]['suspectSuit'] == 's'
+    assert profiles[0]['avoidsHonorTerminals'] is True
+    assert '牌河未打条' in profiles[0]['signals']
+    exposure = blood_flow_safety_exposure(view, BLOOD_FLOW_AI, [])
+    assert exposure('s5') == 320     # 40 × 32 × 0.25（嫌疑花色中张不打折）
+    assert exposure('m5') == 40      # 非嫌疑花色中张：×0.5 ×0.25 → 40 × 4 × 0.25
+    assert exposure('north') == 160  # 非嫌疑花色字牌：×0.5（该轴现物折扣保留下限，见下一条）
+    assert blood_flow_safety_exposure(view, BLOOD_FLOW_AI, ['s5', 's5'])('s5') == 0
 
 
 def test_exposure_legacy_ladder_values():
@@ -314,15 +338,30 @@ def test_exposure_with_switch_off_uses_same_visible_basis():
 def test_tiered_exposure_keeps_relative_ladder_ratio():
     """档位版同口径：tier 1（×4）下「公开 1 张档 / 现物档」与生张档仍保持既有比例。"""
     engine = make_rig('risk-weak-hand')
-    seat_discards(engine, 1, list(WEAK))
+    seat_discards(engine, 1, list(MIDDLE_HEAVY))
     view = room_for(engine)._seat_view(0)
     assert blood_flow_opponent_risk(view)[0]['tier'] == 1
-    exposure = blood_flow_safety_exposure(view, BLOOD_FLOW_AI)
-    visible = _exposure_visible_tiles(view)
-    # s 为嫌疑花色（系数 1）、m 为非嫌疑花色（×0.5）。
-    assert exposure('s9') == 16     # 40 × 4 × 1 × 0.1（公开 1 张）
-    assert exposure('s1') == 40     # 40 × 4 × 1 × 0.25（生张）
-    assert exposure('m9') == 8      # 40 × 4 × 0.5 × 0.1（非嫌疑花色、公开 1 张）
-    assert visible.count('s9') == 1 and visible.count('s1') == 0
-    assert exposure('s1') / exposure('s9') == pytest.approx(0.25 / 0.1, rel=1e-9)
-    assert exposure('s1') / exposure('m9') == pytest.approx(0.25 / (0.5 * 0.1), rel=1e-9)
+    visible = ['m9', 'm9', 's1']
+    exposure = blood_flow_safety_exposure(view, BLOOD_FLOW_AI, visible)
+    assert exposure('m9') == 0      # 公开 ≥2 张 → 现物档 0
+    assert exposure('s1') == 16     # 40 × 4 × 0.1（公开 1 张）
+    assert exposure('p5') == 40     # 40 × 4 × 0.25（生张，与墙余无关）
+    assert exposure('p5') / exposure('s1') == pytest.approx(0.25 / 0.1, rel=1e-9)
+
+
+def test_concealed_orphans_axis_keeps_a_floor_on_honors_and_terminals():
+    """v2 十三幺/字一色轴：字牌与幺九「多现 ≠ 安全」（现物折扣有下限），中张照常归零。"""
+    engine = make_rig('risk-concealed-orphans')
+    orphans_river = ['m3', 'm4', 'm5', 'm6', 'm7', 'p3', 'p4', 'p5', 'p6', 'p7', 's3', 's4']
+    seat_discards(engine, 1, orphans_river)
+    view = room_for(engine)._seat_view(0)
+    profiles = blood_flow_opponent_risk(view)
+    assert profiles[0]['tier'] == 3
+    assert profiles[0]['avoidsHonorTerminals'] is True
+    assert '牌河零字牌幺九' in profiles[0]['signals']
+    exposure = blood_flow_safety_exposure(view, BLOOD_FLOW_AI, ['north', 'north'])
+    assert exposure('north') == 128   # 40 × 32 × 0.1（下限），不是 0
+    assert exposure('m1') == 320      # 幺九照价：40 × 32 × 0.25（该轴保留下限 ≥ 生张档）
+    assert exposure('m7') == 80       # 中张打折：40 × 32 × 0.25 × 0.25
+    mid = blood_flow_safety_exposure(view, BLOOD_FLOW_AI, ['p5', 'p5'])
+    assert mid('p5') == 0             # 中张不在该轴上：现物折扣照常归零

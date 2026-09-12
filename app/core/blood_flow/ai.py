@@ -460,16 +460,19 @@ def blood_flow_opponent_risk(view: dict,
             'index': profile.index, 'tier': profile.tier, 'factor': profile.factor,
             'signals': list(profile.signals), 'suspectSuit': profile.suspect_suit,
             'locked': profile.locked,
+            'avoidsHonorTerminals': profile.avoids_honor_terminals,
             'seat': seats[position] if position < len(seats) else position,
         })
     return result
 
 
 def _profiles_of(profiles: list[dict]) -> list[OpponentRiskProfile]:
-    """dict 形态 → 风险模块档案（字段同名映射）。"""
+    """dict 形态 → 风险模块档案（字段同名映射，含 v2 的 avoidsHonorTerminals）。"""
     return [OpponentRiskProfile(index=p['index'], tier=p['tier'], factor=p['factor'],
                                 signals=list(p['signals']), suspect_suit=p.get('suspectSuit'),
-                                locked=p['locked']) for p in profiles]
+                                locked=p['locked'],
+                                avoids_honor_terminals=bool(p.get('avoidsHonorTerminals', False)))
+            for p in profiles]
 
 
 def blood_flow_safety_exposure(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI,

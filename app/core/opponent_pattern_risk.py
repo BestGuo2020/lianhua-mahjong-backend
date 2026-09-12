@@ -18,6 +18,9 @@ SuitKey = str                   # 'm' | 'p' | 's'
 Tile = str                      # 内部牌面（'m1' / 'east' / 'red' / 'white' …）
 
 _SUIT_TILE = re.compile(r'^([mps])[1-9]$')
+# 数牌判定必须自己捕获数字位（前端踩过的坑：只有一个捕获组时 matched[2] 恒为 undefined，
+# 所有数牌都会被判成中张、幺九永远判不出；TS 已修成两组捕获，Python 与之一致）。
+_NUMBERED_TILE = re.compile(r'^([mps])([1-9])$')
 _DRAGONS: tuple[Tile, ...] = ('red', 'green', 'white')
 _WINDS: tuple[Tile, ...] = ('east', 'south', 'west', 'north')
 _SUIT_ORDER: tuple[SuitKey, ...] = ('m', 'p', 's')
@@ -46,6 +49,26 @@ class OpponentRiskTuning:
     late_game_wall_count: int = 15
     # 残局提速墙余阈值（原 estimateOpponentThreat 的 24）。
     late_threat_wall_count: int = 24
+    # 门清读牌：牌河长度下限（低于此长度不做门清大牌读牌）。
+    concealed_river_min: int = 8
+    # 字牌/幺九回避：牌河 ≥ concealed_river_min 且字牌+幺九张数 ≤ 该值 → 十三幺 / 字一色 / 混清幺九嫌疑。
+    honor_terminal_quiet: int = 1
+    # 字牌/幺九为 0 且牌河 ≥ 该长度 → 高倍级（十六倍级）嫌疑。
+    honor_terminal_zero_river: int = 10
+    # 逐张危险轴：十三幺 / 字一色嫌疑下中张（2-8 数牌）的系数（它们几乎不吃中张）。
+    honor_terminal_middle_factor: float = 0.25
+    # 十三幺 / 字一色轴上字牌与幺九的公开张数下限：这类牌型每种只需要一张，
+    # 「我手里有两张」只降低概率、不等于安全，所以现物折扣不得归零。
+    honor_terminal_ladder_floor: float = 0.1
+    # 花色回避：牌河 ≥ concealed_river_min 且该花色占比 ≤ 该值 → 九莲 / 门清清一色嫌疑。
+    suit_avoid_share: float = 0.1
+    # 短牌河兜底：某花色张数 ≤ 该值（占比可能高于 suit_avoid_share）→ 弱信号（v1 灵敏度）。
+    # 与前端 OpponentRiskTuning.suitSparseCount 一一对应（TS 是唯一事实来源）。
+    suit_sparse_count: int = 1
+    # 某花色一张没打且牌河 ≥ 该长度 → 高倍级（十六倍级）嫌疑。
+    suit_zero_river: int = 12
+    # 七对嫌疑（弱信号）：中张占牌河 ≥ 该比例。
+    middle_heavy_share: float = 0.75
     # 档位 → 中文标签（1/2/3）。
     tier_labels: dict[int, str] = field(
         default_factory=lambda: {1: '低', 2: '中', 3: '高'})
@@ -58,6 +81,9 @@ TUNING_FIELDS: tuple[str, ...] = (
     'factor_tier1', 'factor_tier2', 'factor_tier3', 'off_suit_factor', 'exposure_unit',
     'safety_cost_none', 'safety_cost_one', 'safety_cost_safe', 'locked_tier',
     'late_game_wall_count', 'late_threat_wall_count', 'tier_labels',
+    'concealed_river_min', 'honor_terminal_quiet', 'honor_terminal_zero_river',
+    'honor_terminal_middle_factor', 'honor_terminal_ladder_floor',
+    'suit_avoid_share', 'suit_sparse_count', 'suit_zero_river', 'middle_heavy_share',
 )
 
 RISK_TIER_LABELS: dict[int, str] = {1: '低', 2: '中', 3: '高'}
@@ -76,6 +102,23 @@ def tuning_of(partial=None) -> OpponentRiskTuning:
 def suit_of_tile(tile: Tile) -> Optional[SuitKey]:
     matched = _SUIT_TILE.match(tile) if tile else None
     return matched.group(1) if matched else None
+
+
+def is_terminal_tile(tile: Tile) -> bool:
+    """幺九牌（数牌 1/9）。"""
+    matched = _NUMBERED_TILE.match(tile) if tile else None
+    return bool(matched and matched.group(2) in ('1', '9'))
+
+
+def is_honor_tile(tile: Tile) -> bool:
+    """字牌（风 + 箭）。"""
+    return tile in _DRAGONS or tile in _WINDS
+
+
+def is_middle_tile(tile: Tile) -> bool:
+    """中张（数牌 2-8）：十三幺 / 字一色这类牌型几乎不需要它们。"""
+    matched = _NUMBERED_TILE.match(tile) if tile else None
+    return bool(matched and matched.group(2) not in ('1', '9'))
 
 
 def _factor_for(tier: OpponentRiskTier, tuning: OpponentRiskTuning) -> float:
@@ -172,6 +215,8 @@ class OpponentRiskProfile:
     signals: list[str]
     suspect_suit: Optional[SuitKey]
     locked: bool
+    # 十三幺 / 字一色 / 混清幺九嫌疑：该家几乎不打字牌与幺九 → 中张反而便宜。
+    avoids_honor_terminals: bool = False
 
 
 def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
@@ -191,6 +236,7 @@ def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
         signals: list[str] = []
         tier = 0
         suspect_suit: Optional[SuitKey] = None
+        avoids_honor_terminals = False
 
         def raise_tier(next_tier: int, signal: Optional[str] = None) -> None:
             nonlocal tier
@@ -219,13 +265,38 @@ def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
             suspect_suit = facts.dominant_suit
         if facts.groups >= 2 and 1 <= len(discards) <= 7 and wall > resolved.late_threat_wall_count:
             raise_tier(1, '副露少牌河快听')
-        if facts.groups == 0 and len(discards) >= 8:
+        # 门清大牌读牌（这是 tier3 唯一的来源）：牌河指纹——整局不打字牌/幺九 = 十三幺 / 字一色；
+        # 某花色几乎不打 = 九莲 / 门清清一色；牌河几乎全是中张 = 七对弱信号。
+        # 顺序必须与 TS 一致（字牌/幺九回避 → 花色回避 → 七对弱信号），signals 会被逐字比对。
+        river_length = len(discards)
+        if facts.groups == 0 and river_length >= resolved.concealed_river_min:
+            honor_terminals = sum(1 for tile in discards
+                                  if is_honor_tile(tile) or is_terminal_tile(tile))
+            if honor_terminals == 0 and river_length >= resolved.honor_terminal_zero_river:
+                raise_tier(3, '牌河零字牌幺九')
+                avoids_honor_terminals = True
+            elif honor_terminals <= resolved.honor_terminal_quiet:
+                raise_tier(2, '牌河无字牌幺九')
+                avoids_honor_terminals = True
             counts = _suit_discard_counts(discards)
             weakest = _weakest_suit(counts)
-            if weakest and counts.get(weakest, 0) <= 1:
-                raise_tier(1, f'牌河未见{_SUIT_LABELS[weakest]}')
+            weakest_count = counts.get(weakest, 0) if weakest else 0
+            if weakest and weakest_count == 0 and river_length >= resolved.suit_zero_river:
+                raise_tier(3, f'牌河未打{_SUIT_LABELS[weakest]}')
                 if suspect_suit is None:
                     suspect_suit = weakest
+            elif weakest and weakest_count / river_length <= resolved.suit_avoid_share:
+                raise_tier(2, f'牌河几乎未打{_SUIT_LABELS[weakest]}')
+                if suspect_suit is None:
+                    suspect_suit = weakest
+            elif weakest and weakest_count <= resolved.suit_sparse_count:
+                # 短牌河（8-11 张）里某花色只有 ≤1 张：占比够不上 tier2，但仍是一档弱信号（v1 灵敏度）。
+                raise_tier(1, f'牌河少打{_SUIT_LABELS[weakest]}')
+                if suspect_suit is None:
+                    suspect_suit = weakest
+            middles = sum(1 for tile in discards if is_middle_tile(tile))
+            if middles / river_length >= resolved.middle_heavy_share:
+                raise_tier(1, '牌河中张密集')
         if wall <= resolved.late_game_wall_count and 1 <= len(discards) <= 7:
             raise_tier(1, '残局少牌河')
         win_count = _meld_attr(opponent, 'winCount', 0) or 0
@@ -235,6 +306,7 @@ def opponent_risk_profiles(opponents: Optional[Sequence[dict]] = None,
         profiles.append(OpponentRiskProfile(
             index=index, tier=tier, factor=_factor_for(tier, resolved),
             signals=list(dict.fromkeys(signals)), suspect_suit=suspect_suit, locked=locked,
+            avoids_honor_terminals=avoids_honor_terminals,
         ))
     return profiles
 
@@ -282,19 +354,35 @@ def opponent_pattern_exposure(profiles: Optional[Sequence[OpponentRiskProfile]],
         if not active:
             return resolved.exposure_unit * ladder
         suit = suit_of_tile(tile)
+        middle = is_middle_tile(tile)
         weight = 1
-        best_is_locked = False
+        chosen: Optional[OpponentRiskProfile] = None
         for profile in active:
-            # 已锁手的家可能停在单吊任意听（任何一张都能胡）：现物折扣与花色折扣都不适用。
+            # 已锁手的家可能停在单吊任意听（任何一张都能胡）：现物折扣、花色折扣与危险轴折扣都不适用。
             off_suit = (not profile.locked and profile.suspect_suit is not None
                         and suit != profile.suspect_suit)
-            candidate = profile.factor * (resolved.off_suit_factor if off_suit else 1)
+            in_suspect_suit = profile.suspect_suit is not None and suit == profile.suspect_suit
+            tile_factor = resolved.off_suit_factor if off_suit else 1
+            # 逐张危险轴：十三幺 / 字一色嫌疑下中张几乎不被需要 → 便宜；但嫌疑花色内的中张
+            # 照价（九莲要同一花色 1-9）。
+            if (not profile.locked and profile.avoids_honor_terminals and middle
+                    and not in_suspect_suit):
+                tile_factor *= resolved.honor_terminal_middle_factor
+            candidate = profile.factor * tile_factor
             if candidate > weight:
                 weight = candidate
-                best_is_locked = profile.locked
-        # 已锁手的家仍然每巡在听（已胡仍付款）：现物 / 公开多张不再享受折扣。
-        return resolved.exposure_unit * weight \
-            * (resolved.safety_cost_none if best_is_locked else ladder)
+                chosen = profile
+        # 一次弃牌最多被一家胡：取权重最高的一家的口径。
+        if chosen is None:
+            ratio = ladder
+        elif chosen.locked:
+            ratio = resolved.safety_cost_none
+        elif chosen.avoids_honor_terminals and not middle:
+            # 十三幺/字一色轴上字牌与幺九保留下限：多现 ≠ 安全（该牌型每种只要一张）。
+            ratio = max(ladder, resolved.honor_terminal_ladder_floor)
+        else:
+            ratio = ladder
+        return resolved.exposure_unit * weight * ratio
 
     return exposure
 

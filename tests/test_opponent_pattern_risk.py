@@ -5,7 +5,9 @@
 """
 
 from app.core.blood_flow.config import BLOOD_FLOW_AI
-from app.core.opponent_pattern_risk import (OPPONENT_RISK, max_opponent_risk_tier,
+from app.core.opponent_pattern_risk import (OPPONENT_RISK, is_honor_tile,
+                                            is_middle_tile, is_terminal_tile,
+                                            max_opponent_risk_tier,
                                             opponent_pattern_exposure,
                                             opponent_pattern_feature,
                                             opponent_risk_profiles,
@@ -18,6 +20,10 @@ def meld(tile: str, type_: str = 'peng') -> dict:
 
 
 QUIET = {'discards': [], 'melds': []}
+
+# 十三幺 / 字一色教科书牌河：只打中张，一张字牌与幺九都没打（12 张）。
+THIRTEEN_ORPHANS_RIVER = ['m3', 'm4', 'm5', 'm6', 'm7',
+                          'p3', 'p4', 'p5', 'p6', 'p7', 's3', 's4']
 
 
 def discards(count: int, tile: str) -> list[str]:
@@ -39,6 +45,15 @@ def test_default_tuning_matches_blood_flow_config():
     assert OPPONENT_RISK.locked_tier == 2
     assert OPPONENT_RISK.late_game_wall_count == BLOOD_FLOW_AI.late_game_wall_count == 15
     assert OPPONENT_RISK.late_threat_wall_count == 24
+    # v2 门清读牌调参（与 TS OPPONENT_RISK 同名同值）。
+    assert OPPONENT_RISK.concealed_river_min == 8
+    assert OPPONENT_RISK.honor_terminal_quiet == 1
+    assert OPPONENT_RISK.honor_terminal_zero_river == 10
+    assert OPPONENT_RISK.honor_terminal_middle_factor == 0.25
+    assert OPPONENT_RISK.honor_terminal_ladder_floor == 0.1
+    assert OPPONENT_RISK.suit_avoid_share == 0.1
+    assert OPPONENT_RISK.suit_zero_river == 12
+    assert OPPONENT_RISK.middle_heavy_share == 0.75
     assert (BLOOD_FLOW_AI.risk_factor_tier1, BLOOD_FLOW_AI.risk_factor_tier2,
             BLOOD_FLOW_AI.risk_factor_tier3) == (4, 16, 32)
     assert BLOOD_FLOW_AI.risk_off_suit_factor == 0.5
@@ -61,6 +76,20 @@ def test_suit_of_tile_only_for_suited_tiles():
     assert suit_of_tile('east') is None
     assert suit_of_tile('red') is None
     assert suit_of_tile('white') is None
+
+
+def test_tile_predicates_capture_the_number_digit():
+    """判定正则必须自己捕获数字位（否则所有数牌都会被判成中张、幺九永远判不出）。"""
+    assert is_middle_tile('m1') is False
+    assert is_terminal_tile('m1') is True
+    assert is_honor_tile('east') is True
+    assert is_middle_tile('m5') is True
+    assert is_terminal_tile('m5') is False
+    assert is_middle_tile('p9') is False and is_terminal_tile('p9') is True
+    assert is_middle_tile('s2') is True and is_terminal_tile('s2') is False
+    assert is_honor_tile('red') is True and is_honor_tile('m1') is False
+    assert is_middle_tile('east') is False and is_terminal_tile('east') is False
+    assert is_middle_tile('white') is False and is_terminal_tile('white') is False
 
 
 def test_no_public_signal_is_bit_identical_to_legacy_ladder():
@@ -111,13 +140,78 @@ def test_three_melds_and_dragon_pairs_raise_tier_step_by_step():
     assert three_winds[0].tier == 3
 
 
-def test_concealed_big_hand_only_yields_weak_discard_signal():
+def test_concealed_suit_avoidance_prices_suspect_suit_higher():
+    """门清花色回避：整局几乎不打某花色 → 九莲/清一色嫌疑（tier 2），嫌疑花色更贵。"""
     opponent = {'discards': [*discards(6, 'm1'), 'p2', 'p3', 'white', 'east'], 'melds': []}
     profiles = opponent_risk_profiles([opponent], 60)
-    assert profiles[0].tier == 1
-    assert any(signal.startswith('牌河未见') for signal in profiles[0].signals)
+    assert profiles[0].tier == 2
+    assert '牌河几乎未打条' in profiles[0].signals
     assert profiles[0].suspect_suit == 's'
-    assert exposure_of(profiles)('s5') == 40    # 40 × 4 × 0.25
+    assert profiles[0].avoids_honor_terminals is False   # 牌河有 m1/white/east → 不是字牌幺九轴
+    exposure = exposure_of(profiles)
+    assert exposure('s5') == 160    # 40 × 16 × 0.25（嫌疑花色）
+    assert exposure('m5') == 80     # 非嫌疑花色 × 0.5
+
+
+def test_concealed_thirteen_orphans_axis_tier3():
+    """十三幺/字一色读牌：牌河零字牌幺九 → tier 3，字牌幺九照价 320、中张只要 80。"""
+    opponent = {'discards': list(THIRTEEN_ORPHANS_RIVER), 'melds': []}
+    profiles = opponent_risk_profiles([opponent], 30)
+    assert profiles[0].tier == 3
+    assert profiles[0].factor == OPPONENT_RISK.factor_tier3
+    assert profiles[0].avoids_honor_terminals is True
+    assert '牌河零字牌幺九' in profiles[0].signals
+    assert '牌河中张密集' in profiles[0].signals
+    assert profiles[0].suspect_suit is None      # 三花色均衡 → 无花色嫌疑
+    exposure = exposure_of(profiles)
+    assert exposure('north') == 320   # 字牌：真实十六倍级硬胡点炮量级
+    assert exposure('east') == 320
+    assert exposure('m1') == 320      # 幺九
+    assert exposure('m9') == 320
+    assert exposure('p5') == 80       # 中张：十三幺几乎不需要 → 损失最小化的落点
+    assert exposure('m2') == 80
+
+
+def test_concealed_flush_zero_river_tier3():
+    """门清单花色零牌河 → tier 3（九莲/清一色量级）；嫌疑花色中张照价、其他花色便宜。"""
+    river = ['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'p2', 'p3', 'p4', 'p5', 'p6']
+    profiles = opponent_risk_profiles([{'discards': river, 'melds': []}], 30)
+    assert profiles[0].tier == 3
+    assert '牌河未打条' in profiles[0].signals
+    assert profiles[0].signals == ['牌河零字牌幺九', '牌河未打条', '牌河中张密集']
+    assert profiles[0].suspect_suit == 's'
+    exposure = exposure_of(profiles)
+    assert exposure('s5') == 320      # 40 × 32 × 0.25（嫌疑花色中张不打折）
+    assert exposure('m5') == 40       # 非嫌疑花色中张：×0.5 ×0.25 → 40 × 4 × 0.25
+    assert exposure('north') == 160   # 非嫌疑花色字牌：×0.5 → 40 × 16 × 0.25（字牌轴上保留下限）
+
+
+def test_thirteen_orphans_axis_two_copies_is_not_safe():
+    """十三幺轴：手里两张字牌也不算安全（多现 ≠ 安全，保留下限 0.1）。"""
+    profiles = opponent_risk_profiles(
+        [{'discards': list(THIRTEEN_ORPHANS_RIVER), 'melds': []}], 30)
+    exposure = exposure_of(profiles, ['east', 'east'])
+    assert exposure('east') == 128    # 40 × 32 × 0.1（下限），不是 0
+    assert exposure('north') == 320
+
+
+def test_concealed_short_river_never_misreads():
+    """门清短牌河不误判：长度不足只给弱信号，且不产生危险轴。"""
+    profiles = opponent_risk_profiles([{'discards': ['m2', 'm3', 'm4'], 'melds': []}], 60)
+    assert profiles[0].tier == 0
+    assert profiles[0].signals == []
+    assert profiles[0].avoids_honor_terminals is False
+    assert profiles[0].suspect_suit is None
+
+
+def test_seven_pairs_middle_heavy_is_only_a_weak_signal():
+    """七对嫌疑（牌河中张密集）只是弱信号 tier 1。"""
+    river = ['m2', 'm3', 'm4', 'p3', 'p4', 'p5', 's3', 's4', 's5', 'east', 'south', 'north']
+    profiles = opponent_risk_profiles([{'discards': river, 'melds': []}], 60)
+    assert '牌河中张密集' in profiles[0].signals
+    assert profiles[0].tier == 1
+    assert profiles[0].avoids_honor_terminals is False
+    assert profiles[0].suspect_suit is None      # 弱信号不带花色嫌疑
 
 
 def test_locked_opponent_loses_both_discounts():
@@ -209,7 +303,11 @@ def test_feature_signals_are_capped_at_three_and_deduplicated():
 
 def test_deterministic_repeated_calls():
     opponent = {'discards': ['m1', 'm2'], 'melds': [meld('p4'), meld('p7')]}
+
+    def fields(profile):
+        return (profile.tier, profile.factor, profile.signals, profile.suspect_suit,
+                profile.locked, profile.avoids_honor_terminals)
+
     first = opponent_risk_profiles([opponent], 60)
     second = opponent_risk_profiles([opponent], 60)
-    assert [(p.tier, p.factor, p.signals, p.suspect_suit, p.locked) for p in first] \
-        == [(p.tier, p.factor, p.signals, p.suspect_suit, p.locked) for p in second]
+    assert [fields(p) for p in first] == [fields(p) for p in second]

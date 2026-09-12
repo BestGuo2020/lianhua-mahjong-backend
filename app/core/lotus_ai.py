@@ -180,7 +180,21 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
                      public_tiles: list[TileType],
                      upper_last_discard: Optional[TileType],
                      wall_count: Optional[int] = None,
-                     include_progress: bool = True) -> dict:
+                     include_progress: bool = True,
+                     pattern_bonus: Optional[Callable[[list[TileType], list], float]] = None,
+                     safety_exposure: Optional[Callable[[TileType], float]] = None,
+                     melds: Optional[list] = None,
+                     extras: Optional[dict] = None) -> dict:
+    """弃牌质量：攻击分 + 安全加权 + 番型潜力 − 放炮成本（后两项由血流策略注入）。
+
+    对齐前端 lotusAi.ts 的 discardQuality：
+    ``netScore = attackScore + safetyScore × (lateGame且已听 ? 4 : 2) + patternBonus − safetyExposure``。
+    经典调用不传 extras / 两个回调，行为与改动前逐位一致。
+    """
+    if extras:
+        pattern_bonus = extras.get('patternBonus') or pattern_bonus
+        safety_exposure = extras.get('safetyExposure') or safety_exposure
+        melds = extras.get('melds') if extras.get('melds') is not None else melds
     waits = _ai_waiting_tiles(after_discard, exposed_melds, jokers)
     effective_remaining = sum(_remaining_count(tile, visible_tiles) for tile in waits)
     progress = _lotus_progress(after_discard, exposed_melds, jokers, visible_tiles) \
@@ -193,6 +207,8 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
     late_game = (wall_count if wall_count is not None else 99) <= 8
     attack_score = _hand_quality_attack_score(waits, effective_remaining, special_score, late_game)
     safety_weight = 4 if late_game and len(waits) > 0 else 2
+    bonus = pattern_bonus(after_discard, melds or []) if pattern_bonus else 0
+    exposure = safety_exposure(discarded) if safety_exposure else 0
     return {
         'ready': len(waits) > 0,
         'waits': waits,
@@ -200,7 +216,9 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
         'specialScore': special_score,
         'heuristic': _discard_heuristic(after_discard, discarded, jokers, early_round),
         'safetyScore': safety_score,
-        'netScore': attack_score + safety_score * safety_weight,
+        'patternBonus': bonus,
+        'safetyExposure': exposure,
+        'netScore': attack_score + safety_score * safety_weight + bonus - exposure,
         'progress': progress,
     }
 
@@ -208,7 +226,13 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
 def _current_hand_quality(hand: list[TileType], exposed_melds: int,
                           jokers: list[TileType],
                           visible_tiles: Optional[list[TileType]] = None,
-                          wall_count: Optional[int] = None) -> dict:
+                          wall_count: Optional[int] = None,
+                          pattern_bonus: Optional[Callable[[list[TileType], list], float]] = None,
+                          melds: Optional[list] = None,
+                          extras: Optional[dict] = None) -> dict:
+    if extras:
+        pattern_bonus = extras.get('patternBonus') or pattern_bonus
+        melds = extras.get('melds') if extras.get('melds') is not None else melds
     if visible_tiles is None:
         visible_tiles = hand
     progress = _lotus_progress(hand, exposed_melds, jokers, visible_tiles)
@@ -217,6 +241,7 @@ def _current_hand_quality(hand: list[TileType], exposed_melds: int,
     effective_remaining = sum(_remaining_count(tile, visible_tiles) for tile in waits)
     late_game = (wall_count if wall_count is not None else 99) <= 8
     attack_score = _hand_quality_attack_score(waits, effective_remaining, special_score, late_game)
+    bonus = pattern_bonus(hand, melds or []) if pattern_bonus else 0
     return {
         'ready': len(waits) > 0,
         'waits': waits,
@@ -224,7 +249,9 @@ def _current_hand_quality(hand: list[TileType], exposed_melds: int,
         'specialScore': special_score,
         'heuristic': 0,
         'safetyScore': 0,
-        'netScore': attack_score,
+        'patternBonus': bonus,
+        'safetyExposure': 0,
+        'netScore': attack_score + bonus,
         'progress': progress,
     }
 
@@ -256,7 +283,11 @@ def _best_discard_after_claim(hand: list[TileType], exposed_melds: int,
                               early_round: bool = False,
                               public_tiles: Optional[list[TileType]] = None,
                               upper_last_discard: Optional[TileType] = None,
-                              wall_count: Optional[int] = None):
+                              wall_count: Optional[int] = None,
+                              pattern_bonus: Optional[Callable[[list[TileType], list], float]] = None,
+                              safety_exposure: Optional[Callable[[TileType], float]] = None,
+                              melds: Optional[list] = None,
+                              extras: Optional[dict] = None):
     if not hand:
         return None
     if visible_tiles is None:
@@ -275,7 +306,8 @@ def _best_discard_after_claim(hand: list[TileType], exposed_melds: int,
             'tile': tile,
             'quality': _discard_quality(after_discard, tile, exposed_melds, jokers,
                                         visible_tiles, early_round, public_tiles,
-                                        upper_last_discard, wall_count),
+                                        upper_last_discard, wall_count, True,
+                                        pattern_bonus, safety_exposure, melds, extras),
         })
     candidates.sort(key=cmp_to_key(
         lambda a, b: _compare_quality(b['quality'], a['quality']) or (a['index'] - b['index'])))
@@ -365,6 +397,9 @@ def decide_turn(view: dict, jokers: list[TileType] | None = None,
             'upperLastDiscard': view.get('upperLastDiscard'),
             'earlyRound': view.get('earlyRound'),
             'wallCount': view.get('wallCount'),
+            'patternBonus': view.get('patternBonus'),
+            'safetyExposure': view.get('safetyExposure'),
+            'melds': view.get('melds'),
         })}
 
 
@@ -372,6 +407,15 @@ def decide_turn(view: dict, jokers: list[TileType] | None = None,
 
 def _claim_action_priority(action: dict) -> int:
     return 0 if action['kind'] == 'peng' else 1
+
+
+def _extras(view: dict) -> dict:
+    """可选扩展（血流策略注入；经典调用不传，行为不变）——对齐前端 DiscardExtras。"""
+    return {
+        'melds': view.get('melds'),
+        'patternBonus': view.get('patternBonus'),
+        'safetyExposure': view.get('safetyExposure'),
+    }
 
 
 def _remove_claimed_meld_tiles(hand: list[TileType], meld: dict, tile: TileType):
@@ -393,9 +437,10 @@ def decide_claim(view: dict) -> dict:
     if view.get('canGang'):
         return {'kind': 'gang'}
 
+    extras = _extras(view)
     baseline = _current_hand_quality(
         view['hand'], view['exposedMelds'], view['jokers'], view.get('visibleTiles'),
-        view.get('wallCount'))
+        view.get('wallCount'), extras=extras)
     candidates = []
 
     if view.get('canPeng') and matching_count(view['hand'], view['tile']) >= 2:
@@ -403,7 +448,8 @@ def decide_claim(view: dict) -> dict:
         discard = _best_discard_after_claim(
             after_peng, view['exposedMelds'] + 1, view['jokers'],
             view.get('visibleTiles'), view.get('earlyRound', False),
-            view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'))
+            view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'),
+            extras=extras)
         if discard:
             candidates.append({
                 'action': {'kind': 'peng', 'discardIndex': discard['index']},
@@ -417,7 +463,8 @@ def decide_claim(view: dict) -> dict:
         discard = _best_discard_after_claim(
             after_chi, view['exposedMelds'] + 1, view['jokers'],
             view.get('visibleTiles'), view.get('earlyRound', False),
-            view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'))
+            view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'),
+            extras=extras)
         if discard:
             candidates.append({
                 'action': {'kind': 'chi', 'meld': meld},
@@ -446,6 +493,11 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
     options = options or {}
     joker_set = _wildcard_set(jokers)
     has_natural = any(tile not in joker_set for tile in hand)
+    extras = {
+        'melds': options.get('melds'),
+        'patternBonus': options.get('patternBonus'),
+        'safetyExposure': options.get('safetyExposure'),
+    }
 
     candidates = []
     for index, tile in enumerate(hand):
@@ -470,7 +522,7 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
                 options.get('earlyRound', False),
                 options.get('publicTiles') or [],
                 options.get('upperLastDiscard'),
-                options.get('wallCount'), include_progress=False)
+                options.get('wallCount'), False, extras=extras)
         candidates.append({'index': index, 'score': score, 'quality': quality})
 
     def cmp(a: dict, b: dict) -> int:
@@ -491,6 +543,6 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
             hand[:index] + hand[index + 1:], tile, options['exposedMelds'], jokers,
             options.get('visibleTiles') or hand, options.get('earlyRound', False),
             options.get('publicTiles') or [], options.get('upperLastDiscard'),
-            options.get('wallCount'))
+            options.get('wallCount'), extras=extras)
     shortlist.sort(key=cmp_to_key(cmp))
     return shortlist[0]['index'] if shortlist else 0

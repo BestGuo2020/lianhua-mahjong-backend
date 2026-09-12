@@ -11,9 +11,13 @@ EV 特征（features['ev']）由 app.core.blood_flow.ai 的 blood_flow_ev_contex
 import json
 from typing import Optional
 
-from app.core.blood_flow.config import BLOOD_FLOW_CONFIG
+from app.core.blood_flow.ai import _exposure_visible_tiles
+from app.core.blood_flow.config import BLOOD_FLOW_AI, BLOOD_FLOW_CONFIG
 from app.core.lotus_rules import chi_options as lotus_chi_options
 from app.core.lotus_rules import waiting_tiles as lotus_waiting_tiles
+from app.core.opponent_pattern_risk import (opponent_pattern_exposure,
+                                            opponent_pattern_feature,
+                                            opponent_risk_profiles)
 from app.llm.schema import tile_name
 
 
@@ -34,6 +38,34 @@ def _label(action: dict, hand: list[str], melds: list[dict]) -> str:
 def _tile_name(tile: str) -> str:
     from app.llm.schema import tile_name
     return tile_name(tile)
+
+
+def _risk_profiles_with_seats(view: dict) -> list[tuple[int, object]]:
+    """(绝对座位, 风险档案) 列表；lotus-classic 与 'off' 开关下均为空。
+
+    只用其他座位的牌河 / 副露 / 已胡次数 / 锁手（公共信息），不含任何对手暗手。
+    """
+    if _is_classic(view):
+        return []
+    from app.core.blood_flow.ai import blood_flow_opponent_risk, _profiles_of
+    rows = blood_flow_opponent_risk(view, BLOOD_FLOW_AI)
+    return [(row['seat'], profile) for row, profile in zip(rows, _profiles_of(rows))]
+
+
+def _risk_profiles(view: dict) -> list:
+    """对手牌型风险的公共信息输入：只取其他座位的牌河 / 副露 / 已胡次数 / 锁手。
+
+    血流专用（本模块只服务血流）；``lotus-classic`` 无普通点炮 —— 恒不产生风险定价。
+    """
+    return [profile for _seat, profile in _risk_profiles_with_seats(view)]
+
+
+def _is_classic(view: dict) -> bool:
+    """广麻（lotus-classic）没有普通点炮：候选不产出对手风险定价。"""
+    rule_version = str(view.get('ruleVersion') or view.get('rule_version') or '')
+    if not rule_version:
+        return False
+    return 'blood-flow' not in rule_version
 
 
 def protected_discards(view: dict) -> set[str]:
@@ -71,6 +103,10 @@ def build_blood_flow_candidates(view: dict, request_id: str,
     window = view.get('window')
     own_score = view.get('ownScore')
     chi_actions = [a for a in actions if a['kind'] == 'chi']
+    profiles = _risk_profiles(view)
+    visible_tiles = _visible_tiles(view)
+    # 风险定价与本地 EV 同源：用含本家暗手的可见牌口径（前端 input.visibleTiles）。
+    exposure_tiles = _exposure_visible_tiles(view)
     candidates: list[dict] = []
     for index, action in enumerate(actions):
         features: dict = _base_features(view, action)
@@ -88,11 +124,16 @@ def build_blood_flow_candidates(view: dict, request_id: str,
             waits = lotus_waiting_tiles(after, len(melds), jokers)
             if waits:
                 features['ready'] = True
-                visible = _visible_tiles(view)
                 features['waits'] = [{'tile': _tile_name(t),
-                                      'remaining': max(0, 4 - visible.count(t))} for t in waits]
+                                      'remaining': max(0, 4 - visible_tiles.count(t))} for t in waits]
                 features['effectiveRemaining'] = sum(w['remaining'] for w in features['waits'])
                 features['shanten'] = 0
+            # 对手牌型风险定价：同一张牌打给在做大牌的对手，赔付可能高 8~32 倍（档位版，只用公共牌）。
+            if profiles:
+                risk = opponent_pattern_feature(profiles, exposure_tiles, hand[action['index']])
+                if risk is not None:
+                    features['opponentRisk'] = {'tier': risk.tier, 'payment': risk.payment,
+                                                'signals': list(risk.signals)}
         key = _legality_key(action, chi_actions)
         if ev_by_key and key in ev_by_key:
             features['ev'] = ev_by_key[key]
@@ -166,7 +207,10 @@ def blood_flow_prompt_rules() -> str:
             '三暗刻、四暗刻、字一色、三杠、四杠。自然成立硬胡×2；真实倍率、封顶和收益以 currentWin 为准。'
             '可点炮、多响和抢补杠，胡后继续；首次胡锁手，之后只能处理新摸牌，已胡仍付款；牌墙耗尽才结算。'
             '候选 features.ev 为本地期望收益估算（自摸按 2 倍×3 家、锁手连锁、首胡门槛、改张/单吊任意听、'
-            '抢杠两值），仅作依据；早局低番胡会锁手，可结合潜力考虑改张或过。')
+            '抢杠两值），仅作依据；早局低番胡会锁手，可结合潜力考虑改张或过。'
+            '点炮赔付=底分10×番型倍率×事件倍率（点炮×1、自摸/抢杠×2、杠上开花×4），单家封顶64倍；'
+            '同一张牌打给在做大牌（清一色/三元/四喜等）的对手，代价可达平胡的8~32倍；'
+            '候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。')
 
 
 def ev_features_for(view: dict) -> dict:
@@ -237,6 +281,11 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, s
                            'melds': [{'type': m.get('type'), 'tiles': [tile_name(t) for t in m.get('tiles', [])]}
                                      for m in (p.get('melds') or [])]} for p in view['players']],
         'currentWin': view.get('ownScore'),
+        # 顶层对手风险档（与 TS bloodFlowDecisionPrompt 同形状）：只保留有信号的对手，
+        # 无信号时是空数组（字段始终存在）。数据源与候选级 features.opponentRisk 同源。
+        'opponentRisk': [{'seat': seat, 'tier': profile.tier, 'signals': list(profile.signals)}
+                         for seat, profile in _risk_profiles_with_seats(view)
+                         if profile.tier > 0],
         'engineSuggestion': built['engineSuggestion'],
         'candidates': [{
             'id': c['id'], 'label': c['label'], 'features': c['features'],
@@ -265,6 +314,10 @@ def _candidate_summary(candidate: dict) -> str:
         parts.append(f"抢杠期望：胡{ev['rob']['winEv']} vs 过{ev['rob']['passEv']}")
     if ev.get('developEv') is not None:
         parts.append(f"过：发育期望{ev['developEv']}")
+    risk = features.get('opponentRisk')
+    if risk:
+        signals = f"·{'、'.join(risk['signals'])}" if risk.get('signals') else ''
+        parts.append(f"风险赔付：约{risk['payment']}点（{risk['tier']}{signals}）")
     if features.get('risks'):
         parts.append(f"注意：{'；'.join(features['risks'])}")
     return ' ｜ '.join(parts)

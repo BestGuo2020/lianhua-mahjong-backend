@@ -7,7 +7,7 @@ import pytest
 
 from app.game.blood_flow_engine import BloodFlowEngine
 from app.game.blood_flow_room import BloodFlowRoomSession
-from app.llm.blood_flow_candidates import (blood_flow_prompt_rules,
+from app.llm.blood_flow_candidates import (_candidate_summary, blood_flow_prompt_rules,
                                            build_blood_flow_candidates,
                                            build_blood_flow_prompt,
                                            ev_features_for,
@@ -91,6 +91,159 @@ def test_prompt_rules_cover_ev_and_lock_clauses():
     rules = blood_flow_prompt_rules()
     for clause in ('硬胡×2', '首次胡锁手', '牌墙耗尽才结算', '期望收益', '单吊任意听', '抢杠'):
         assert clause in rules
+
+
+def test_prompt_rules_cover_opponent_risk_clause():
+    """TS 新增的赔付口径句必须逐字一致地出现在 prompt 规则里。"""
+    rules = blood_flow_prompt_rules()
+    assert ('点炮赔付=底分10×番型倍率×事件倍率（点炮×1、自摸/抢杠×2、杠上开花×4），'
+            '单家封顶64倍；同一张牌打给在做大牌（清一色/三元/四喜等）的对手，'
+            '代价可达平胡的8~32倍；候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。'
+            ) in rules
+
+
+def risk_rig(opponent_melds: list[dict] | None = None) -> BloodFlowEngine:
+    """座位 1 带可配置副露 + 一张牌河（染手嫌疑信号）；其余座位牌河为空。"""
+    melds = [[], list(opponent_melds or []), [], []]
+    engine = BloodFlowEngine(
+        authority_epoch='t', round_id='risk-cand', rules=BloodFlowRuleSet(),
+        opening=make_opening(hands=[
+            ['m8', 'm9', 'p7', 'p8', 'p9', 's7', 's8', 's9', 'north', 'west', 'south', 'p6', 'm5', 'm1'],
+            ['m3', 'm4', 'm5', 'm5', 'm5', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east', 'east'],
+            ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9', 'east', 'south', 'west', 'north'],
+            ['m2', 'm6', 'm8', 'p3', 'p6', 'p9', 's2', 's5', 's8', 'red', 'green', 'white', 'north'],
+        ], wall_front=['north'], melds=melds))
+    engine.players[1]['discards'] = []
+    return engine
+
+
+FLUSH_MELDS = [{'type': 'peng', 'tile': 'p4', 'tiles': ['p4', 'p4', 'p4']},
+               {'type': 'peng', 'tile': 'p7', 'tiles': ['p7', 'p7', 'p7']}]
+
+
+def test_discard_candidates_carry_opponent_risk_feature():
+    """血流：每个弃牌候选都带公共信息风险赔付，且嫌疑花色/公开张数档确实生效。
+
+    公开张数口径含本家暗手（与前端 visibleTiles 同源）：
+    现物（≥2 张）= 0 档、公开 1 张 = 0.1 档；
+    嫌疑花色（本副露集中在 p）系数 1，非嫌疑花色 ×0.5。
+    """
+    engine = risk_rig(FLUSH_MELDS)
+    view = make_room(engine)._seat_view(0)
+    built = build_blood_flow_candidates(view, 'req-risk')
+    discards = [c for c in built['candidates'] if c['action']['kind'] == 'discard']
+    assert discards, '开局应有弃牌候选'
+    assert all(c['features']['opponentRisk']['tier'] == '中' for c in discards)
+    by_label = {c['label']: c['features']['opponentRisk']['payment'] for c in discards}
+    # 公开张数档含本家暗手：现物（≥2 张）= 0 / 公开 1 张 = ×0.1。
+    assert set(by_label.values()) == {0, 32, 64}
+    assert by_label['打出8筒'] == 64      # 公开 1 张 + 嫌疑花色：40 × 16 × 0.1
+    assert by_label['打出6筒'] == 64
+    assert by_label['打出7筒'] == 0       # 现物（本家 p7 + 副露 p7×3 = 4 张）
+    assert by_label['打出9筒'] == 0       # 现物（本家 p9 + 对手副露 p9）
+    assert by_label['打出8万'] == 32      # 公开 1 张 + 非嫌疑花色：40 × 16 × 0.1 × 0.5
+    assert by_label['打出西风'] == 32
+    # 同一公开张数档下，嫌疑花色（p）严格贵于非嫌疑花色（m/s/字）。
+    assert by_label['打出8筒'] > by_label['打出8万']
+
+
+def test_summary_and_prompt_render_risk_payment():
+    engine = risk_rig(FLUSH_MELDS)
+    room = make_room(engine)
+    view = room._seat_view(0)
+    built = build_blood_flow_candidates(view, 'req-risk-sum')
+    risk = next(c for c in built['candidates'] if c['features'].get('opponentRisk'))
+    expected_payment = risk['features']['opponentRisk']['payment']
+    summaries = {c['id']: _candidate_summary(c) for c in built['candidates']}
+    assert risk['id'] in summaries
+    assert f'风险赔付：约{expected_payment}点（中·副露染手嫌疑' in summaries[risk['id']]
+    system, user = build_blood_flow_prompt('稳健', view, built)
+    payload = json.loads(user)
+    assert any('风险赔付：约' in c['summary'] for c in payload['candidates'])
+    assert 'opponentRisk' in json.dumps(payload['candidates'], ensure_ascii=False)
+
+
+def test_no_signal_keeps_old_candidate_shape():
+    """对手没有大牌信号时不产出该键（保持旧形状）。"""
+    engine = risk_rig([])
+    view = make_room(engine)._seat_view(0)
+    built = build_blood_flow_candidates(view, 'req-quiet')
+    assert all('opponentRisk' not in c['features'] for c in built['candidates'])
+    assert all('风险赔付' not in _candidate_summary(c) for c in built['candidates'])
+
+
+def test_switch_off_candidates_have_no_risk_feature():
+    """BLOOD_FLOW_AI.opponent_pattern_risk = 'off' 时候选不再产出 opponentRisk。"""
+    from dataclasses import replace
+
+    from app.core.blood_flow import ai as blood_ai
+    from app.core.blood_flow.config import BLOOD_FLOW_AI
+
+    engine = risk_rig(FLUSH_MELDS)
+    view = make_room(engine)._seat_view(0)
+    off = replace(BLOOD_FLOW_AI, opponent_pattern_risk='off')
+    original = blood_ai.blood_flow_opponent_risk
+
+    def guarded(view_arg, config=off):
+        return original(view_arg, off)
+
+    blood_ai.blood_flow_opponent_risk = guarded
+    try:
+        built = build_blood_flow_candidates(view, 'req-off')
+    finally:
+        blood_ai.blood_flow_opponent_risk = original
+    assert all('opponentRisk' not in c['features'] for c in built['candidates'])
+
+
+def test_prompt_payload_carries_top_level_opponent_risk():
+    """user 载荷顶层 opponentRisk：[{seat, tier, signals}]，只保留 tier > 0 的对手。"""
+    engine = risk_rig(FLUSH_MELDS)
+    room = make_room(engine)
+    view = room._seat_view(0)
+    built = build_blood_flow_candidates(view, 'req-top')
+    _, user = build_blood_flow_prompt('稳健', view, built)
+    payload = json.loads(user)
+    assert payload['opponentRisk'] == [{
+        'seat': 1, 'tier': 2, 'signals': ['副露染手嫌疑'],
+    }]
+
+
+def test_prompt_payload_opponent_risk_is_empty_without_signal():
+    engine = risk_rig([])
+    room = make_room(engine)
+    view = room._seat_view(0)
+    built = build_blood_flow_candidates(view, 'req-top-quiet')
+    _, user = build_blood_flow_prompt('稳健', view, built)
+    assert json.loads(user)['opponentRisk'] == []
+
+
+def test_prompt_payload_opponent_risk_is_empty_when_switch_off():
+    from dataclasses import replace
+
+    from app.core.blood_flow import ai as blood_ai
+    from app.core.blood_flow.config import BLOOD_FLOW_AI
+
+    engine = risk_rig(FLUSH_MELDS)
+    room = make_room(engine)
+    view = room._seat_view(0)
+    built = build_blood_flow_candidates(view, 'req-top-off')
+    off = replace(BLOOD_FLOW_AI, opponent_pattern_risk='off')
+    original = blood_ai.blood_flow_opponent_risk
+    blood_ai.blood_flow_opponent_risk = lambda view_arg, config=off: original(view_arg, off)
+    try:
+        _, user = build_blood_flow_prompt('稳健', view, built)
+    finally:
+        blood_ai.blood_flow_opponent_risk = original
+    assert json.loads(user)['opponentRisk'] == []
+
+
+def test_lotus_classic_rule_never_prices_opponent_risk():
+    """lotus-classic（广麻无普通点炮）：候选恒不带风险定价。"""
+    engine = risk_rig(FLUSH_MELDS)
+    view = make_room(engine)._seat_view(0)
+    view['ruleVersion'] = 'lotus-classic-v1'
+    built = build_blood_flow_candidates(view, 'req-classic')
+    assert all('opponentRisk' not in c['features'] for c in built['candidates'])
 
 
 def test_prompt_builds_system_and_user_payload_with_ev():

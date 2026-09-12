@@ -14,6 +14,9 @@ from app.core.ai import decide_turn as core_decide_turn
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
 from app.core.lotus_ai import decide_turn as lotus_decide_turn
 from app.core.lotus_rules import evaluate_pattern
+from app.core.opponent_pattern_risk import (RISK_TIER_LABELS, max_opponent_risk_tier,
+                                            opponent_pattern_feature,
+                                            opponent_risk_profiles)
 from app.llm.schema import canonical_action, rule_code_for, tile_name
 from app.rules.base import GameRuleSet
 from app.settlement import settlement_service
@@ -61,6 +64,31 @@ def _joker_tiles(ctx, rules: GameRuleSet) -> list[str]:
         round_state = getattr(rules, 'round_state', None)
         return list(getattr(round_state, 'jokers', []) or [])
     return ['white'] if rules.code == 'lianhua_guangma' else []
+
+
+def _opponent_risk_profiles(ctx, rules: GameRuleSet) -> list:
+    """对手牌型风险的公共信息输入：只取其他座位的牌河 / 副露 / 已胡次数 / 锁手。
+
+    与前端 candidates.ts 的 ``opponentRiskProfilesOf`` 同口径：广麻（lotus-classic）
+    没有普通点炮 → 恒为空，候选不产出对手风险定价。
+    """
+    if rule_code_for(rules.code) == 'lotus-classic':
+        return []
+    peers = list(_g(ctx, 'peers') or [])
+    own = _g(ctx, 'playerIndex', 0) or 0
+    opponents = []
+    for index, peer in enumerate(peers):
+        if index == own:
+            continue
+        opponents.append({
+            'discards': list(_g(peer, 'discards') or []),
+            'melds': list(_g(peer, 'melds') or []),
+            'winCount': _g(peer, 'winCount', 0) or 0,
+            'locked': bool(_g(peer, 'locked', False)),
+        })
+    if not opponents:
+        return []
+    return opponent_risk_profiles(opponents, _g(ctx, 'wallCount', 99) or 99)
 
 
 def _protected_discard_tiles(ctx, rules: GameRuleSet) -> set[str]:
@@ -182,6 +210,14 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
         feat['effectiveRemaining'] = effective if ready else 'n/a'
         feat['specialPattern'] = _special_pattern(ctx, after, waits, rules)
         feat['safety'] = _safety_band(ctx, discarded) if rules.code == 'lotus-legacy' else 'n/a'
+        # 对手牌型风险定价：同一张牌打给在做大牌的对手，赔付可能高 8~32 倍（档位版，只用公共牌）。
+        profiles = _opponent_risk_profiles(ctx, rules)
+        if profiles:
+            risk = opponent_pattern_feature(
+                profiles, list(_g(ctx, 'visibleTiles') or ctx.hand), discarded)
+            if risk is not None:
+                feat['opponentRisk'] = {'tier': risk.tier, 'payment': risk.payment,
+                                        'signals': list(risk.signals)}
         if discarded in _protected_discard_tiles(ctx, rules):
             feat['risks'].append('癞子/精牌，通常必须保留；当前无普通牌可打')
         return feat
@@ -218,7 +254,10 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
             meld = ctx.melds[action['meldIndex']]
             public = _g(ctx, 'publicTiles') or []
             if sum(1 for t in public if t == meld.tile) == 0:
-                risks.append('被抢杠概率较高')
+                tier = max_opponent_risk_tier(_opponent_risk_profiles(ctx, rules))
+                risks.append(
+                    f'被抢杠概率较高，且对手疑似大牌（{RISK_TIER_LABELS[tier]}档），'
+                    '抢杠赔付远高于平胡' if tier >= 2 else '被抢杠概率较高')
         feat['risks'] = risks
         _apply_kong_delta(feat, ctx, action, rules)
         return feat

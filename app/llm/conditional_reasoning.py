@@ -3,6 +3,9 @@
 from dataclasses import dataclass, field
 import random as random_module
 
+from app.core.opponent_pattern_risk import opponent_risk_profiles, opponent_threat_score
+from app.llm.schema import TILE_NAMES
+
 
 @dataclass(frozen=True)
 class TriggerConfig:
@@ -118,31 +121,48 @@ def _ready_decision_tradeoff(request: dict, max_gap: float) -> bool:
     )
 
 
-def _suit(tile: str):
-    return tile[-1] if tile and tile[-1] in ('万', '筒', '条') else None
+_TILE_BY_NAME: dict[str, str] = {name: tile for tile, name in TILE_NAMES.items()}
+
+
+def _internal_tiles(names) -> list[str]:
+    """规范快照（中文牌名）→ 风险模块（内部牌面）。未知牌名一律丢弃，不猜测。"""
+    tiles: list[str] = []
+    for name in names or []:
+        tile = _TILE_BY_NAME.get(name)
+        if tile:
+            tiles.append(tile)
+    return tiles
+
+
+def _snapshot_opponents(state: dict) -> list[dict]:
+    """上家 / 对家 / 下家的公开副露与牌河（顺序与前端 snapshotOpponents 一致）。"""
+    snapshots = state.get('snapshots') or {}
+    opponents: list[dict] = []
+    for key in ('upper', 'opposite', 'lower'):
+        view = snapshots.get(key) or {}
+        melds: list[dict] = []
+        for meld in view.get('melds') or []:
+            tiles = _internal_tiles(meld.get('tiles'))
+            tile = _TILE_BY_NAME.get(meld.get('tile')) or (tiles[0] if tiles else None)
+            if tile:
+                melds.append({'type': meld.get('type'), 'tile': tile, 'tiles': tiles})
+        opponents.append({'discards': _internal_tiles(view.get('discards')), 'melds': melds})
+    return opponents
 
 
 def _opponent_threat(request: dict) -> int:
+    """公开信息威胁值：与放炮定价同源（app/core/opponent_pattern_risk.py）。
+
+    副露为主，叠加染手集中度、三元 / 四喜 / 字牌成组、后段与短牌河异常。
+    局限：门清大牌无法识别，只作弱信号（tier 1）。档位→威胁分：3=90 / 2=70 / 1=40，
+    墙余 ≤ 24 再 +10（上限 100）；lotus-classic 规则恒为 0。
+    """
     if request.get('ruleCode') == 'lotus-classic':
         return 0
     state = request.get('state') or {}
-    snapshots = state.get('snapshots') or {}
-    largest = 0
-    for key in ('upper', 'opposite', 'lower'):
-        view = snapshots.get(key) or {}
-        melds = view.get('melds') or []
-        exposed = [tile for meld in melds for tile in (meld.get('tiles') or [])]
-        suits = [suit for suit in (_suit(tile) for tile in exposed) if suit]
-        dominant = max((suits.count(suit) for suit in set(suits)), default=0) / len(suits) if suits else 0
-        value = len(melds) * 20
-        if len(melds) >= 2 and dominant >= .75:
-            value += 22
-        if state.get('wallCount', 99) <= 24:
-            value += 10
-        if len(melds) >= 2 and len(view.get('discards') or []) <= 7:
-            value += 8
-        largest = max(largest, min(100, value))
-    return largest
+    wall_count = state.get('wallCount', 99)
+    profiles = opponent_risk_profiles(_snapshot_opponents(state), wall_count)
+    return opponent_threat_score(profiles, wall_count)
 
 
 def _score_swing(request: dict) -> int:

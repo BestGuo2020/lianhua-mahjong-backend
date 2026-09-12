@@ -151,6 +151,10 @@ def _candidate_line(candidate: dict, rule_code: str) -> str:
     safety = features.get('safety')
     if rule_code == 'lotus-legacy' and safety and safety not in ('unknown', 'n/a'):
         parts.append(f'安全度：{safety}')
+    risk = features.get('opponentRisk')
+    if risk:
+        signals = '·' + '、'.join(risk.get('signals') or []) if risk.get('signals') else ''
+        parts.append(f"风险赔付：约{risk['payment']}点（{risk['tier']}{signals}）")
     efficiency = features.get('efficiency')
     if efficiency and efficiency not in ('unknown', 'n/a'):
         parts.append(f'牌效：{efficiency}')

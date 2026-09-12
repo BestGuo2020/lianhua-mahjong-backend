@@ -5,11 +5,15 @@ view 为前端 BloodFlowSeatView 同构 dict（room._seat_view 输出）。
 """
 
 from functools import cmp_to_key
-from typing import Optional
+from typing import Callable, Optional
 
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
 from app.core.lotus_ai import decide_turn as lotus_decide_turn
 from app.core.lotus_rules import waiting_tiles as lotus_waiting_tiles
+from app.core.opponent_pattern_risk import (OpponentRiskProfile,
+                                            max_opponent_risk_tier,
+                                            opponent_pattern_exposure,
+                                            opponent_risk_profiles)
 from app.core.tiles import TILE_TYPES
 from app.models.game import TileType
 
@@ -385,6 +389,104 @@ def is_any_tile_wait(waits: list[str]) -> bool:
     return len(waits) >= len(TILE_TYPES)
 
 
+# ── 对手牌型（大牌）风险定价（前后端同源；见 core/opponent_pattern_risk.py） ──
+
+def _safety_exposure_for(config: BloodFlowAiConfig,
+                         visible: list[str]) -> Callable[[str], float]:
+    """放炮成本（旧口径）：牌河公开张数档位 × 按 4 倍级单家支付（40 点）估算的暴露。"""
+    def exposure(tile: str) -> float:
+        count = sum(1 for visible_tile in visible if visible_tile == tile)
+        ladder = config.safety_cost_safe if count >= 2 else \
+            config.safety_cost_one if count == 1 else config.safety_cost_none
+        return ladder * 40
+
+    return exposure
+
+
+def blood_flow_risk_tuning(config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> dict:
+    """config → 风险模块调参（前后端同源，见 core/opponent_pattern_risk.py）。"""
+    return {
+        'factor_tier1': config.risk_factor_tier1,
+        'factor_tier2': config.risk_factor_tier2,
+        'factor_tier3': config.risk_factor_tier3,
+        'off_suit_factor': config.risk_off_suit_factor,
+        'exposure_unit': 40,
+        'safety_cost_none': config.safety_cost_none,
+        'safety_cost_one': config.safety_cost_one,
+        'safety_cost_safe': config.safety_cost_safe,
+        'late_game_wall_count': config.late_game_wall_count,
+    }
+
+
+def _seat_field(view: dict, seat: int, name: str, default=None):
+    seats = (view.get('public') or {}).get('seats') or []
+    if 0 <= seat < len(seats):
+        state = seats[seat]
+        value = state.get(name, default) if isinstance(state, dict) \
+            else getattr(state, name, default)
+        return default if value is None else value
+    return default
+
+
+def blood_flow_opponent_risk(view: dict,
+                             config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> list[dict]:
+    """对手牌型风险档（只用公共信息）。血流额外带入已胡次数与锁手。
+
+    ``opponent_pattern_risk == 'off'`` 时返回空列表，调用方回退旧口径（对齐前端
+    bloodFlowOpponentRisk）。返回 dict 列表：风险档字段 + ``seat``（绝对座位）。
+    """
+    if config.opponent_pattern_risk == 'off':
+        return []
+    seat = view['seat']
+    players = view.get('players') or []
+    seats = [p.get('seat', index) for index, p in enumerate(players) if index != seat]
+    opponents = []
+    for index in range(len(players)):
+        if index == seat:
+            continue
+        player = players[index] or {}
+        opponents.append({
+            'discards': player.get('discards') or [],
+            'melds': player.get('melds') or [],
+            'winCount': _seat_field(view, index, 'winCount', 0),
+            'locked': _seat_field(view, index, 'locked', False),
+        })
+    profiles = opponent_risk_profiles(opponents, view.get('wallCount', 0),
+                                      blood_flow_risk_tuning(config))
+    result: list[dict] = []
+    for profile in profiles:
+        position = profile.index
+        result.append({
+            'index': profile.index, 'tier': profile.tier, 'factor': profile.factor,
+            'signals': list(profile.signals), 'suspectSuit': profile.suspect_suit,
+            'locked': profile.locked,
+            'seat': seats[position] if position < len(seats) else position,
+        })
+    return result
+
+
+def _profiles_of(profiles: list[dict]) -> list[OpponentRiskProfile]:
+    """dict 形态 → 风险模块档案（字段同名映射）。"""
+    return [OpponentRiskProfile(index=p['index'], tier=p['tier'], factor=p['factor'],
+                                signals=list(p['signals']), suspect_suit=p.get('suspectSuit'),
+                                locked=p['locked']) for p in profiles]
+
+
+def blood_flow_safety_exposure(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI,
+                               visible: Optional[list[str]] = None) -> Callable[[str], float]:
+    """弃牌放炮成本：无风险信号时与旧口径逐位一致。
+
+    公开张数口径用 `_exposure_visible_tiles`（含本家暗手，与前端 visibleTiles 同源）；
+    'off' 回退分支与档位分支共用同一份可见牌，保证两个分支内部自洽。
+    """
+    tiles = list(visible) if visible is not None else _exposure_visible_tiles(view)
+    profiles = blood_flow_opponent_risk(view, config)
+    if not profiles:
+        return _safety_exposure_for(config, tiles)
+    return opponent_pattern_exposure(_profiles_of(profiles), tiles,
+                                     blood_flow_risk_tuning(config))
+
+
 # ── EV 上下文与决策 ──
 
 def first_win_floor(wall_count: int, config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> int:
@@ -398,6 +500,25 @@ def first_win_floor(wall_count: int, config: BloodFlowAiConfig = BLOOD_FLOW_AI) 
 def _visible_tiles(view: dict) -> list[str]:
     tiles = [view.get('flipTile')]
     for p in view.get('players', []):
+        tiles.extend(p.get('discards') or [])
+        tiles.extend(t for m in (p.get('melds') or []) for t in m.get('tiles', []))
+    tiles.extend(b['source']['tile'] for b in view.get('public', {}).get('batches', []))
+    return [t for t in tiles if t]
+
+
+def _exposure_visible_tiles(view: dict) -> list[str]:
+    """放炮成本专用口径：等价于前端 seatView.visibleTiles（**含本家暗手**）。
+
+    前端 `visibleTiles(view)` = [flipTile, 本家 hand, 各家 discards+melds, 胡牌来源牌]；
+    后端 `_visible_tiles` 不含本家 hand（听口 / 剩余张数仍按既有口径使用，不在本次范围）。
+    为与前端放炮定价逐位一致，本函数只服务放炮成本链路（localai 与 LLM 候选特征）。
+    """
+    seat = view.get('seat')
+    players = view.get('players') or []
+    tiles = [view.get('flipTile')]
+    if isinstance(seat, int) and 0 <= seat < len(players):
+        tiles.extend(players[seat].get('hand') or [])
+    for p in players:
         tiles.extend(p.get('discards') or [])
         tiles.extend(t for m in (p.get('melds') or []) for t in m.get('tiles', []))
     tiles.extend(b['source']['tile'] for b in view.get('public', {}).get('batches', []))
@@ -508,18 +629,30 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
     jokers = list(view.get('jokers') or [])
     visible = _visible_tiles(view)
     discards = [a for a in moves if a['kind'] == 'discard']
+    wall_count = view.get('wallCount', 0)
+    upper_seat = (seat + 3) % len(view['players'])
+    upper_discards = view['players'][upper_seat].get('discards') or []
+    extras = {
+        'melds': melds,
+        'patternBonus': lambda tiles, current_melds: pattern_potential_ev(
+            tiles, current_melds, jokers, wall_count),
+        # 放炮成本用含本家暗手的可见牌口径（前端 visibleTiles 等价物）。
+        'safetyExposure': blood_flow_safety_exposure(view, config, _exposure_visible_tiles(view)),
+    }
+    context = {
+        'hand': hand, 'jokers': jokers, 'exposedMelds': len(melds),
+        'visibleTiles': visible, 'wallCount': wall_count,
+        'upperLastDiscard': upper_discards[-1] if upper_discards else None,
+        'earlyRound': len(view['players'][seat].get('discards') or []) < 2,
+        'publicTiles': visible,
+    }
 
     def offered(action: dict) -> Optional[dict]:
         return next((a for a in moves if a == action), None)
 
     def decide_discard() -> Optional[dict]:
         try:
-            turn_view = {
-                'hand': hand, 'melds': melds, 'exposedMelds': len(melds), 'jokers': jokers,
-                'visibleTiles': visible, 'publicTiles': visible,
-                'upperLastDiscard': None, 'earlyRound': False,
-                'wallCount': view.get('wallCount', 0), 'kongBloom': False,
-            }
+            turn_view = {**context, 'melds': melds, 'kongBloom': False, **extras}
             decision = lotus_decide_turn(turn_view, jokers)
             if decision['kind'] == 'discard':
                 action = {'kind': 'discard', 'index': decision['handIndex']}
@@ -539,13 +672,11 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
             return pass_action
         try:
             claim_view = {
-                'hand': hand, 'exposedMelds': len(melds), 'jokers': jokers,
+                **context, **extras,
                 'tile': source['tile'], 'from': source.get('seat', 0),
                 'canGang': any(a['kind'] == 'gang' for a in moves),
                 'canPeng': any(a['kind'] == 'peng' for a in moves),
                 'chiOptions': [a for a in moves if a['kind'] == 'chi'],
-                'visibleTiles': visible, 'publicTiles': visible,
-                'upperLastDiscard': None, 'earlyRound': False, 'wallCount': view.get('wallCount', 0),
             }
             decision = lotus_decide_claim(claim_view)
             if decision['kind'] == 'chi':

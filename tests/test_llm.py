@@ -19,6 +19,7 @@ from app.llm.client import extract_json_object, parse_llm_output
 from app.llm.prompt import build_prompt
 from app.llm.schema import TILE_NAMES, tile_name
 from app.llm.validation import validate_action
+from app.models.game import Meld
 from app.rules.registry import get_rule_set
 from app.settlement import settlement_service
 
@@ -294,6 +295,126 @@ class TestValidation:
         ctx = turn_ctx(hand=hand, exposed_melds=2, jokers=[])
         ctx.visibleTiles = hand
         assert not validate_action(ctx, {'kind': 'wind-kong'}, rules)
+
+
+class TestOpponentRiskFeatures:
+    """对手牌型风险定价进入候选与 prompt —— 对齐前端 candidates.ts。
+
+    莲花麻将（lotus-legacy）每个弃牌候选带 features.opponentRisk；
+    广麻（属 lotus-classic）与无信号局面都不产出该键（保持旧形状）。
+    """
+
+    RISK_HAND = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'p1', 'p2', 'p3', 's7', 's7', 's7', 'white', 'm9']
+    FLUSH_MELDS = [{'type': 'peng', 'tile': 'p4', 'tiles': ['p4', 'p4', 'p4']},
+                   {'type': 'peng', 'tile': 'p7', 'tiles': ['p7', 'p7', 'p7']}]
+    BALANCED = ['m1', 'm4', 'm7', 'p1', 'p4', 'p7', 's1', 's4', 's7', 'east', 'south',
+                'west', 'north', 'red', 'green']
+
+    def lotus_ctx(self, peer_melds=None, peer_discards=None):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['red', 'green']
+        peers = [{'discards': [], 'melds': []} for _ in range(4)]
+        peers[1] = {'discards': list(peer_discards or ['m1']),
+                    'melds': [dict(meld) for meld in (peer_melds or [])]}
+        ctx = turn_ctx(hand=list(self.RISK_HAND), jokers=['red', 'green'])
+        ctx.peers = peers
+        ctx.visibleTiles = list(ctx.hand) + ['m1']
+        ctx.publicTiles = ['m1']
+        ctx.wallCount = 40
+        return ctx, rules
+
+    def discard_features(self, built: dict) -> dict:
+        return {c['label']: c['features']
+                for c in built['request']['candidates']
+                if c['action']['kind'] == 'discard'}
+
+    def test_lotus_discard_candidates_carry_opponent_risk(self):
+        ctx, rules = self.lotus_ctx(self.FLUSH_MELDS)
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        features = self.discard_features(built)
+        assert features, '莲花麻将应有弃牌候选'
+        assert all(f.get('opponentRisk') for f in features.values())
+        payment = {label: f['opponentRisk']['payment'] for label, f in features.items()}
+        # 公开张数口径含自家暗手（与前端 input.visibleTiles 同源）：
+        # 本家手牌持有的牌面 = 公开 1 张（×0.1）；对手牌河 m1 = 再加 1 张。
+        assert payment['出1筒'] == 64          # 40 × 16 × 0.1（嫌疑花色 p）
+        assert payment['出9万'] == 32          # 40 × 16 × 0.1 × 0.5（非嫌疑花色、本家持有 m9）
+        assert payment['出1万'] == 0           # 本家 1 张 + 对手牌河 1 张 = 现物 → 0
+        assert features['出1筒']['opponentRisk']['tier'] == '中'
+        assert features['出1筒']['opponentRisk']['signals']
+
+    def test_lotus_prompt_renders_risk_payment_line(self):
+        ctx, rules = self.lotus_ctx(self.FLUSH_MELDS)
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        _, user = build_prompt('稳健', built['request'])
+        assert '风险赔付：约64点（中·' in user
+        assert '出1筒' in user
+
+    def test_no_signal_keeps_old_candidate_shape(self):
+        """对手没有大牌信号时不产生该特征（保持旧行为）。"""
+        ctx, rules = self.lotus_ctx([])
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        for features in self.discard_features(built).values():
+            assert 'opponentRisk' not in features
+        _, user = build_prompt('稳健', built['request'])
+        assert '风险赔付' not in user
+
+    def test_classic_rule_never_produces_opponent_risk(self):
+        """广麻没有普通点炮 → 候选恒不带风险定价。"""
+        peers = [{'discards': [], 'melds': []} for _ in range(4)]
+        peers[1] = {'discards': ['m1'], 'melds': [dict(m) for m in self.FLUSH_MELDS]}
+        ctx = turn_ctx(hand=list(self.RISK_HAND))
+        ctx.peers = peers
+        ctx.visibleTiles = list(ctx.hand) + ['m1']
+        ctx.publicTiles = ['m1']
+        built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'turn')
+        candidates = built['request']['candidates']
+        assert all('opponentRisk' not in c['features'] for c in candidates)
+
+    KONG_HAND = ['east', 'm2', 'm3', 'm4', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'p4', 'p5', 'south']
+
+    def kong_ctx(self, peers, public_tiles):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['red', 'green']
+        hand = list(self.KONG_HAND)
+        ctx = turn_ctx(hand=hand, melds=[Meld(type='peng', tile='east', from_=1,
+                                              tiles=['east', 'east', 'east'])],
+                       exposed_melds=1, jokers=['red', 'green'])
+        ctx.peers = peers
+        ctx.visibleTiles = list(hand)
+        ctx.publicTiles = list(public_tiles)
+        ctx.wallCount = 12
+        return ctx, rules
+
+    def added_kong_risks(self, ctx, rules) -> str:
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        kong = next(c for c in built['request']['candidates']
+                    if c['action']['kind'] == 'added-kong')
+        return '；'.join(kong['features']['risks'])
+
+    def test_added_kong_risk_mentions_suspect_big_hand_tier(self):
+        """补杠 + 该牌完全未现 + 对手染手副露 → risks 带档位文案。"""
+        peers = [{'discards': [], 'melds': []} for _ in range(4)]
+        peers[1] = {'discards': [], 'melds': [dict(m) for m in self.FLUSH_MELDS]}
+        ctx, rules = self.kong_ctx(peers, [])
+        risks = self.added_kong_risks(ctx, rules)
+        assert '被抢杠概率较高' in risks
+        assert '疑似大牌（中档）' in risks
+        assert '抢杠赔付远高于平胡' in risks
+
+    def test_added_kong_risk_stays_plain_without_signal(self):
+        peers = [{'discards': list(self.BALANCED), 'melds': []} for _ in range(4)]
+        ctx, rules = self.kong_ctx(peers, [])
+        risks = self.added_kong_risks(ctx, rules)
+        assert '被抢杠概率较高' in risks
+        assert '疑似大牌' not in risks
+
+    def test_added_kong_seen_tile_has_no_rob_risk_line(self):
+        peers = [{'discards': [], 'melds': []} for _ in range(4)]
+        peers[1] = {'discards': ['east'], 'melds': [dict(m) for m in self.FLUSH_MELDS]}
+        ctx, rules = self.kong_ctx(peers, ['east'])
+        risks = self.added_kong_risks(ctx, rules)
+        assert '被抢杠' not in risks
 
 
 class TestPromptRules:

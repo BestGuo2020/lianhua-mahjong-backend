@@ -80,6 +80,15 @@ class BloodFlowAiConfig:
     safety_cost_none: float = 0.25
     safety_cost_one: float = 0.1
     safety_cost_safe: float = 0.0
+    # 对手牌型（大牌）风险定价：'off' = 只看公开张数的旧口径，
+    # 'tier' = 档位版（见 app/core/opponent_pattern_risk.py，前端同源 shared/ai/opponentPatternRisk.ts）。
+    opponent_pattern_risk: str = 'tier'
+    # 档位倍率：1 = 平胡量级；4/16/32 ≈ 混一色 / 清一色 / 十六倍级硬胡点炮的单家赔付量级。
+    risk_factor_tier1: float = 4
+    risk_factor_tier2: float = 16
+    risk_factor_tier3: float = 32
+    # 染手（花色集中）嫌疑对手：非嫌疑花色牌的系数。
+    risk_off_suit_factor: float = 0.5
     llm_ev_features: bool = True
 
 

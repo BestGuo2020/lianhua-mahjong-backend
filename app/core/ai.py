@@ -11,6 +11,7 @@ import re
 from typing import Optional
 
 from app.core.actions import remove_matches
+from app.core.opponent_pattern_risk import max_opponent_risk_tier, opponent_risk_profiles
 from app.models.game import GamePlayer, Meld, TileType
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
@@ -23,6 +24,9 @@ ClaimDecision = str
 RobKongDecision = str
 
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
+
+# 补杠被抢杠的残局窗口：墙余 ≤ 该值视为残局（与既有 lateBonus 口径一致）。
+ADDED_KONG_LATE_WALL = 16
 
 
 def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None, random=None) -> dict:
@@ -97,6 +101,34 @@ def _opponent_threat(view: dict) -> int:
     return total
 
 
+def _peer_discards(peer) -> list[TileType]:
+    discards = peer.get('discards', []) if isinstance(peer, dict) \
+        else getattr(peer, 'discards', [])
+    return list(discards or [])
+
+
+def _opponent_risk_profiles(view: dict):
+    """其他座位的公开风险档（只用牌河 / 副露；对手暗手始终不参与计算）。"""
+    own = view.get('playerIndex', -1)
+    opponents = []
+    for index, peer in enumerate(view.get('peers') or []):
+        if index == own:
+            continue
+        melds = peer.get('melds', []) if isinstance(peer, dict) \
+            else getattr(peer, 'melds', [])
+        opponents.append({'discards': _peer_discards(peer), 'melds': list(melds or [])})
+    return opponent_risk_profiles(opponents, view.get('wallCount', 99))
+
+
+def _added_kong_rob_risk(view: dict, tile: TileType) -> bool:
+    """补杠被抢杠的残局窗口：墙余 ≤ 该值视为残局（与既有 lateBonus 口径一致）。"""
+    if view.get('wallCount', 99) > ADDED_KONG_LATE_WALL:
+        return False
+    if (view.get('publicTiles') or []).count(tile) > 0:
+        return False
+    return max_opponent_risk_tier(_opponent_risk_profiles(view)) >= 1
+
+
 def _should_take_added_kong(view: dict, meld_index: int, rules: GameRuleSet) -> bool:
     if _is_tenpai(view['hand'], view['exposedMelds'], rules):
         return False
@@ -107,8 +139,11 @@ def _should_take_added_kong(view: dict, meld_index: int, rules: GameRuleSet) -> 
     current = _best_discard_progress(view['hand'], view['exposedMelds'], rules,
                                      view.get('visibleTiles'))
     projected = _progress(after, view['exposedMelds'], rules, view.get('visibleTiles'))
-    return _opponent_threat(view) < 10 and (
-        current is None or projected['shanten'] <= current['shanten'] + 1)
+    if _opponent_threat(view) >= 10:
+        return False
+    if _added_kong_rob_risk(view, tile):
+        return False
+    return current is None or projected['shanten'] <= current['shanten'] + 1
 
 
 def _should_take_concealed_kong(view: dict, tile: TileType, rules: GameRuleSet) -> bool:

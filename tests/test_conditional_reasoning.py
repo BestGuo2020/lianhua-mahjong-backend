@@ -98,6 +98,10 @@ def test_early_round_allows_distinct_ready_choices_and_ready_break_risk():
 
 
 def test_early_opponent_threat_requires_three_strong_exposed_melds():
+    """威胁分与放炮定价同源（档位版）：两副露=中档 70，三组箭牌=高档 100。
+
+    早局阈值 90：只有 tier 3（三元 / 四喜系）才够，门清 / 两副露不再误触发。
+    """
     value = request()
     value['state']['earlyRound'] = True
     meld = {'type': 'peng', 'tile': '2万', 'tiles': ['2万', '2万', '2万']}
@@ -106,7 +110,55 @@ def test_early_opponent_threat_requires_three_strong_exposed_melds():
     }
     assert 'opponent-threat' not in evaluate_reasoning_triggers(value, random_fn=lambda: 1)
     value['state']['snapshots']['upper']['melds'].append(meld)
+    assert 'opponent-threat' not in evaluate_reasoning_triggers(value, random_fn=lambda: 1)
+
+    dragons = [{'type': 'peng', 'tile': name, 'tiles': [name] * 3}
+               for name in ('红中', '发财', '白板')]
+    value['state']['snapshots']['upper'] = {'discards': [], 'melds': dragons}
     assert 'opponent-threat' in evaluate_reasoning_triggers(value, random_fn=lambda: 1)
+
+
+def test_opponent_threat_uses_tier_mapping_with_late_wall_bonus():
+    """档位→威胁分：tier3=90 / tier2=70 / tier1=40；墙余 ≤ 24 再 +10（上限 100）。"""
+    from app.llm.conditional_reasoning import _opponent_threat
+
+    def request_with(melds, discards=(), wall_count=60):
+        value = request()
+        value['state']['wallCount'] = wall_count
+        value['state']['snapshots']['upper'] = {'discards': list(discards), 'melds': melds}
+        return value
+
+    flush = [{'type': 'peng', 'tile': '4筒', 'tiles': ['4筒', '4筒', '4筒']},
+             {'type': 'peng', 'tile': '7筒', 'tiles': ['7筒', '7筒', '7筒']}]
+    dragons = [{'type': 'peng', 'tile': name, 'tiles': [name] * 3}
+               for name in ('红中', '发财', '白板')]
+    assert _opponent_threat(request_with([], wall_count=60)) == 0
+    assert _opponent_threat(request_with(flush, wall_count=60)) == 70
+    assert _opponent_threat(request_with(flush, wall_count=20)) == 80
+    assert _opponent_threat(request_with(dragons, wall_count=60)) == 90
+    assert _opponent_threat(request_with(dragons, wall_count=20)) == 100
+    # lotus-classic（广麻无普通点炮）恒为 0。
+    classic = request_with(dragons, wall_count=60)
+    classic['ruleCode'] = 'lotus-classic'
+    assert _opponent_threat(classic) == 0
+
+
+def test_opponent_threat_drops_unknown_tile_names():
+    """快照里未知牌名一律丢弃，不猜测：丢掉后副露数/花色集中度一起下降 = 威胁分下降。"""
+    from app.llm.conditional_reasoning import _opponent_threat
+    value = request()
+    value['state']['wallCount'] = 60
+    value['state']['snapshots']['upper'] = {
+        'discards': ['？？'],
+        'melds': [{'type': 'peng', 'tile': '4筒', 'tiles': ['4筒', '4筒', '4筒']},
+                  {'type': 'peng', 'tile': '7筒', 'tiles': ['7筒', '7筒', '7筒']}],
+    }
+    assert _opponent_threat(value) == 70   # 两副露同花色：染手嫌疑 tier 2
+    value['state']['snapshots']['upper']['melds'] = [
+        {'type': 'peng', 'tile': '？', 'tiles': ['？', '？', '？']},
+        {'type': 'peng', 'tile': '7筒', 'tiles': ['7筒', '7筒', '7筒']},
+    ]
+    assert _opponent_threat(value) == 0    # 未知牌名被丢弃 → 只剩一副露，无信号
 
 
 def test_match_budget_is_shared_and_capped_at_24():

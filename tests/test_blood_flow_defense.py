@@ -452,3 +452,32 @@ def test_own_hand_facts_does_not_run_a_per_tile_shanten_search(monkeypatch):
     assert calls, '听口判定必须走 waiting_tiles_cached'
     assert len(calls) <= len(set(HAND))          # 每张不同牌一次，不是每张牌一次向听搜索
     assert len(calls) == len(set(HAND))
+
+
+# ── 能大明杠时不给"碰"候选（方案 A；对齐前端 dropDominatedPeng） ──────────────────────────
+
+THREE_COPIES = ['m5', 'm5', 'm5', 'm1', 'm2', 'm3', 'p4', 'p5', 'p6', 's7', 's8', 's9', 'east']
+TWO_COPIES = ['m5', 'm5', 'm1', 'm2', 'm3', 'p4', 'p5', 'p6', 's7', 's8', 's9', 'east', 'north']
+KONG_OR_PENG = [{'kind': 'pass'}, {'kind': 'gang'}, {'kind': 'peng'}]
+
+
+def test_kong_available_drops_peng_candidate():
+    """手上三张、别人打出第四张：能给大明杠时"碰"不再进候选（原来 LLM 会挑碰再打掉那张）。"""
+    view = make_view(THREE_COPIES, {'claim': True, 'own_actions': KONG_OR_PENG})
+    moves = blood_flow_ai_actions(view)
+    kinds = [action['kind'] for action in moves]
+    assert 'gang' in kinds
+    assert 'peng' not in kinds
+
+
+def test_kong_available_engine_still_gangs():
+    """本地 AI 行为不变：能杠必杠。"""
+    view = make_view(THREE_COPIES, {'claim': True, 'own_actions': KONG_OR_PENG})
+    assert decide_blood_flow_action_ev(view) == {'kind': 'gang'}
+
+
+def test_two_copies_keeps_peng_candidate():
+    """只有两张时碰照常保留，不受这条约束影响。"""
+    view = make_view(TWO_COPIES, {'claim': True, 'own_actions': [{'kind': 'pass'}, {'kind': 'peng'}]})
+    kinds = [action['kind'] for action in blood_flow_ai_actions(view)]
+    assert 'peng' in kinds

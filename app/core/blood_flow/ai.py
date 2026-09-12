@@ -755,7 +755,19 @@ def blood_flow_ai_actions(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI,
     if view['public']['seats'][view['seat']]['locked']:
         return [dict(a) for a in (view.get('ownActions') or [])]
     legal = _legal_actions(view)
-    return _apply_defense_constraint(view, legal, config, defense)
+    return _apply_defense_constraint(view, _drop_dominated_peng(legal), config, defense)
+
+
+def _drop_dominated_peng(actions: list[dict]) -> list[dict]:
+    """能大明杠时不给"碰"候选（对齐前端 ``dropDominatedPeng``）。
+
+    响应别人弃牌时手上必然是 3 张（第四张在弃牌里）：碰会拆成"副露 2 张 + 手里 1 张死牌"，
+    杠是同一副露 + 杠分 + 补牌机会且不可被抢，所以杠严格优于碰。修的是"本来能开大明杠、
+    结果碰牌 + 打出要碰的牌"（LLM 座位；本地 AI 本来就是能杠必杠）。
+    """
+    if not any(action.get('kind') == 'gang' for action in actions):
+        return actions
+    return [action for action in actions if action.get('kind') != 'peng']
 
 
 def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> Optional[dict]:

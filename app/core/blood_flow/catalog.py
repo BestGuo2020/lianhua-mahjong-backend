@@ -23,6 +23,9 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
     tiles = [t for g in hand.groups for t in g.tiles]
     suits = {t[0] for t in tiles if not is_honor(t)}
     honors = any(is_honor(t) for t in tiles)
+    # 豪华七对：七对里含自然四张相同（natural 表示每张实体牌都按本张使用）。
+    if hand.shape == 'sevenPairs' and hand.natural and any(tiles.count(t) >= 4 for t in tiles):
+        result.append('luxury-seven-pairs')
     if len(suits) == 1:
         result.append('mixed-suit' if honors else 'pure-suit')
     if all(is_honor(t) for t in tiles):

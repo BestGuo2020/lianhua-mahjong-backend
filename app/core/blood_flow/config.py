@@ -5,28 +5,30 @@ from typing import Literal
 
 from app.core.blood_flow.types import PatternDefinition
 # 16 番型 + 特殊手（权重与排除关系与前端 config.ts 完全一致）。
+# 2026-09-12 重平衡：对齐广东麻将番型表的相对比例，顶端单独拉开；同步把单家封顶 64 → 128。
 PATTERNS: dict[str, PatternDefinition] = {
-    'pure-suit': PatternDefinition('pure-suit', '清一色', 4),
-    'mixed-suit': PatternDefinition('mixed-suit', '混一色', 2),
-    'all-triplets': PatternDefinition('all-triplets', '碰碰胡', 2),
-    'little-three-dragons': PatternDefinition('little-three-dragons', '小三元', 4),
-    'big-three-dragons': PatternDefinition('big-three-dragons', '大三元', 8),
-    'little-four-winds': PatternDefinition('little-four-winds', '小四喜', 8),
-    'big-four-winds': PatternDefinition('big-four-winds', '大四喜', 16, ('all-triplets',)),
-    'nine-gates': PatternDefinition('nine-gates', '九莲宝灯', 16, ('pure-suit',)),
-    'all-green': PatternDefinition('all-green', '绿一色', 16),
-    'pure-terminals': PatternDefinition('pure-terminals', '清幺九', 16, ('all-triplets',)),
-    'mixed-terminals': PatternDefinition('mixed-terminals', '混幺九', 4, ('all-triplets',)),
-    'three-concealed-triplets': PatternDefinition('three-concealed-triplets', '三暗刻', 4),
-    'four-concealed-triplets': PatternDefinition('four-concealed-triplets', '四暗刻', 8, ('three-concealed-triplets', 'all-triplets')),
-    'all-honors': PatternDefinition('all-honors', '字一色', 8),
-    'three-kongs': PatternDefinition('three-kongs', '三杠', 8),
-    'four-kongs': PatternDefinition('four-kongs', '四杠', 16, ('three-kongs', 'all-triplets')),
-    'pinghu': PatternDefinition('pinghu', '平胡', 1),
-    'sevenPairs': PatternDefinition('sevenPairs', '七对', 2),
+    'big-three-dragons': PatternDefinition('big-three-dragons', '大三元', 32),
+    'big-four-winds': PatternDefinition('big-four-winds', '大四喜', 32, ('all-triplets',)),
+    'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 32),
+    'nine-gates': PatternDefinition('nine-gates', '九莲宝灯', 32, ('pure-suit',)),
+    'four-kongs': PatternDefinition('four-kongs', '四杠', 32, ('three-kongs', 'all-triplets')),
+    'all-honors': PatternDefinition('all-honors', '字一色', 24),
+    'pure-terminals': PatternDefinition('pure-terminals', '清幺九', 24, ('all-triplets',)),
+    'all-green': PatternDefinition('all-green', '绿一色', 24),
+    'little-three-dragons': PatternDefinition('little-three-dragons', '小三元', 16),
+    'little-four-winds': PatternDefinition('little-four-winds', '小四喜', 16),
+    'four-concealed-triplets': PatternDefinition('four-concealed-triplets', '四暗刻', 16, ('three-concealed-triplets', 'all-triplets')),
+    'luxury-seven-pairs': PatternDefinition('luxury-seven-pairs', '豪华七对', 16, ('sevenPairs',)),
+    'mixed-terminals': PatternDefinition('mixed-terminals', '混幺九', 12, ('all-triplets',)),
+    'three-kongs': PatternDefinition('three-kongs', '三杠', 12),
+    'pure-suit': PatternDefinition('pure-suit', '清一色', 8),
+    'sevenPairs': PatternDefinition('sevenPairs', '七对', 6),
+    'three-concealed-triplets': PatternDefinition('three-concealed-triplets', '三暗刻', 6),
+    'qiXing': PatternDefinition('qiXing', '七星十三烂', 6),
+    'mixed-suit': PatternDefinition('mixed-suit', '混一色', 4),
+    'all-triplets': PatternDefinition('all-triplets', '碰碰胡', 4),
     'shiSanLan': PatternDefinition('shiSanLan', '十三烂', 2),
-    'qiXing': PatternDefinition('qiXing', '七星十三烂', 4),
-    'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 16),
+    'pinghu': PatternDefinition('pinghu', '平胡', 1),
 }
 
 EVENT_MULTIPLIERS: dict[str, int] = {'discard': 1, 'self-draw': 2, 'robbed-kong': 2, 'kong-bloom': 4}
@@ -43,7 +45,7 @@ class BloodFlowConfig:
     label: str = '莲花麻将·血流'
     base_points: int = 10
     initial_score: int = 2000
-    max_multiplier_per_payer: int = 64
+    max_multiplier_per_payer: int = 128
     hard_win_multiplier: int = 2
     patterns: dict[str, PatternDefinition] = field(default_factory=lambda: dict(PATTERNS))
     event_multipliers: dict[str, int] = field(default_factory=lambda: dict(EVENT_MULTIPLIERS))

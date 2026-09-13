@@ -83,7 +83,10 @@ def test_external_joker_tile_keeps_only_its_own_identity():
     assert result is not None
     assert result.score.hard_win is False
     # 外来红中不能替东风，因此不存在"红中红中红中 + 东风东风"全自然分解之外的更高番硬胡。
-    assert result.score.payment_per_payer == 10
+    # 标准四面子一将型无副露 → 计门清平胡（2 番）：倍率 = (1 + (2-1)) × 点炮 1 = 2 → 20 点。
+    # 同口径锚点：共享夹具 external-joker-only-one-ordinary（同为无副露标准型，20 点）。
+    assert result.score.pattern_multiplier == 2
+    assert result.score.payment_per_payer == 20
 
 
 def test_winning_joker_stays_wild_on_self_draw():

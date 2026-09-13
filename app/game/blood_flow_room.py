@@ -841,6 +841,7 @@ class BloodFlowRoomSession:
             'excluded': [{'id': e.id, 'includedBy': e.included_by} for e in score.excluded],
             'hardWin': score.hard_win, 'source': score.source, 'opening': score.opening,
             'patternMultiplier': score.pattern_multiplier, 'eventMultiplier': score.event_multiplier,
+            'kongBonus': score.kong_bonus,
             'openingApplied': score.opening_applied, 'uncappedMultiplier': score.uncapped_multiplier,
             'finalMultiplier': score.final_multiplier, 'capped': score.capped,
             'paymentPerPayer': score.payment_per_payer,

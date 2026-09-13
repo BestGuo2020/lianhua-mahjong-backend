@@ -1,11 +1,22 @@
 """血流计分 —— 对应 patterns/score.ts。"""
 
-from .config import BLOOD_FLOW_CONFIG, BloodFlowConfig
-from .types import ExcludedPattern, PublicWinScore, ScoringItem, WinSource
+from .config import BLOOD_FLOW_CONFIG, KONG_BONUS, BloodFlowConfig
+from .types import ExcludedPattern, KongCounts, PublicWinScore, ScoringItem, WinSource
+
+# 三杠/四杠本身就是“把杠算进去”的番种：命中其一则每副杠的加成归零，避免重复奖励同一结构。
+KONG_PATTERN_IDS = frozenset(('three-kongs', 'four-kongs'))
+
+
+def kong_bonus_of(counts: KongCounts, config: BloodFlowConfig = BLOOD_FLOW_CONFIG) -> int:
+    """杠加成（对应 TS 的 kongBonusOf）：明杠 ×1、暗杠/风杠 ×2，权重取自规则配置。"""
+    bonus = getattr(config, 'kong_bonus', None) or KONG_BONUS
+    return counts.exposed * bonus['exposed'] + counts.concealed * bonus['concealed'] \
+        + counts.wind * bonus['wind']
 
 
 def score_patterns(patterns: list[str], natural: bool, source: WinSource,
-                   opening: str | None = None, config: BloodFlowConfig = BLOOD_FLOW_CONFIG) -> PublicWinScore:
+                   opening: str | None = None, config: BloodFlowConfig = BLOOD_FLOW_CONFIG,
+                   kongs: KongCounts | None = None) -> PublicWinScore:
     ids = sorted(set(patterns))
     excluded: list[ExcludedPattern] = []
     for pid in ids:
@@ -15,7 +26,10 @@ def score_patterns(patterns: list[str], natural: bool, source: WinSource,
     excluded_ids = {e.id for e in excluded}
     items = [ScoringItem(id=pid, label=config.patterns[pid].label, weight=config.patterns[pid].weight)
              for pid in ids if pid not in excluded_ids]
-    pattern_multiplier = 1 + sum(p.weight - 1 for p in items)
+    # 三杠/四杠不再叠加每副杠的加成（不重复计算）。
+    kong_pattern_scored = any(item.id in KONG_PATTERN_IDS for item in items)
+    kong_bonus = 0 if kong_pattern_scored else kong_bonus_of(kongs or KongCounts(), config)
+    pattern_multiplier = 1 + sum(p.weight - 1 for p in items) + kong_bonus
     event_multiplier = config.event_multipliers[source]
     ordinary = pattern_multiplier * event_multiplier
     opening_applied = opening is not None and ordinary < config.opening_minimum_multiplier
@@ -27,6 +41,7 @@ def score_patterns(patterns: list[str], natural: bool, source: WinSource,
         opening=opening, pattern_multiplier=pattern_multiplier, event_multiplier=event_multiplier,
         opening_applied=opening_applied, uncapped_multiplier=uncapped, final_multiplier=final,
         capped=uncapped > final, payment_per_payer=config.base_points * final,
+        kong_bonus=kong_bonus,
     )
 
 

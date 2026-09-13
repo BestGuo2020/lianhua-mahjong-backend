@@ -12,8 +12,13 @@ RegularPatternId = Literal[
     'all-green', 'pure-terminals', 'mixed-terminals',
     'three-concealed-triplets', 'four-concealed-triplets',
     'all-honors', 'three-kongs', 'four-kongs',
+    # 2026-09-12 第二版番种表新增：路线牌型（数牌/刻子/幺九三条路线）
+    # 门清：**仅标准四面子一将型生效**（特殊结构不计）
+    'all-simples', 'concealed-hand', 'all-with-terminals',
+    'one-suit-three-steps', 'one-suit-four-steps', 'pure-straight',
+    'one-suit-three-joints', 'one-suit-four-joints',
 ]
-SpecialPatternId = Literal['pinghu', 'sevenPairs', 'shiSanLan', 'qiXing', 'thirteenOrphans']
+SpecialPatternId = Literal['pinghu', 'sevenPairs', 'luxury-seven-pairs', 'shiSanLan', 'qiXing', 'thirteenOrphans']
 PatternId = str  # 保持宽松以便共享夹具 JSON 直接使用
 HandShape = Literal['standard', 'sevenPairs', 'shiSanLan', 'qiXing', 'thirteenOrphans']
 WinSource = Literal['discard', 'self-draw', 'robbed-kong', 'kong-bloom']
@@ -50,6 +55,17 @@ class WinningDecomposition:
     assignments: tuple[TileAssignment, ...]
     winning_tile_group_index: Optional[int]
     natural: bool
+
+
+@dataclass(frozen=True)
+class KongCounts:
+    """杠加成统计 —— 对应 patterns/score.ts 的 KongCounts。
+
+    风杠（字牌杠，`kind == 'wind-kong'`）单列；其余按是否暗成区分明杠 / 暗杠。
+    """
+    exposed: int = 0
+    concealed: int = 0
+    wind: int = 0
 
 
 @dataclass(frozen=True)
@@ -90,6 +106,9 @@ class PublicWinScore:
     final_multiplier: int
     capped: bool
     payment_per_payer: int
+    # 杠加成（明杠 +1 / 暗杠·风杠 +2 每个，2026-09-12 新增），已计入 pattern_multiplier。
+    # 末位给默认值：保持可选，不破坏既有构造点。
+    kong_bonus: int = 0
 
 
 @dataclass(frozen=True)

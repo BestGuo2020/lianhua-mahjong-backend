@@ -18,8 +18,9 @@ from app.core.tiles import TILE_TYPES
 from app.models.game import TileType
 
 from .config import (BLOOD_FLOW_AI, BLOOD_FLOW_CONFIG, BLOOD_FLOW_DEFENSE,
-                     BloodFlowAiConfig)
+                     BLOOD_FLOW_KONG_VALUE, BloodFlowAiConfig, KongValueConfig)
 from .defense_policy import decide_defense_policy, own_hand_facts
+from .kong_value import kong_candidate_value
 
 HONORS: tuple[str, ...] = ('east', 'south', 'west', 'north', 'red', 'green', 'white')
 DRAGONS: tuple[str, ...] = ('red', 'green', 'white')
@@ -758,6 +759,25 @@ def blood_flow_ai_actions(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI,
     return _apply_defense_constraint(view, _drop_dominated_peng(legal), config, defense)
 
 
+def kong_evaluator_for(config: BloodFlowAiConfig = BLOOD_FLOW_AI):
+    """开杠价值钩子（第 3 步）：注入给 lotus_ai 的 decide_turn / decide_claim（对齐前端 kongEvaluatorFor）。
+
+    ``kong_value.mode == 'off'`` 时返回 None → 回退旧口径（能杠必杠 + 已听牌才放弃）。
+    """
+    kong_config: KongValueConfig = getattr(config, 'kong_value', None) or BLOOD_FLOW_KONG_VALUE
+    if kong_config.mode == 'off':
+        return None
+
+    def evaluate(context: dict) -> dict:
+        return kong_candidate_value(
+            kind=context.get('kind'), hand=list(context.get('hand') or []),
+            melds=list(context.get('melds') or []), jokers=list(context.get('jokers') or []),
+            tile=context.get('tile'), meld_index=context.get('meldIndex'),
+            public_tiles=list(context.get('publicTiles') or []), config=kong_config)
+
+    return evaluate
+
+
 def _drop_dominated_peng(actions: list[dict]) -> list[dict]:
     """能大明杠时不给"碰"候选（对齐前端 ``dropDominatedPeng``）。
 
@@ -798,6 +818,8 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
             tiles, current_melds, jokers, wall_count),
         # 放炮成本用含本家暗手的可见牌口径（前端 visibleTiles 等价物）。
         'safetyExposure': blood_flow_safety_exposure(view, config, _exposure_visible_tiles(view)),
+        # 开杠价值（第 3 步）：lotus_ai 的 decide_turn / decide_claim 用它给杠候选计分。
+        'kongEvaluator': kong_evaluator_for(config),
     }
     context = {
         'hand': hand, 'jokers': jokers, 'exposedMelds': len(melds),

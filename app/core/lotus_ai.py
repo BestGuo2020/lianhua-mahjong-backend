@@ -344,8 +344,27 @@ def should_take_concealed_kong(view: dict) -> bool:
 
 
 def should_take_wind_kong(view: dict) -> bool:
-    """风杠：同样移除 4 张；已听牌时放弃。"""
+    """风杠：同样移除 4 张；已听牌时放弃（血流注入 kongEvaluator 后由开杠价值定价）。"""
     return not is_tenpai(view['hand'], view.get('exposedMelds', 0), view.get('jokers', []))
+
+
+def _accepts_kong(view: dict, context: dict, legacy: Callable[[dict], bool]) -> bool:
+    """开杠是否值得（第 3 步，对齐前端 ``acceptsKong``）。
+
+    注入 ``kongEvaluator`` 时按净值 ``杠收益 − 防守风险 − 自手牌型损失`` 判断——净值为正才压过
+    "不杠"（保留手牌继续打）；没注入（经典玩法）时回退旧启发式，行为不变。
+    """
+    evaluator = view.get('kongEvaluator')
+    if not evaluator:
+        return legacy(view)
+    payload = {
+        'hand': list(view['hand']),
+        'jokers': list(view.get('jokers', [])),
+        'publicTiles': view.get('publicTiles'),
+        **context,
+    }
+    value = evaluator(payload) or {}
+    return value.get('net', 0) > 0
 
 
 def decide_turn(view: dict, jokers: list[TileType] | None = None,
@@ -379,13 +398,20 @@ def decide_turn(view: dict, jokers: list[TileType] | None = None,
         if _meld_attr(meld, 'type') == 'peng' and _meld_attr(meld, 'tile') in view['hand']:
             meld_index = i
             break
-    if meld_index >= 0 and should_take_added_kong(view):
+    if meld_index >= 0 and _accepts_kong(view, {
+            'kind': 'added-kong', 'melds': list(view.get('melds', [])),
+            'tile': _meld_attr(view['melds'][meld_index], 'tile'), 'meldIndex': meld_index,
+    }, should_take_added_kong):
         return {'kind': 'added-kong', 'meldIndex': meld_index}
 
-    if kongs and should_take_concealed_kong(view):
+    if kongs and _accepts_kong(view, {
+            'kind': 'concealed-kong', 'melds': list(view.get('melds', [])), 'tile': kongs[0],
+    }, should_take_concealed_kong):
         return {'kind': 'concealed-kong', 'tile': kongs[0]}
 
-    if has_wind_kong and should_take_wind_kong(view):
+    if has_wind_kong and _accepts_kong(view, {
+            'kind': 'wind-kong', 'melds': list(view.get('melds', [])),
+    }, should_take_wind_kong):
         return {'kind': 'wind-kong'}
 
     return {'kind': 'discard', 'handIndex': choose_discard_index(
@@ -433,9 +459,23 @@ def _remove_claimed_meld_tiles(hand: list[TileType], meld: dict, tile: TileType)
 
 
 def decide_claim(view: dict) -> dict:
-    """面对弃牌：能杠必杠；碰/吃按动作后听牌质量与现状比较，不提升则 pass。"""
+    """面对弃牌：能杠必杠；碰/吃按动作后听牌质量与现状比较，不提升则 pass。
+
+    第 3 步（2026-09-13，对齐前端 decideClaim）：注入 ``kongEvaluator`` 后明杠也变成"计分开杠"——
+    明杠会造出一副露（门清平胡没了）并拆掉手上的三张（七对/豪华七对路线没了），
+    这些损失按点折算后与"不杠"（保留手牌，即最佳非杠候选：碰/吃/过）比较，净值为正才杠。
+    """
     if view.get('canGang'):
-        return {'kind': 'gang'}
+        evaluator = view.get('kongEvaluator')
+        if not evaluator:
+            return {'kind': 'gang'}
+        value = evaluator({
+            'kind': 'discard-gang', 'hand': list(view['hand']),
+            'melds': list(view.get('melds') or []), 'jokers': list(view.get('jokers', [])),
+            'tile': view.get('tile'), 'publicTiles': view.get('publicTiles'),
+        }) or {}
+        if value.get('net', 0) > 0:
+            return {'kind': 'gang'}
 
     extras = _extras(view)
     baseline = _current_hand_quality(

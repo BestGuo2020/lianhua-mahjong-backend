@@ -180,6 +180,21 @@ def _shanten(hand: list[TileType], exposed_melds: int,
                _shi_san_lan_shanten(hand, wildcards))
 
 
+def hand_shanten(
+        hand: list[TileType], exposed_melds: int,
+        waiting_fn: Callable[[list[TileType], int], list[TileType]],
+        wildcard_tiles: list[TileType] | None = None,
+        special_hands: bool = False) -> int:
+    """只要向听（含门清玩法的特殊牌型），不做进张口/进张数的 34 面枚举。
+
+    对齐前端 ``handShanten``：用于"结构有没有变差"这类高频比较（例如开杠前的自手牌型损失），
+    口径与 ``evaluate_hand_progress`` 的 shanten 一致。
+    """
+    if waiting_fn(list(hand), exposed_melds):
+        return 0
+    return max(1, _shanten(hand, exposed_melds, wildcard_tiles or [], special_hands))
+
+
 def evaluate_hand_progress(
         hand: list[TileType], exposed_melds: int,
         waiting_fn: Callable[[list[TileType], int], list[TileType]],

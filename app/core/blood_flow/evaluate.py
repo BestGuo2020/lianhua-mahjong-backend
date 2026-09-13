@@ -6,7 +6,21 @@ from .catalog import match_patterns
 from .config import BLOOD_FLOW_CONFIG, BloodFlowConfig
 from .decompose import validate_win_input, visit_decompositions
 from .score import compare_scores, score_patterns
-from .types import WinEvaluation, WinEvaluationInput
+from .types import KongCounts, WinEvaluation, WinEvaluationInput, WinningDecomposition
+
+
+def kong_counts_of(decomposition: WinningDecomposition) -> KongCounts:
+    """杠加成统计：风杠（字牌杠）单列；其余按是否暗成区分（对应 TS 的 kongCountsOf）。"""
+    exposed = concealed = wind = 0
+    for group in decomposition.groups:
+        if group.kind == 'wind-kong':
+            wind += 1
+        elif group.kind == 'kong':
+            if group.concealed:
+                concealed += 1
+            else:
+                exposed += 1
+    return KongCounts(exposed=exposed, concealed=concealed, wind=wind)
 
 
 def win_input_from_dict(data: dict) -> WinEvaluationInput:
@@ -29,7 +43,7 @@ def evaluate_win(inp: WinEvaluationInput, config: BloodFlowConfig = BLOOD_FLOW_C
     def visit(decomposition) -> None:
         nonlocal best
         score = score_patterns(match_patterns(decomposition), decomposition.natural,
-                               inp.source, inp.opening, config)
+                               inp.source, inp.opening, config, kong_counts_of(decomposition))
         if best is None or compare_scores(score, best.score) < 0:
             best = WinEvaluation(
                 rule_version=config.version,

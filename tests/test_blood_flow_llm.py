@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import os
+import re
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +17,29 @@ from app.llm.blood_flow_candidates import (_candidate_summary, blood_flow_prompt
                                            validate_blood_flow_action)
 from app.rules.blood_flow import BloodFlowRuleSet
 from tests.test_blood_flow_engine import make_opening
+
+
+def _frontend_prompt_source() -> str | None:
+    """前端 ``bloodFlowDecisionInput.ts`` 文本（用于逐字对拍规则摘要）；缺失返回 None。
+
+    backend 是 linked worktree：用 ``absolute()``（而非 ``resolve()``）保持工作区视图下的
+    前端仓库路径（与 test_blood_flow_rules.py 的夹具定位同口径）；另可用环境变量覆盖。
+    """
+    relative = Path('src') / 'game' / 'llm' / 'bloodFlowDecisionInput.ts'
+    roots: list[Path] = []
+    for name in ('LOTUS_FRONTEND_ROOT', 'DSH_WORKSPACE_ROOT', 'WORKSPACE_ROOT'):
+        value = os.environ.get(name)
+        if value:
+            roots.append(Path(value))
+    roots.extend(Path(__file__).absolute().parents)
+    for root in dict.fromkeys(roots):
+        candidate = root / relative
+        if candidate.is_file():
+            return candidate.read_text(encoding='utf-8')
+    return None
+
+
+FRONTEND_PROMPT_SOURCE = _frontend_prompt_source()
 
 
 def make_room(engine: BloodFlowEngine) -> BloodFlowRoomSession:
@@ -94,12 +120,35 @@ def test_prompt_rules_cover_ev_and_lock_clauses():
 
 
 def test_prompt_rules_cover_opponent_risk_clause():
-    """TS 新增的赔付口径句必须逐字一致地出现在 prompt 规则里。"""
+    """TS 新增的赔付口径句必须逐字一致地出现在 prompt 规则里（第二版番种表：封顶 128 / 鸡胡 / 杠加成）。"""
     rules = blood_flow_prompt_rules()
     assert ('点炮赔付=底分10×番型倍率×事件倍率（点炮×1、自摸/抢杠×2、杠上开花×4），'
-            '单家封顶64倍；同一张牌打给在做大牌（清一色/三元/四喜等）的对手，'
-            '代价可达平胡的8~32倍；候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。'
+            '单家封顶128倍；杠另有加成（明杠+1、暗杠/风杠+2，但已成三杠/四杠番种时不再叠加）。'
+            '杠候选带 features.kongValue（开杠价值 = 杠收益 − 防守风险 − 自手牌型损失）：'
+            'net ≤ 0 表示这一杠会拆掉自己的七对/豪华七对、破坏门清平胡或让向听变差，默认建议不会是杠。'
+            '同一张牌打给在做大牌（清一色/三元/四喜等）的对手，'
+            '代价可达鸡胡的8~32倍；候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。'
             ) in rules
+
+
+def test_prompt_rules_cover_kong_value_clause():
+    """第 3 步：开杠价值口径必须在 prompt 里说明（模型覆盖默认建议时要看得懂为什么不该杠）。"""
+    rules = blood_flow_prompt_rules()
+    for clause in ('features.kongValue', '杠收益', '自手牌型损失', 'net ≤ 0'):
+        assert clause in rules
+
+
+def test_prompt_rules_mirror_frontend_literal():
+    """``blood_flow_prompt_rules`` 必须与前端 ``BLOOD_FLOW_PROMPT_RULES`` 逐字一致。
+
+    直接读前端仓库源文件抽取字面量；前端工作区缺失时跳过（CI 不依赖前端仓库）。
+    """
+    frontend = FRONTEND_PROMPT_SOURCE
+    if frontend is None:
+        pytest.skip('frontend bloodFlowDecisionInput.ts not found')
+    match = re.search(r"BLOOD_FLOW_PROMPT_RULES = '([^']*)'", frontend)
+    assert match, 'frontend BLOOD_FLOW_PROMPT_RULES literal not found'
+    assert blood_flow_prompt_rules() == match.group(1)
 
 
 def risk_rig(opponent_melds: list[dict] | None = None) -> BloodFlowEngine:

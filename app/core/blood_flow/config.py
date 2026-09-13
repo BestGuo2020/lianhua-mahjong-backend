@@ -4,36 +4,74 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.core.blood_flow.types import PatternDefinition
-# 16 番型 + 特殊手（权重与排除关系与前端 config.ts 完全一致）。
-# 2026-09-12 重平衡：对齐广东麻将番型表的相对比例，顶端单独拉开；同步把单家封顶 64 → 128。
+# 番种表（权重与排除关系与前端 src/game/variants/lotus/bloodFlow/config.ts 完全一致）。
+# 2026-09-12 **第二版完整番种表**（用户定稿）：梯度 1 → 2 → 4 → 6 → 8 → 12 → 16 → 24 → 32，
+# 新增“路线牌型”——数牌路线（断幺九 → 三步高 → 清龙/四步高）、刻子路线（碰碰胡 → 三暗刻/三节高 →
+# 四暗刻/四节高）、花色路线（混一色 → 清一色 → 九莲）、幺九路线（全带幺 → 混幺九 → 清幺九/字一色）、
+# 七对路线（七对 → 豪华七对）。覆盖关系用 excludes 表达（存在高位番种时剔除低位）。
 PATTERNS: dict[str, PatternDefinition] = {
-    'big-three-dragons': PatternDefinition('big-three-dragons', '大三元', 32),
-    'big-four-winds': PatternDefinition('big-four-winds', '大四喜', 32, ('all-triplets',)),
-    'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 32),
+    # 顶级
+    'big-four-winds': PatternDefinition('big-four-winds', '大四喜', 32, ('all-triplets', 'little-four-winds')),
+    # 四杠只覆盖三杠（新表 §7：杠牌系列“四杠 → 三杠”）；四杠手必然也是四刻子+将，可与碰碰胡叠加。
+    'four-kongs': PatternDefinition('four-kongs', '四杠', 32, ('three-kongs',)),
     'nine-gates': PatternDefinition('nine-gates', '九莲宝灯', 32, ('pure-suit',)),
-    'four-kongs': PatternDefinition('four-kongs', '四杠', 32, ('three-kongs', 'all-triplets')),
-    'all-honors': PatternDefinition('all-honors', '字一色', 24),
-    'pure-terminals': PatternDefinition('pure-terminals', '清幺九', 24, ('all-triplets',)),
+    # 极高番
+    'big-three-dragons': PatternDefinition('big-three-dragons', '大三元', 24, ('little-three-dragons',)),
+    'all-honors': PatternDefinition('all-honors', '字一色', 24,
+                                    ('mixed-terminals', 'all-with-terminals', 'all-triplets')),
+    'pure-terminals': PatternDefinition('pure-terminals', '清幺九', 24,
+                                        ('mixed-terminals', 'all-with-terminals', 'all-triplets')),
     'all-green': PatternDefinition('all-green', '绿一色', 24),
+    # 大牌
     'little-three-dragons': PatternDefinition('little-three-dragons', '小三元', 16),
     'little-four-winds': PatternDefinition('little-four-winds', '小四喜', 16),
-    'four-concealed-triplets': PatternDefinition('four-concealed-triplets', '四暗刻', 16, ('three-concealed-triplets', 'all-triplets')),
-    'luxury-seven-pairs': PatternDefinition('luxury-seven-pairs', '豪华七对', 16, ('sevenPairs',)),
-    'mixed-terminals': PatternDefinition('mixed-terminals', '混幺九', 12, ('all-triplets',)),
+    'four-concealed-triplets': PatternDefinition('four-concealed-triplets', '四暗刻', 16,
+                                                 ('three-concealed-triplets', 'all-triplets', 'concealed-hand')),
+    'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 16,
+                                         ('all-with-terminals', 'mixed-terminals',
+                                          'sevenPairs', 'all-triplets')),
+    'one-suit-four-joints': PatternDefinition('one-suit-four-joints', '一色四节高', 16,
+                                              ('one-suit-three-joints', 'all-triplets')),
+    # 高番
+    'mixed-terminals': PatternDefinition('mixed-terminals', '混幺九', 12, ('all-with-terminals', 'all-triplets')),
     'three-kongs': PatternDefinition('three-kongs', '三杠', 12),
-    'pure-suit': PatternDefinition('pure-suit', '清一色', 8),
-    'sevenPairs': PatternDefinition('sevenPairs', '七对', 6),
+    'luxury-seven-pairs': PatternDefinition('luxury-seven-pairs', '豪华七对', 12,
+                                            ('sevenPairs', 'all-triplets', 'three-concealed-triplets',
+                                             'four-concealed-triplets', 'one-suit-three-joints',
+                                             'one-suit-four-joints')),
+    # 中高番
+    'pure-suit': PatternDefinition('pure-suit', '清一色', 8, ('mixed-suit',)),
+    'one-suit-three-joints': PatternDefinition('one-suit-three-joints', '一色三节高', 8),
+    'one-suit-four-steps': PatternDefinition('one-suit-four-steps', '一色四步高', 8, ('one-suit-three-steps',)),
+    # 中番
     'three-concealed-triplets': PatternDefinition('three-concealed-triplets', '三暗刻', 6),
-    'qiXing': PatternDefinition('qiXing', '七星十三烂', 6),
+    'qiXing': PatternDefinition('qiXing', '七星十三烂', 6, ('shiSanLan',)),
+    'pure-straight': PatternDefinition('pure-straight', '清龙', 6),
+    # 中低番
     'mixed-suit': PatternDefinition('mixed-suit', '混一色', 4),
     'all-triplets': PatternDefinition('all-triplets', '碰碰胡', 4),
+    'sevenPairs': PatternDefinition('sevenPairs', '七对', 4,
+                                    ('all-triplets', 'three-concealed-triplets', 'four-concealed-triplets',
+                                     'one-suit-three-joints', 'one-suit-four-joints')),
+    'one-suit-three-steps': PatternDefinition('one-suit-three-steps', '一色三步高', 4),
+    'all-with-terminals': PatternDefinition('all-with-terminals', '全带幺', 4),
+    # 低番 / 基础
     'shiSanLan': PatternDefinition('shiSanLan', '十三烂', 2),
-    'pinghu': PatternDefinition('pinghu', '平胡', 1),
+    'all-simples': PatternDefinition('all-simples', '断幺九', 2,
+                                     ('all-with-terminals', 'mixed-terminals', 'pure-terminals', 'all-honors')),
+    # 门清平胡：**仅标准四面子一将型生效**（七对/十三幺/十三烂/七星等特殊结构不计，见 catalog.py 的判定位置）。
+    # 覆盖方向：由高位番种排除它（四暗刻 / 九莲宝灯），不要反过来——否则会把大牌吃掉。
+    'concealed-hand': PatternDefinition('concealed-hand', '门清平胡', 2),
+    'pinghu': PatternDefinition('pinghu', '鸡胡', 1),
 }
 
 EVENT_MULTIPLIERS: dict[str, int] = {'discard': 1, 'self-draw': 2, 'robbed-kong': 2, 'kong-bloom': 4}
 
 KONG_PAYMENTS: dict[str, int] = {'discard': 1, 'added': 1, 'concealed': 2, 'wind': 2}
+
+# 杠加成（2026-09-12 新增，用户暂定）：每个**明杠 +1**、每个**暗杠/风杠 +2**，直接加到基础倍率上。
+# 此前杠没有任何番型加成，“胡后可开杠”也就没有收益——这是三杠/四杠这类牌型做不出来的根因之一。
+KONG_BONUS: dict[str, int] = {'exposed': 1, 'concealed': 2, 'wind': 2}
 
 ROUNDS: dict[str, int] = {'east': 4, 'hanchan': 8}
 
@@ -51,6 +89,8 @@ class BloodFlowConfig:
     event_multipliers: dict[str, int] = field(default_factory=lambda: dict(EVENT_MULTIPLIERS))
     opening_minimum_multiplier: int = 8
     kong_payments: dict[str, int] = field(default_factory=lambda: dict(KONG_PAYMENTS))
+    # 杠加成权重（每个明杠 / 暗杠 / 风杠给基础倍率加多少），对齐前端 BLOOD_FLOW_CONFIG.kongBonus。
+    kong_bonus: dict[str, int] = field(default_factory=lambda: dict(KONG_BONUS))
     rounds: dict[str, int] = field(default_factory=lambda: dict(ROUNDS))
     lock_after_first_win: bool = True
     multiple_winners: bool = True
@@ -91,6 +131,28 @@ BLOOD_FLOW_DEFENSE = DefensePolicyConfig()
 
 
 @dataclass(frozen=True)
+class KongValueConfig:
+    """开杠价值配置（2026-09-13，对齐前端 KongValueConfig / BLOOD_FLOW_KONG_VALUE）。
+
+    血流 AI 的开杠候选不再"能杠必杠"，而是按 ``杠收益 − 防守风险 − 自手牌型损失`` 计分
+    （见 app/core/blood_flow/kong_value.py），净值为正才压过"不杠"。
+    ``mode='off'`` 用于 A/B 对照（回退到旧的"能杠必杠 + 已听牌才放弃"口径）。
+    """
+    mode: str = 'ev'
+    # 倍率加成的折算权重（× 底分）：1 = 按单家一份计（杠加成只在胡牌时兑现，这里不按胡牌概率再折）。
+    bonus_weight: float = 1
+    # 补杠抢杠风险（点，未见张时）。
+    rob_risk: float = 60
+    # 向听每恶化一档的折算损失（点）＝ 1 番底分。
+    shanten_step_loss: float = 10
+    # 门清平胡作为"兜底本体"的折价：只有在别的番种都不成立时才兑现，因此不按全额计。
+    concealed_hand_fallback: float = 0.5
+
+
+BLOOD_FLOW_KONG_VALUE = KongValueConfig()
+
+
+@dataclass(frozen=True)
 class BloodFlowAiConfig:
     """血流本地 AI 贪婪 EV 参数（对齐前端 config.ts BLOOD_FLOW_AI）。"""
     strategy: str = 'ev'
@@ -119,6 +181,8 @@ class BloodFlowAiConfig:
     # 兜/弃政策阈值（v3）。
     defense: DefensePolicyConfig = BLOOD_FLOW_DEFENSE
     llm_ev_features: bool = True
+    # 开杠价值（第 3 步）：杠候选按 收益 − 防守风险 − 自手牌型损失 计分。
+    kong_value: KongValueConfig = BLOOD_FLOW_KONG_VALUE
 
 
 BLOOD_FLOW_AI = BloodFlowAiConfig()

@@ -68,20 +68,65 @@ def _thirteen_orphans_potential(hand: list[str], jokers: list[str]) -> int:
     return (kinds_after_jokers - 10) * 3 + pair_score
 
 
-def _seven_pairs_potential(hand: list[str], jokers: list[str]) -> int:
+def _seven_pairs_account(hand: list[str], jokers: list[str]) -> dict:
+    """七对账目（2026-09-13 追加，对齐引擎 is_seven_pairs 的记账）。
+
+    c=2 → 1 对；c=4 → 2 对；c=3 → 1 对 + 1 单；精牌先补单张，剩余精牌两两成对。
+    旧口径（_seven_pairs_potential）只算到第一步，多余精牌直接丢掉。
+    """
     joker_set = set(jokers)
     counts: dict[str, int] = {}
-    joker_count = 0
+    jokers_in_hand = 0
     for tile in hand:
         if tile in joker_set:
-            joker_count += 1
+            jokers_in_hand += 1
         else:
             counts[tile] = counts.get(tile, 0) + 1
     pairs = singles = 0
     for count in counts.values():
         pairs += count // 2
         singles += count % 2
-    near_seven = pairs + min(singles, joker_count)
+    paired_by_jokers = min(singles, jokers_in_hand)
+    leftovers = jokers_in_hand - paired_by_jokers
+    return {
+        'pairs': pairs, 'singles': singles, 'jokers': jokers_in_hand,
+        'effectivePairs': pairs + paired_by_jokers + leftovers // 2,
+        'counts': counts,
+    }
+
+
+def _seven_pairs_progress(hand: list[str], jokers: list[str]) -> float:
+    """七对进度 0..1（有效对子数 / 7）。"""
+    return max(0.0, min(1.0, _seven_pairs_account(hand, jokers)['effectivePairs'] / 7))
+
+
+def _quad_availability(hand: list[str], jokers: list[str]) -> float:
+    """四张可达性 0..1（豪华七对的第二半）：精牌能直接补成四张（刻子+精 / 对子+2 精 / 单张+3 精）。"""
+    account = _seven_pairs_account(hand, jokers)
+    available = account['jokers']
+    best = 0.0
+    for count in account['counts'].values():
+        reach = count + available
+        if reach >= 4:
+            best = max(best, 1.0)
+        elif count >= 3:
+            best = max(best, 0.6)
+        elif reach == 3:
+            best = max(best, 0.5)
+        elif count == 2:
+            best = max(best, 0.2)
+    return best
+
+
+def _luxury_seven_pairs_progress(hand: list[str], jokers: list[str]) -> float:
+    """豪华七对进度 0..1 = 七对进度 × 四张可达性。"""
+    return _seven_pairs_progress(hand, jokers) * _quad_availability(hand, jokers)
+
+
+def _seven_pairs_potential(hand: list[str], jokers: list[str]) -> int:
+    """七对子潜力（旧口径，仅供经典玩法与旧 A/B 臂使用）：多余精牌被丢掉。"""
+    account = _seven_pairs_account(hand, jokers)
+    near_seven = account['pairs'] + min(account['singles'], account['jokers'])
     if near_seven < 5:
         return 0
     return near_seven * 4
@@ -110,7 +155,13 @@ def _shape(hand: list[str], melds: list[dict], jokers: list[str]) -> dict:
             'meld_tiles': meld_tiles}
 
 
-def pattern_potentials(hand: list[str], melds: list[dict], jokers: list[str]) -> list[dict]:
+def pattern_potentials(hand: list[str], melds: list[dict], jokers: list[str],
+                       model: str = 'off') -> list[dict]:
+    """每种方向的接近度。
+
+    ``model``（2026-09-13 追加，默认 'off' 保持旧口径逐位不变）：
+    'off' = 七对方向用旧 _seven_pairs_potential；'ev' = 对齐引擎记账 + 新增豪华七对（12 番）方向。
+    """
     s = _shape(hand, melds, jokers)
     effective = len(hand) + 3 * len(melds)
     directions: list[dict] = []
@@ -166,7 +217,9 @@ def pattern_potentials(hand: list[str], melds: list[dict], jokers: list[str]) ->
             satisfied += min(s['counts'].get(f'{main_suit or "m"}{rank}', 0), need[rank - 1])
         add('nine-gates', min(1.0, (satisfied + s['joker_count']) / 14) * (1 if len(suit_counts) <= 1 else 0))
 
-    if all(t in GREEN_TILES or t in wildcard_set(jokers) for t in [*hand, *meld_tiles]):
+    # 绿一色：副露必须已经全绿（含精牌），手牌部分只算接近度——对齐前端 patternPotentials.ts。
+    # 注意不是"整手都必须已经全绿"：那是判定（certainPatterns），不是潜力方向。
+    if all(t in GREEN_TILES or t in wildcard_set(jokers) for t in meld_tiles):
         in_set = sum(1 for t in s['natural'] if t in GREEN_TILES)
         add('all-green', (in_set + s['joker_count']) / effective)
 
@@ -206,24 +259,34 @@ def pattern_potentials(hand: list[str], melds: list[dict], jokers: list[str]) ->
     orphans = _thirteen_orphans_potential(hand, wild)
     if orphans > 0:
         add('thirteenOrphans', min(1.0, orphans / 17))
-    seven = _seven_pairs_potential(hand, wild)
-    if seven > 0:
-        add('sevenPairs', min(1.0, seven / 28))
+    if model == 'ev':
+        # 对齐引擎记账：多余精牌两两成对不再丢掉；精牌能补成四张时同时给出 12 番的豪华七对方向。
+        account = _seven_pairs_account(hand, wild)
+        if account['effectivePairs'] >= 5:
+            add('sevenPairs', min(1.0, account['effectivePairs'] / 7))
+            add('luxury-seven-pairs', _luxury_seven_pairs_progress(hand, wild))
+    else:
+        seven = _seven_pairs_potential(hand, wild)
+        if seven > 0:
+            add('sevenPairs', min(1.0, seven / 28))
     return directions
 
 
-def pattern_potential_total(hand: list[str], melds: list[dict], jokers: list[str]) -> float:
-    return sum(d['score'] for d in pattern_potentials(hand, melds, jokers))
+def pattern_potential_total(hand: list[str], melds: list[dict], jokers: list[str],
+                            model: str = 'off') -> float:
+    return sum(d['score'] for d in pattern_potentials(hand, melds, jokers, model))
 
 
-def pattern_potential_ev(hand: list[str], melds: list[dict], jokers: list[str], wall_count: int) -> float:
+def pattern_potential_ev(hand: list[str], melds: list[dict], jokers: list[str], wall_count: int,
+                         model: str = 'off') -> float:
     late = 0.4 if wall_count <= BLOOD_FLOW_AI.late_game_wall_count else 1.0
-    return pattern_potential_total(hand, melds, jokers) * BLOOD_FLOW_CONFIG.base_points * late
+    return pattern_potential_total(hand, melds, jokers, model) * BLOOD_FLOW_CONFIG.base_points * late
 
 
 # ── 收益估算（翻译 estimateWinIncome / certainPatterns） ──
 
-def _certain_patterns(hand: list[str], melds: list[dict], jokers: list[str]) -> set[str]:
+def _certain_patterns(hand: list[str], melds: list[dict], jokers: list[str],
+                      model: str = 'off') -> set[str]:
     s = _shape(hand, melds, jokers)
     certain: set[str] = set()
     meld_tiles = s['meld_tiles']
@@ -300,7 +363,12 @@ def _certain_patterns(hand: list[str], melds: list[dict], jokers: list[str]) -> 
     if gangs >= 4:
         certain.add('four-kongs')
 
-    if _seven_pairs_potential(hand, list(wild)) >= 28:
+    if model == 'ev':
+        # 模型开启时用对齐引擎的记账：完整手牌里"七对里含四张相同"就是豪华七对（精牌顶替后计入）。
+        account = _seven_pairs_account(hand, list(wild))
+        if account['effectivePairs'] >= 7:
+            certain.add('luxury-seven-pairs' if _quad_availability(hand, list(wild)) >= 1 else 'sevenPairs')
+    elif _seven_pairs_potential(hand, list(wild)) >= 28:
         certain.add('sevenPairs')
     shi_san = _shi_san_lan_potential(hand, list(wild))
     honors_held = sum(1 for h in HONORS if h in s['natural'])
@@ -332,8 +400,9 @@ def _shi_san_lan_defect_free(hand: list[str], jokers: list[str]) -> bool:
     return max(0, defects - jokers_after_honors) == 0
 
 
-def estimate_win_income(hand: list[str], melds: list[dict], jokers: list[str], source: str) -> dict:
-    patterns = _certain_patterns(hand, melds, jokers)
+def estimate_win_income(hand: list[str], melds: list[dict], jokers: list[str], source: str,
+                        model: str = 'off') -> dict:
+    patterns = _certain_patterns(hand, melds, jokers, model)
     multiplier = 1
     for pattern_id in patterns:
         multiplier += BLOOD_FLOW_CONFIG.patterns[pattern_id].weight - 1
@@ -368,7 +437,7 @@ def _remaining_count(tile: str, visible: list[str]) -> int:
 
 
 def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
-                 visible: list[str], wall_count: int) -> float:
+                 visible: list[str], wall_count: int, model: str = 'off') -> float:
     if not hand:
         return 0.0
     waits = waiting_tiles_cached(hand, len(melds), jokers)
@@ -380,8 +449,8 @@ def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
         remaining = _remaining_count(tile, visible)
         if not remaining:
             continue
-        self_income = estimate_win_income([*hand, tile], melds, jokers, 'self-draw')
-        discard_income = estimate_win_income([*hand, tile], melds, jokers, 'discard')
+        self_income = estimate_win_income([*hand, tile], melds, jokers, 'self-draw', model)
+        discard_income = estimate_win_income([*hand, tile], melds, jokers, 'discard', model)
         average = (BLOOD_FLOW_AI.self_draw_weight * self_income['total'] + discard_income['total']) \
             / (BLOOD_FLOW_AI.self_draw_weight + 1)
         total += remaining * average * chain_factor
@@ -569,7 +638,8 @@ def blood_flow_defense_policy(view: dict,
                      'label': BLOOD_FLOW_CONFIG.patterns[d['id']].label}
                     for d in pattern_potentials(player.get('hand') or [],
                                                 player.get('melds') or [],
-                                                list(view.get('jokers') or []))])
+                                                list(view.get('jokers') or []),
+                                                config.seven_pairs_model)])
     opponents = []
     for index in range(len(view.get('players') or [])):
         if index == seat:
@@ -677,15 +747,16 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
     immediate_total = (score or {}).get('paymentPerPayer', 0) * payers
     locked_hand = [t for i, t in enumerate(hand) if i != drawn_index] \
         if (window and window.get('kind') == 'turn' and drawn_index >= 0) else list(hand)
-    chain_after_win = chain_ev_est(locked_hand, melds, jokers, visible, wall_count) if win_offered else 0.0
+    chain_after_win = chain_ev_est(locked_hand, melds, jokers, visible, wall_count,
+                                   config.seven_pairs_model) if win_offered else 0.0
     win_ev = immediate_total + chain_after_win
     floor = first_win_floor(wall_count, config)
     floor_stage = 'late' if wall_count <= config.late_game_wall_count else \
         'early' if wall_count > config.early_game_wall_count else 'mid'
-    potential_total = pattern_potential_total(locked_hand, melds, jokers)
-    top_directions = sorted(pattern_potentials(locked_hand, melds, jokers),
+    potential_total = pattern_potential_total(locked_hand, melds, jokers, config.seven_pairs_model)
+    top_directions = sorted(pattern_potentials(locked_hand, melds, jokers, config.seven_pairs_model),
                             key=lambda d: -d['score'])[:3]
-    develop_ev = pattern_potential_ev(locked_hand, melds, jokers, wall_count)
+    develop_ev = pattern_potential_ev(locked_hand, melds, jokers, wall_count, config.seven_pairs_model)
 
     reform_candidates: list[dict] = []
     if not locked and window and window.get('kind') == 'turn' \
@@ -699,10 +770,10 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
                 continue
             reform_candidates.append({
                 'index': action['index'], 'tile': hand[action['index']],
-                'ev': chain_ev_est(after, melds, jokers, visible, wall_count),
+                'ev': chain_ev_est(after, melds, jokers, visible, wall_count, config.seven_pairs_model),
                 'anyWait': len(waits) >= len(TILE_TYPES), 'waitCount': len(waits),
                 'patterns': [BLOOD_FLOW_CONFIG.patterns[d['id']].label
-                             for d in sorted(pattern_potentials(after, melds, jokers),
+                             for d in sorted(pattern_potentials(after, melds, jokers, config.seven_pairs_model),
                                              key=lambda x: -x['score'])[:3]],
             })
         reform_candidates.sort(key=lambda c: -c['ev'])
@@ -713,8 +784,8 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
         kong_fee = BLOOD_FLOW_CONFIG.base_points * BLOOD_FLOW_CONFIG.kong_payments['added']
         rob_ev = {
             'winEv': win_ev,
-            'passEv': -kong_fee + chain_ev_est(hand, melds, jokers, visible, wall_count)
-            + pattern_potential_ev(hand, melds, jokers, wall_count),
+            'passEv': -kong_fee + chain_ev_est(hand, melds, jokers, visible, wall_count, config.seven_pairs_model)
+            + pattern_potential_ev(hand, melds, jokers, wall_count, config.seven_pairs_model),
         }
 
     return {
@@ -815,7 +886,7 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
     extras = {
         'melds': melds,
         'patternBonus': lambda tiles, current_melds: pattern_potential_ev(
-            tiles, current_melds, jokers, wall_count),
+            tiles, current_melds, jokers, wall_count, config.seven_pairs_model),
         # 放炮成本用含本家暗手的可见牌口径（前端 visibleTiles 等价物）。
         'safetyExposure': blood_flow_safety_exposure(view, config, _exposure_visible_tiles(view)),
         # 开杠价值（第 3 步）：lotus_ai 的 decide_turn / decide_claim 用它给杠候选计分。

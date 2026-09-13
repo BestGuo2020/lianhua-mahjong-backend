@@ -102,7 +102,10 @@ def test_robbed_kong_greedy_both_ways():
                       'source': {'id': 's', 'kind': 'added-kong', 'tile': 'east', 'seat': 0},
                       'deadlineAt': 0, 'opensAt': 0}
     # 高番抢杠：胡。
-    view['ownScore'] = {'paymentPerPayer': 40, 'source': 'robbed-kong', 'items': [], 'hardWin': False}
+    # 注：这里用 80 而不是 40——40 点时胡/过几乎打平（winEv 708.22 vs passEv 708.56），
+    # 2026-09-13 修掉绿一色镜像偏差（Python 之前要求整手全绿，前端只看副露）后潜力分上调，
+    # 该手在 40 点档会按"过"结算；这与前端口径一致（前端同口径下同样判过），故抬高赔付保住两支覆盖。
+    view['ownScore'] = {'paymentPerPayer': 80, 'source': 'robbed-kong', 'items': [], 'hardWin': False}
     assert decide_blood_flow_action_ev(view, BLOOD_FLOW_AI) == {'kind': 'win'}
     # 低番抢杠 + 距大番一张：过。
     near_big = ['m1', 'm1', 'm1', 'm2', 'm2', 'm2', 'm3', 'm3', 'm3', 'm4', 'm4', 'm4', 'east']

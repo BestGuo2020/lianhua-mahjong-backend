@@ -183,6 +183,9 @@ class BloodFlowAiConfig:
     llm_ev_features: bool = True
     # 开杠价值（第 3 步）：杠候选按 收益 − 防守风险 − 自手牌型损失 计分。
     kong_value: KongValueConfig = BLOOD_FLOW_KONG_VALUE
+    # 七对潜力模型（2026-09-13 追加）：'off' = 旧口径（七对只按 4 番估、多余精牌丢掉）；
+    # 'ev' = 对齐引擎 is_seven_pairs 的记账 + 新增豪华七对（12 番）方向。
+    seven_pairs_model: str = 'ev'
 
 
 BLOOD_FLOW_AI = BloodFlowAiConfig()

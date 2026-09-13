@@ -57,7 +57,9 @@ app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
 
 # 开发期跨域：Vite dev server (:4173) → 后端 REST。生产同源部署时由网关收窄。
 # 注意：allow_origins 为精确匹配（浏览器 Origin 头不含路径也不带尾斜杠）；
-# vibehub 部署在 *.lumigrav.space 任意子域，用 allow_origin_regex 覆盖，避免换子域后失效。
+# vibehub 部署在平台域名下的任意子域，用 allow_origin_regex 覆盖，避免换域名/子域后失效。
+# 2026-09-14：平台域名从 *.lumigrav.space 换到 gamesvibe.app，只认旧域名会让
+# 大模型主题的 TTS（浏览器 → 网关 /api/local-tts/synthesize）被 CORS 拦掉、静默没有语音。
 _cors_origins = [
     'https://lianhuaguangdongmahjong.guoguo-labs.online',
     'http://localhost:4173',
@@ -77,6 +79,7 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_origin_regex=(
         r'^(?:https://([\w-]+\.)*lumigrav\.space'
+        r'|https://([\w-]+\.)*gamesvibe\.app'
         r'|http://(?:localhost|127\.0\.0\.1):\d+)$'
     ),
     allow_credentials=True,

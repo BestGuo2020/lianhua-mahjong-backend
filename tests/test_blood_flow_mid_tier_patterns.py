@@ -46,25 +46,69 @@ def test_all_with_terminals_positive_and_negative():
 
 
 # ── 一色步高 / 清龙 ──
+# 国标把“依次递增一位”（素三步步高）与“依次递增二位”（素三连环扣）合称一色三步高，
+# 因此同门三副顺子的起始数字取公差 1 或 2 都成立：
+# 窄三步 123/234/345、234/345/456、345/456/567、456/567/678、567/678/789；
+# 宽三步 123/345/567、234/456/678、345/567/789。
 
-def test_one_suit_three_steps_positive_and_negative():
-    # 123 234 345 + 碰碰式对子
+
+def test_one_suit_three_steps_narrow_run():
+    # 窄三步（递增一位）：123 234 345 + 碰碰式对子
     assert 'one-suit-three-steps' in _ids(['m1', 'm2', 'm3', 'm2', 'm3', 'm4', 'm3', 'm4', 'm5',
                                            's5', 's5', 's5', 's9'], 's9')
-    # 123 345 567（起始 1/3/5，不连续）
-    assert 'one-suit-three-steps' not in _ids(['m1', 'm2', 'm3', 'm3', 'm4', 'm5', 'm5', 'm6', 'm7',
-                                               's5', 's5', 's5', 's9'], 's9')
+
+
+def test_one_suit_three_steps_wide_run():
+    # 宽三步（递增二位）：起始 1/3/5、2/4/6、3/5/7
+    assert 'one-suit-three-steps' in _ids(['m1', 'm2', 'm3', 'm3', 'm4', 'm5', 'm5', 'm6', 'm7',
+                                           'east', 'east', 'east', 's5'], 's5')
+    assert 'one-suit-three-steps' in _ids(['m2', 'm3', 'm4', 'm4', 'm5', 'm6', 'm6', 'm7', 'm8',
+                                           'east', 'east', 'east', 's5'], 's5')
+    assert 'one-suit-three-steps' in _ids(['m3', 'm4', 'm5', 'm5', 'm6', 'm7', 'm7', 'm8', 'm9',
+                                           'east', 'east', 'east', 's5'], 's5')
+
+
+def test_one_suit_three_steps_negative_cases():
+    # 123 456 789 只算清龙（隔两档），不是三步高
+    straight = _ids(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
+                     'east', 'east', 'east', 's5'], 's5')
+    assert 'pure-straight' in straight
+    assert 'one-suit-three-steps' not in straight
+    # 123 万 + 345 筒 + 567 索：必须同花色
+    assert 'one-suit-three-steps' not in _ids(['m1', 'm2', 'm3', 'p3', 'p4', 'p5',
+                                               's5', 's6', 's7', 'east', 'east', 'east', 's9'], 's9')
 
 
 def test_one_suit_four_steps_covers_three_steps():
     items = _ids(['m1', 'm2', 'm3', 'm2', 'm3', 'm4', 'm3', 'm4', 'm5', 'm4', 'm5', 'm6', 's9'], 's9')
     assert 'one-suit-four-steps' in items
     assert 'one-suit-three-steps' not in items
+    # 宽四步：123 345 567 789（递增二位）同样只计四步高
+    wide = _ids(['m1', 'm2', 'm3', 'm3', 'm4', 'm5', 'm5', 'm6', 'm7', 'm7', 'm8', 'm9', 's5'], 's5')
+    assert 'one-suit-four-steps' in wide
+    assert 'one-suit-three-steps' not in wide
 
 
 def test_pure_straight_positive():
     assert 'pure-straight' in _ids(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
                                     's5', 's5', 's5', 's9'], 's9')
+
+
+def test_wide_three_steps_with_joker_hand():
+    """实测手牌：精(九萬) + 3p4p5p5p7p7p8p8p9p + 一付副露，胡 6p → 一色三步高。
+
+    拆解 345p + 567p + 789p + 88p(精当将)：起始 3/5/7 属宽三步，此前只认连续起始会被漏判。
+    副露取筒子刻子（碰 1p），手牌仍是一色筒子。
+    """
+    peng = {'type': 'peng', 'tile': 'p1', 'tiles': ['p1', 'p1', 'p1'], 'from': 1}
+    win = _evaluate(['m9', 'p3', 'p4', 'p5', 'p5', 'p7', 'p7', 'p8', 'p8', 'p9'], 'p6',
+                    source='self-draw', jokers=['m9'], melds=[peng])
+    ids = [item.id for item in win.score.items]
+    assert 'one-suit-three-steps' in ids
+    assert 'pure-suit' in ids
+    # 精要顶牌（当 8p 做将）→ 软胡，没有硬胡 ×2；倍率 = 1 + (8-1) + (4-1) = 11
+    assert win.score.hard_win is False
+    assert win.score.pattern_multiplier == 11
 
 
 # ── 一色节高 ──

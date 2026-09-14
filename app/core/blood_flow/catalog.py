@@ -16,15 +16,26 @@ def is_terminal(tile: TileType) -> bool:
     return len(tile) == 2 and tile[1] in ('1', '9')
 
 
-def has_consecutive_run(numbers: list[int], length: int) -> bool:
-    """一组数字里是否存在 length 个连续整数（用于一色三步高/四步高、节高系列）。"""
+def has_stepped_run(numbers: list[int], length: int, steps: tuple[int, ...] = (1, 2)) -> bool:
+    """一组数字里是否存在 length 项、公差为 steps 中任一值的等差数列。
+
+    顺子族（一色三步高/四步高）**公差取 1 或 2**：国标把“依次递增一位”（123+234+345，素三步步高）
+    与“依次递增二位”（123+345+567，素三连环扣）合称一色三步高，四步高同理（123+345+567+789）。
+    因此 345+567+789（起始 3/5/7）这类“宽三步”必须成立，不能只认连续起始。
+
+    刻子族（一色三/四节高）**只有“依次递增一位”**，公差固定 1（见调用处的 (1,)）。
+
+    同一数字重复出现只算一次：番型要的是 length 个**不同递增档位**的面子，重复档位不构成步高。
+    """
     unique = sorted(set(numbers))
-    streak = 1 if unique else 0
-    for index in range(1, len(unique)):
-        streak = streak + 1 if unique[index] == unique[index - 1] + 1 else 1
-        if streak >= length:
-            return True
-    return streak >= length
+    if len(unique) < length:
+        return False
+    present = set(unique)
+    for step in steps:
+        for start in unique:
+            if all(start + step * offset in present for offset in range(1, length)):
+                return True
+    return False
 
 
 def _by_suit(groups) -> dict[str, list[int]]:
@@ -100,19 +111,19 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
     # 全带幺：每副面子与将牌都含幺九或字牌（允许 123 / 789 这类含幺的顺子）。
     if all(any(is_honor(t) or is_terminal(t) for t in g.tiles) for g in hand.groups):
         result.append('all-with-terminals')
-    # 一色步高 / 清龙：同花色顺子的起始数字关系。
+    # 一色步高 / 清龙：同花色顺子的起始数字关系（步高公差 1 或 2；清龙仍是 123/456/789 的 1/4/7）。
     for starts in _by_suit(sequences).values():
-        if has_consecutive_run(starts, 4):
+        if has_stepped_run(starts, 4):
             result.append('one-suit-four-steps')
-        elif has_consecutive_run(starts, 3):
+        elif has_stepped_run(starts, 3):
             result.append('one-suit-three-steps')
         if all(start in starts for start in (1, 4, 7)):
             result.append('pure-straight')
-    # 一色节高：同花色刻子/杠的数字连续。
+    # 一色节高：同花色刻子/杠的数字连续（节高只有“依次递增一位”，公差固定 1）。
     for numbers in _by_suit(triplets).values():
-        if has_consecutive_run(numbers, 4):
+        if has_stepped_run(numbers, 4, (1,)):
             result.append('one-suit-four-joints')
-        elif has_consecutive_run(numbers, 3):
+        elif has_stepped_run(numbers, 3, (1,)):
             result.append('one-suit-three-joints')
     # 门清平胡是**兜底本体**（方案B，2026-09-12 用户定案）：标准四面子一将、未副露、且不满足任何其他番种时，
     # 取代鸡胡作为兜底；**不与任何主体番种叠加**。七对/十三幺/十三烂/七星等特殊结构在函数开头已提前返回。

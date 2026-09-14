@@ -123,10 +123,9 @@ async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
 @pytest.mark.asyncio
 async def test_local_tts_gateway_allows_local_dev_and_vibehub_origins(server):
     async with httpx.AsyncClient(base_url=server['http'], trust_env=False) as http:
-        # gamesvibe.app 是 2026-09-14 起的平台域名（旧域名 lumigrav.space 仍然放行）；
+        # gamesvibe.app 是平台当前域名（2026-09-14 起旧域名 lumigrav.space 彻底弃用）。
         # 不含它时大模型主题的 TTS 会被 CORS 拦掉，表现为"没有语音"。
-        for origin in ('http://127.0.0.1:5181', 'https://room.lumigrav.space',
-                       'https://gamesvibe.app', 'https://play.gamesvibe.app'):
+        for origin in ('http://127.0.0.1:5181', 'https://gamesvibe.app', 'https://play.gamesvibe.app'):
             response = await http.options('/api/local-tts/synthesize', headers={
                 'Origin': origin,
                 'Access-Control-Request-Method': 'POST',
@@ -134,13 +133,14 @@ async def test_local_tts_gateway_allows_local_dev_and_vibehub_origins(server):
             })
             assert response.status_code == 200
             assert response.headers['access-control-allow-origin'] == origin
-        # 前缀相似但不同域必须仍然被拦（避免正则写成 contains）。
-        blocked = await http.options('/api/local-tts/synthesize', headers={
-            'Origin': 'https://notgamesvibe.app',
-            'Access-Control-Request-Method': 'POST',
-            'Access-Control-Request-Headers': 'content-type',
-        })
-        assert 'access-control-allow-origin' not in blocked.headers
+        # 旧域名与相似域必须被拦（避免正则写成 contains 式误放行）。
+        for origin in ('https://notgamesvibe.app', 'https://room.lumigrav.space'):
+            blocked = await http.options('/api/local-tts/synthesize', headers={
+                'Origin': origin,
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'content-type',
+            })
+            assert 'access-control-allow-origin' not in blocked.headers
 
 
 async def wait_until(cond, timeout=30.0, interval=0.05) -> None:

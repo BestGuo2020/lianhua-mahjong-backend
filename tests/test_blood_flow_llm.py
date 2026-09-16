@@ -120,15 +120,18 @@ def test_prompt_rules_cover_ev_and_lock_clauses():
 
 
 def test_prompt_rules_cover_opponent_risk_clause():
-    """TS 新增的赔付口径句必须逐字一致地出现在 prompt 规则里（第二版番种表：封顶 128 / 鸡胡 / 杠加成）。"""
+    """TS 新增的赔付口径句必须逐字一致地出现在 prompt 规则里（2026-09-15 番表：封顶 128 / 鸡胡 0.5 / 杠加成）。"""
     rules = blood_flow_prompt_rules()
     assert ('点炮赔付=底分10×番型倍率×事件倍率（点炮×1、自摸/抢杠×2、杠上开花×4），'
             '单家封顶128倍；杠另有加成（明杠+1、暗杠/风杠+2，但已成三杠/四杠番种时不再叠加）。'
             '杠候选带 features.kongValue（开杠价值 = 杠收益 − 防守风险 − 自手牌型损失）：'
-            'net ≤ 0 表示这一杠会拆掉自己的七对/豪华七对、破坏门清平胡或让向听变差，默认建议不会是杠。'
+            'net ≤ 0 表示这一杠会拆掉自己的七对/豪华七对、破坏门清或让向听变差，默认建议不会是杠。'
             '同一张牌打给在做大牌（清一色/三元/四喜等）的对手，'
-            '代价可达鸡胡的8~32倍；候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。'
+            '代价可达鸡胡的16~64倍；候选 features.opponentRisk 给出该牌按公共信息估算的赔付档与信号。'
             ) in rules
+    # 新番表语义必须写明，否则模型会按旧口径（门清平胡 2 番、鸡胡 1 番）算番。
+    for clause in ('门清（1番', '平胡（1番', '鸡胡（0.5番、支付减半）', '番型倍率按番值**相加**'):
+        assert clause in rules
 
 
 def test_prompt_rules_cover_kong_value_clause():

@@ -274,7 +274,7 @@ def blood_flow_prompt_rules() -> str:
             'features.opponentRisk.signals 里的「已胡十三幺」等）：'
             '已公开番型限定了他的牌型，锁手后依然成立，因此比读牌河更可靠。兜/弃政策：'
             'state.defense.mode 为 fold 时，'
-            '本家未听牌且可达听口过窄而对手已做成十六倍级大牌——此时应只打最安全的牌、不要吃碰杠；'
+            '本家未听牌且可达听口过窄而对手已做成十六倍级及以上大牌（三十二倍级的十三幺/九莲宝灯也算）——此时应只打最安全的牌、不要吃碰杠；'
             '若 ownAnyWaitReachable 为真（打一张即单吊任意听，此后每巡必胡、'
             '永不弃牌）或 ownCeiling 不低于对手倍率，则应继续进攻。'
             'state.defense.restricted 为真时，'

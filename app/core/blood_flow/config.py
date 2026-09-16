@@ -27,7 +27,9 @@ PATTERNS: dict[str, PatternDefinition] = {
     'little-four-winds': PatternDefinition('little-four-winds', '小四喜', 16),
     'four-concealed-triplets': PatternDefinition('four-concealed-triplets', '四暗刻', 16,
                                                  ('three-concealed-triplets', 'all-triplets')),
-    'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 16,
+    # 十三幺：2026-09-15 由 16 → 32（用户定案：实测 1200 局 45,637 次胡牌里只出现 4 次，
+    # 全表最稀有的会出现的番种，单次最高赔付却只有 320/家，低于豪华七对(12 番)的 480）。
+    'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 32,
                                          ('all-with-terminals', 'mixed-terminals',
                                           'sevenPairs', 'all-triplets')),
     'one-suit-four-joints': PatternDefinition('one-suit-four-joints', '一色四节高', 16,

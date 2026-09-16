@@ -51,7 +51,7 @@ def win_batch(winner: int, tile: str, items: list, multiplier: int) -> dict:
     }
 
 
-THIRTEEN_ORPHANS_ITEMS = [{'id': 'thirteenOrphans', 'label': '十三幺', 'weight': 16}]
+THIRTEEN_ORPHANS_ITEMS = [{'id': 'thirteenOrphans', 'label': '十三幺', 'weight': 32}]
 BIG_THREE_DRAGONS_ITEMS = [{'id': 'big-three-dragons', 'label': '大三元', 'weight': 8}]
 
 
@@ -79,7 +79,7 @@ def make_view(hand: list, options: dict = None) -> dict:
     if 'batches' in settings:
         batches = list(settings['batches'] or [])
     elif settings.get('known_win'):
-        batches = [win_batch(1, 'north', THIRTEEN_ORPHANS_ITEMS, 16)]
+        batches = [win_batch(1, 'north', THIRTEEN_ORPHANS_ITEMS, 32)]
     else:
         batches = []
     return {
@@ -212,12 +212,12 @@ def test_own_hand_facts_ceiling_respects_progress_threshold():
     hand = ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9', 'east', 'south', 'west',
             'north', 'red']
     facts = own_hand_facts(hand, [], [], hand, directions=[
-        {'weight': 16, 'progress': 0.4, 'label': '十三幺'},
+        {'weight': 32, 'progress': 0.4, 'label': '十三幺'},
         {'weight': 2, 'progress': 0.9, 'label': '七对'}])
-    assert facts.ceiling_multiplier == 16      # 接近度 0.4 ≥ 0.35
+    assert facts.ceiling_multiplier == 32      # 接近度 0.4 ≥ 0.35
     assert facts.ceiling_label == '十三幺'
     conservative = own_hand_facts(hand, [], [], hand, directions=[
-        {'weight': 16, 'progress': 0.2, 'label': '十三幺'},
+        {'weight': 32, 'progress': 0.2, 'label': '十三幺'},
         {'weight': 2, 'progress': 0.9, 'label': '七对'}])
     assert conservative.ceiling_multiplier == 2
 
@@ -232,7 +232,8 @@ def test_fold_policy_lands_on_the_engine_view():
     assert policy['own'].can_tenpai is False
     assert policy['own'].any_wait_reachable is False
     assert policy['result'].threat_tier == 3
-    assert policy['result'].threat_multiplier == 16
+    # 已知番型是十三幺 → 2026-09-15 起 32 番，威胁倍率随公开番型抬到 32（档位仍是最高的 3 档）
+    assert policy['result'].threat_multiplier == 32
     # 头条原因是「已锁手大牌（…）」；两条信号取前两条，公开番型信号在同一档位的 signals 里。
     assert '对手已锁手大牌' in policy['result'].reasons[0]
     signals = blood_flow_opponent_risk(view, BLOOD_FLOW_AI)[0]['signals']
@@ -387,7 +388,7 @@ def test_known_wins_helper_lists_only_seats_that_have_won():
     """blood_flow_known_wins：每座位的公开番型（label + multiplier），只保留已胡过的座位。"""
     view = make_view(HAND, {'discards': ORPHANS_RIVER, 'known_win': True})
     assert blood_flow_known_wins(view) == [
-        {'seat': 1, 'patterns': [{'label': '十三幺', 'multiplier': 16}]}]
+        {'seat': 1, 'patterns': [{'label': '十三幺', 'multiplier': 32}]}]
     quiet = make_view(HAND, {'discards': ORPHANS_RIVER, 'known_win': False})
     assert blood_flow_known_wins(quiet) == []
 

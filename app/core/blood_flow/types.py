@@ -109,6 +109,8 @@ class PublicWinScore:
     # 杠加成（明杠 +1 / 暗杠·风杠 +2 每个，2026-09-12 新增），已计入 pattern_multiplier。
     # 末位给默认值：保持可选，不破坏既有构造点。
     kong_bonus: int = 0
+    # 支付减半（2026-09-15 新增）：只有鸡胡（0.5 番）时为 True；倍率保持整数，"半番"落在点数上。
+    half_payment: bool = False
 
 
 @dataclass(frozen=True)

@@ -106,9 +106,10 @@ def test_wide_three_steps_with_joker_hand():
     ids = [item.id for item in win.score.items]
     assert 'one-suit-three-steps' in ids
     assert 'pure-suit' in ids
-    # 精要顶牌（当 8p 做将）→ 软胡，没有硬胡 ×2；倍率 = 1 + (8-1) + (4-1) = 11
+    # 精要顶牌（当 8p 做将）→ 软胡，没有硬胡 ×2；倍率 = Σ(番值) = 8(清一色) + 4(一色三步高) = 12
+    # （2026-09-15 口径由 1 + Σ(w−1) 改为 Σ(w)；本手有副露，因此既无门清也无平胡）
     assert win.score.hard_win is False
-    assert win.score.pattern_multiplier == 11
+    assert win.score.pattern_multiplier == 12
 
 
 # ── 一色节高 ──
@@ -127,20 +128,20 @@ def test_one_suit_four_joints_covers_three_joints_and_all_triplets():
     assert 'all-triplets' not in items
 
 
-# ── 门清（仅标准四面子一将型生效）──
+# ── 门清（2026-09-15 定案：只看无副露，且与任何番种叠加）──
 
 def test_concealed_hand_standard_only():
     # 标准型无副露成立
     assert 'concealed-hand' in _ids(['m1', 'm2', 'm3', 'm4', 'm5', 'm6',
                                      'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'], 'p8')
-    # 七对虽是门清结构，但按“仅标准型生效”不计门清
+    # 七对同样是"无副露" → 计门清（旧的"仅标准型生效"已废除）
     pairs = _ids(['m1', 'm1', 'm2', 'm2', 'm3', 'm3', 'p4', 'p4', 'p5', 'p5', 's6', 's6', 's7'], 's7')
     assert 'sevenPairs' in pairs
-    assert 'concealed-hand' not in pairs
+    assert 'concealed-hand' in pairs
     # 十三烂同理
     scattered = _ids(['m1', 'm4', 'm7', 'p1', 'p4', 'p7', 's1', 's4', 's7',
                       'east', 'south', 'west', 'north'], 'red')
-    assert 'concealed-hand' not in (scattered or [])
+    assert 'concealed-hand' in (scattered or [])
 
 
 # ── 杠加成 ──
@@ -148,17 +149,17 @@ def test_concealed_hand_standard_only():
 def test_kong_bonus_weights_and_pattern_double_counting():
     assert KONG_BONUS == {'exposed': 1, 'concealed': 2, 'wind': 2}
     assert BLOOD_FLOW_CONFIG.kong_bonus == {'exposed': 1, 'concealed': 2, 'wind': 2}
-    # 无杠：基础倍率 = 1 + Σ(w-1)
+    # 无杠：基础倍率 = Σ(番值)（2026-09-15 口径）
     plain = _evaluate(['m2', 'm3', 'm4', 'm5', 'm6', 'm7',
                        'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'], 'p8')
     assert plain.score.kong_bonus == 0
-    assert plain.score.pattern_multiplier == 1 + sum(i.weight - 1 for i in plain.score.items)
+    assert plain.score.pattern_multiplier == sum(i.weight for i in plain.score.items)
     # 两个明杠 + 一个暗杠 → 同时成三杠番种 → 按「不重复计算」口径加成归零
     three = _evaluate(['m4', 'm5', 'm6', 'east'],
                       'east', melds=[_kong('gang', 'm1'), _kong('gang', 's3'), _kong('angang', 'p2')])
     assert 'three-kongs' in [i.id for i in three.score.items]
     assert three.score.kong_bonus == 0
-    assert three.score.pattern_multiplier == 1 + sum(i.weight - 1 for i in three.score.items)
+    assert three.score.pattern_multiplier == sum(i.weight for i in three.score.items)
     # 只有两副杠（不成三杠/四杠番种）→ 加成照计：1(明) + 2(暗) = 3
     two = _evaluate(['m4', 'm5', 'm6', 'p7', 'p8', 'p9', 'east'],
                     'east', melds=[_kong('gang', 'm1'), _kong('angang', 'p2')])

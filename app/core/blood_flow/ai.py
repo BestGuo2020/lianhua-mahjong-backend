@@ -403,14 +403,15 @@ def _shi_san_lan_defect_free(hand: list[str], jokers: list[str]) -> bool:
 def estimate_win_income(hand: list[str], melds: list[dict], jokers: list[str], source: str,
                         model: str = 'off') -> dict:
     patterns = _certain_patterns(hand, melds, jokers, model)
-    multiplier = 1
-    for pattern_id in patterns:
-        multiplier += BLOOD_FLOW_CONFIG.patterns[pattern_id].weight - 1
+    # 2026-09-15 与 score.py 同口径：倍率 = Σ(番值)；无番种时取 1，鸡胡的半番落在支付减半上。
+    raw_sum = sum(BLOOD_FLOW_CONFIG.patterns[pattern_id].weight for pattern_id in patterns)
+    half_payment = len(patterns) == 1 and 'chicken' in patterns
+    multiplier = max(1, raw_sum)
     hard_likely = not any(t in wildcard_set(jokers) for t in hand)
     event_multiplier = BLOOD_FLOW_CONFIG.event_multipliers[source]
     final_multiplier = min(multiplier * event_multiplier * (2 if hard_likely else 1),
                            BLOOD_FLOW_CONFIG.max_multiplier_per_payer)
-    payment_per_payer = BLOOD_FLOW_CONFIG.base_points * final_multiplier
+    payment_per_payer = (BLOOD_FLOW_CONFIG.base_points * final_multiplier) // (2 if half_payment else 1)
     payers = 3 if source in ('self-draw', 'kong-bloom') else 1
     return {'paymentPerPayer': payment_per_payer, 'total': payment_per_payer * payers,
             'multiplier': final_multiplier, 'hardLikely': hard_likely}

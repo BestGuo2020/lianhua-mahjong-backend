@@ -50,9 +50,13 @@ def _by_suit(groups) -> dict[str, list[int]]:
 
 
 def match_patterns(hand: WinningDecomposition) -> list[str]:
+    # 门清（2026-09-15 定案）：只看无副露，不排除用精牌；**与任何番种叠加**。
+    concealed = all(g.origin.get('kind') == 'hand' for g in hand.groups)
     if hand.shape not in ('standard', 'sevenPairs'):
-        return [hand.shape]
+        return [hand.shape, 'concealed-hand'] if concealed else [hand.shape]
     result: list[str] = ['sevenPairs'] if hand.shape == 'sevenPairs' else []
+    if concealed:
+        result.append('concealed-hand')
     tiles = [t for g in hand.groups for t in g.tiles]
     suits = {t[0] for t in tiles if not is_honor(t)}
     honors = any(is_honor(t) for t in tiles)
@@ -90,10 +94,10 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
         result.append('pure-terminals')
     if all_triplets and honors and len(suits) > 0 and all(is_honor(t) or is_terminal(t) for t in tiles):
         result.append('mixed-terminals')
-    concealed = sum(1 for g in triplets if g.concealed)
-    if concealed >= 3:
+    concealed_triplets = sum(1 for g in triplets if g.concealed)
+    if concealed_triplets >= 3:
         result.append('three-concealed-triplets')
-    if concealed == 4:
+    if concealed_triplets == 4:
         result.append('four-concealed-triplets')
     kongs = sum(1 for g in melds if g.kind == 'kong')
     if kongs >= 3:
@@ -125,9 +129,12 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
             result.append('one-suit-four-joints')
         elif has_stepped_run(numbers, 3, (1,)):
             result.append('one-suit-three-joints')
-    # 门清平胡是**兜底本体**（方案B，2026-09-12 用户定案）：标准四面子一将、未副露、且不满足任何其他番种时，
-    # 取代鸡胡作为兜底；**不与任何主体番种叠加**。七对/十三幺/十三烂/七星等特殊结构在函数开头已提前返回。
-    if result:
-        return result
-    concealed_hand = all(g.origin.get('kind') == 'hand' for g in hand.groups)
-    return ['concealed-hand'] if concealed_hand else ['pinghu']
+    # —— 平胡（2026-09-15 定案语义）——
+    # 存在一种拆解 = 4 顺子 + 1 将、**无刻子**；可副露；字牌也可成顺（乱风顺/三元顺与引擎面子规则一致）；
+    # 精牌只能补顺不能补刻。判定落在当前这一种拆解上：评估器会枚举所有拆解再取最高分，
+    # 因此只要存在全顺拆解，"没有刻子/杠"的那次枚举就会给出平胡。
+    if all(g.kind == 'sequence' for g in melds):
+        result.append('pinghu')
+    # 鸡胡（2026-09-15 定案）：完全没有任何计分番种时的**兜底体**，0.5 番（支付减半），
+    # 不再与任何番种叠加（有番种时连兜底一起消失）。
+    return result if result else ['chicken']

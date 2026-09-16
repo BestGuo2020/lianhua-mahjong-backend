@@ -181,20 +181,21 @@ def test_kong_value_matches_ts_engine_numbers():
 
     route = kong_candidate_value('discard-gang', LUXURY_ROUTE, [], JOKERS, tile='m3')
     assert route['selfLoss']['sevenPairs'] == pytest.approx(42.4, abs=0.05)
-    assert route['net'] == pytest.approx(-38.4, abs=0.05)
+    # 2026-09-15：门清平胡拆成门清(1番)+平胡(1番)，"破坏门清"的自损项随之减半 → net 上移。
+    assert route['net'] == pytest.approx(-35.45, abs=0.05)
 
     luxury_win = ['m3', 'm3', 'm3', 'm3', 'm1', 'm1', 'm2', 'm2', 'p1', 'p1', 's3', 's3', 'p7', 'p7']
     win = kong_candidate_value('concealed-kong', luxury_win, [], JOKERS, tile='m3')
     assert win['selfLoss']['sevenPairs'] == pytest.approx(160.0, abs=0.05)
-    assert win['net'] == pytest.approx(-96.0, abs=0.05)
+    assert win['net'] == pytest.approx(-93.0, abs=0.05)
 
     tenpai = kong_candidate_value('discard-gang', CONCEALED_TENPAI, [], JOKERS, tile='m5')
-    assert tenpai['selfLoss']['concealedHand'] == pytest.approx(10.0, abs=0.05)
-    assert tenpai['net'] == pytest.approx(10.0, abs=0.05)
+    assert tenpai['selfLoss']['concealedHand'] == pytest.approx(5.0, abs=0.05)
+    assert tenpai['net'] == pytest.approx(15.0, abs=0.05)
 
     dead = kong_candidate_value('discard-gang', SEVEN_PAIRS_DEAD, [], JOKERS, tile='m5')
     assert dead['selfLoss']['sevenPairs'] == 0
-    assert dead['selfLoss']['concealedHand'] == pytest.approx(6.0, abs=0.05)
+    assert dead['selfLoss']['concealedHand'] == pytest.approx(3.0, abs=0.05)
 
 
 def test_llm_candidate_carries_kong_value_feature():

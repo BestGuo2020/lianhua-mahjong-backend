@@ -26,7 +26,7 @@ PATTERNS: dict[str, PatternDefinition] = {
     'little-three-dragons': PatternDefinition('little-three-dragons', '小三元', 16),
     'little-four-winds': PatternDefinition('little-four-winds', '小四喜', 16),
     'four-concealed-triplets': PatternDefinition('four-concealed-triplets', '四暗刻', 16,
-                                                 ('three-concealed-triplets', 'all-triplets', 'concealed-hand')),
+                                                 ('three-concealed-triplets', 'all-triplets')),
     'thirteenOrphans': PatternDefinition('thirteenOrphans', '十三幺', 16,
                                          ('all-with-terminals', 'mixed-terminals',
                                           'sevenPairs', 'all-triplets')),
@@ -59,10 +59,15 @@ PATTERNS: dict[str, PatternDefinition] = {
     'shiSanLan': PatternDefinition('shiSanLan', '十三烂', 2),
     'all-simples': PatternDefinition('all-simples', '断幺九', 2,
                                      ('all-with-terminals', 'mixed-terminals', 'pure-terminals', 'all-honors')),
-    # 门清平胡：**仅标准四面子一将型生效**（七对/十三幺/十三烂/七星等特殊结构不计，见 catalog.py 的判定位置）。
-    # 覆盖方向：由高位番种排除它（四暗刻 / 九莲宝灯），不要反过来——否则会把大牌吃掉。
-    'concealed-hand': PatternDefinition('concealed-hand', '门清平胡', 2),
-    'pinghu': PatternDefinition('pinghu', '鸡胡', 1),
+    # —— 2026-09-15 用户定案：拆掉「门清平胡」这个 2 番合并番种，换成两个独立番种（与前端 config.ts 一致）——
+    # 门清（1 番）：只看无副露（不排除用精牌），**与任何番种叠加**（因此四暗刻的 excludes 里已移除它）。
+    # 平胡（1 番）：存在一种拆解 = 4 顺子 + 1 将、无刻子；可副露、字牌也可成顺；精牌只能补顺不能补刻。
+    # 鸡胡（0.5 番）：完全没有任何计分番种时的兜底体；**不与任何番种叠加**。
+    # 合成口径同时改为 Σ(番值) + 杠加成（原 1 + Σ(番值−1)）：原口径下"1 番"等于"不加成"，
+    # 会让门清/平胡完全失效；且倍率必须保持整数（协议校验），所以鸡胡的半番落在**支付减半**上。
+    'concealed-hand': PatternDefinition('concealed-hand', '门清', 1),
+    'pinghu': PatternDefinition('pinghu', '平胡', 1),
+    'chicken': PatternDefinition('chicken', '鸡胡', 0.5),
 }
 
 EVENT_MULTIPLIERS: dict[str, int] = {'discard': 1, 'self-draw': 2, 'robbed-kong': 2, 'kong-bloom': 4}

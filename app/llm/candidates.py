@@ -24,6 +24,14 @@ from app.core.hand_progress import compare_hand_progress, evaluate_hand_progress
 
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
 
+# 进张/听口清单最多保留几张（2026-09-17 瘦身，与前端 candidates.ts 的 TOP_TILES 一致）。
+_TOP_TILES = 6
+
+
+def _trim_tiles(items: list) -> list:
+    """按剩余张数降序取前 N 张；完整条数由调用方另存 effectiveTotal / waitsTotal。"""
+    return sorted(items, key=lambda item: item.get('remaining', 0), reverse=True)[:_TOP_TILES]
+
 
 def _g(ctx, name, default=None):
     """上下文主体是 pydantic 模型，peers/snapshots 等嵌套公开视图允许为 dict。"""
@@ -201,12 +209,17 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
         ready, waits, effective = quality['ready'], quality['waits'], quality['effectiveRemaining']
         feat['shanten'] = quality['progress']['shanten']
         feat['ukeire'] = quality['progress']['ukeire']
-        feat['effectiveTiles'] = [
+        # 进张/听口清单瘦身（2026-09-17，与前端 candidates.ts 同口径）：只保留张数最多的前 6 张，
+        # 完整条数另存 effectiveTotal / waitsTotal。完整枚举是候选块最大的篇幅来源。
+        feat['effectiveTiles'] = _trim_tiles([
             {'tile': tile_name(item['tile']), 'remaining': item['remaining']}
-            for item in quality['progress']['effectiveTiles']]
+            for item in quality['progress']['effectiveTiles']])
+        feat['effectiveTotal'] = len(quality['progress']['effectiveTiles'])
         feat['ready'] = ready
-        feat['waits'] = [{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
-                         for t in waits] if ready else 'n/a'
+        feat['waits'] = _trim_tiles([{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
+                                     for t in waits]) if ready else 'n/a'
+        if ready and len(waits) > _TOP_TILES:
+            feat['waitsTotal'] = len(waits)
         feat['effectiveRemaining'] = effective if ready else 'n/a'
         feat['specialPattern'] = _special_pattern(ctx, after, waits, rules)
         feat['safety'] = _safety_band(ctx, discarded) if rules.code == 'lotus-legacy' else 'n/a'
@@ -228,12 +241,15 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
             ready, waits, effective = best['ready'], best['waits'], best['effectiveRemaining']
             feat['shanten'] = best['progress']['shanten']
             feat['ukeire'] = best['progress']['ukeire']
-            feat['effectiveTiles'] = [
+            feat['effectiveTiles'] = _trim_tiles([
                 {'tile': tile_name(item['tile']), 'remaining': item['remaining']}
-                for item in best['progress']['effectiveTiles']]
+                for item in best['progress']['effectiveTiles']])
+            feat['effectiveTotal'] = len(best['progress']['effectiveTiles'])
             feat['ready'] = ready
-            feat['waits'] = [{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
-                             for t in waits] if ready else 'n/a'
+            feat['waits'] = _trim_tiles([{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
+                                         for t in waits]) if ready else 'n/a'
+            if ready and len(waits) > _TOP_TILES:
+                feat['waitsTotal'] = len(waits)
             feat['effectiveRemaining'] = effective if ready else 'n/a'
         baseline = _best_quality(ctx, ctx.hand, ctx.exposedMelds, rules)
         feat['safety'] = _safety_band(ctx, ctx.tile) if ctx.tile else 'unknown'

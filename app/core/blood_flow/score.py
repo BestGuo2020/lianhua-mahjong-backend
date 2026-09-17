@@ -32,9 +32,14 @@ def score_patterns(patterns: list[str], natural: bool, source: WinSource,
     # 2026-09-15 口径变更：`1 + Σ(番值−1)` → **Σ(番值)**（与前端 score.ts 一致）。
     # 原口径下"1 番"等于"不加成"，新增的 1 番番种（门清/平胡）会完全无效。
     # 倍率必须保持整数（协议校验），因此鸡胡（0.5 番）的"半番"落在**支付减半**上（half_payment）。
+    # 鸡胡遇到杠（2026-09-15 用户定案，与前端 score.ts 一致）：**鸡胡不与任何番型叠加**，
+    # 包括大明杠/暗杠/风杠 —— 开杠后"只算杠番"，不加鸡胡的 0.5 番、也不再有兜底 1 番基数；
+    # 番型名字仍是鸡胡（items 保持 ['chicken']）。开杠的**即时杠分**不受影响。
+    chicken_only = len(items) == 1 and items[0].id == 'chicken' and not kong_pattern_scored
+    kong_only_chicken = chicken_only and kong_bonus > 0
     raw_sum = sum(p.weight for p in items)
-    half_payment = raw_sum < 1
-    pattern_multiplier = max(1, raw_sum) + kong_bonus
+    half_payment = chicken_only and not kong_only_chicken and raw_sum < 1
+    pattern_multiplier = kong_bonus if kong_only_chicken else max(1, raw_sum) + kong_bonus
     event_multiplier = config.event_multipliers[source]
     ordinary = pattern_multiplier * event_multiplier
     opening_applied = opening is not None and ordinary < config.opening_minimum_multiplier

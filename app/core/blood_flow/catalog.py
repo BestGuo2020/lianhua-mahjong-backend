@@ -50,8 +50,13 @@ def _by_suit(groups) -> dict[str, list[int]]:
 
 
 def match_patterns(hand: WinningDecomposition) -> list[str]:
-    # 门清（2026-09-15 定案）：只看无副露，不排除用精牌；**与任何番种叠加**。
-    concealed = all(g.origin.get('kind') == 'hand' for g in hand.groups)
+    # 门清（2026-09-15 定案）：只看**无副露**，不排除用精牌，**与任何番种叠加**；
+    # 且**暗杠与风杠不算破门清**（两者都取自手牌、都不能被抢杠）。风杠必须亮明东南西北，
+    # 但规则上与暗杠等价；`concealed` 标记对风杠是 false，因此必须显式认 'wind-kong'。
+    concealed = all(g.origin.get('kind') == 'hand'
+                    or g.kind == 'wind-kong'
+                    or (g.kind == 'kong' and g.concealed)
+                    for g in hand.groups)
     if hand.shape not in ('standard', 'sevenPairs'):
         return [hand.shape, 'concealed-hand'] if concealed else [hand.shape]
     result: list[str] = ['sevenPairs'] if hand.shape == 'sevenPairs' else []

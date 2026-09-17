@@ -76,9 +76,12 @@ EVENT_MULTIPLIERS: dict[str, int] = {'discard': 1, 'self-draw': 2, 'robbed-kong'
 
 KONG_PAYMENTS: dict[str, int] = {'discard': 1, 'added': 1, 'concealed': 2, 'wind': 2}
 
-# 杠加成（2026-09-12 新增，用户暂定）：每个**明杠 +1**、每个**暗杠/风杠 +2**，直接加到基础倍率上。
+# 杠加成（2026-09-12 新增；2026-09-15 用户定案把风杠降到与明杠同档）：
+# 每个**明杠 +1**、每个**风杠 +1**、每个**暗杠 +2**，直接加到基础倍率上。
+# 风杠为什么降：实测 150 局 / 5,021 次胡牌里风杠出现率 10.7%（每局），是暗杠（5.3%）的 2 倍、
+# 只比明杠（15.3%）稀有 30%，此前却与暗杠同为 +2。风杠的**即时杠分不动**（KONG_PAYMENTS.wind = 2）。
 # 此前杠没有任何番型加成，“胡后可开杠”也就没有收益——这是三杠/四杠这类牌型做不出来的根因之一。
-KONG_BONUS: dict[str, int] = {'exposed': 1, 'concealed': 2, 'wind': 2}
+KONG_BONUS: dict[str, int] = {'exposed': 1, 'concealed': 2, 'wind': 1}
 
 ROUNDS: dict[str, int] = {'east': 4, 'hanchan': 8}
 

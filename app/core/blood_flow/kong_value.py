@@ -195,13 +195,16 @@ def kong_self_loss(kind: str, hand: list[TileType], melds: list, jokers: list[Ti
     if seven_pairs > 0:
         reasons.append(f'拆掉七对/豪华七对路线（-{round(seven_pairs)}）')
 
-    # ② 门清平胡（未副露 → 杠后必然有副露）
+    # ② 门清（2026-09-15 用户定案后：只有**明杠**会破门清）
+    # 暗杠与风杠都取自手牌、都不能被抢杠，规则上保留门清 → 不再计入"破坏门清"的自损；
+    # 补杠是碰之后补第 4 张（碰的时候门清早就没了），天然不计。
+    breaks_concealed = kind == 'discard-gang'
     exposed_before = len(melds) == 0
     exposed_after = len(post['melds']) > 0 if post else len(melds) > 0
     concealed_hand = (_concealed_hand_loss(hand, jokers, config)
-                      if exposed_before and exposed_after else 0.0)
+                      if breaks_concealed and exposed_before and exposed_after else 0.0)
     if concealed_hand > 0:
-        reasons.append(f'破坏门清平胡（-{round(concealed_hand)}）')
+        reasons.append(f'破坏门清（-{round(concealed_hand)}）')
 
     # ③ 向听恶化（含特殊路线的整车向听）
     shanten_before = _route_shanten(hand, len(melds), jokers)

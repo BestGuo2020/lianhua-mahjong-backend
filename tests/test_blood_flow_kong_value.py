@@ -131,7 +131,7 @@ def test_melded_hand_has_no_route_or_concealed_loss():
 def test_concealed_pinghu_loss_is_counted():
     value = kong_candidate_value('discard-gang', CONCEALED_TENPAI, [], JOKERS, tile='m5')
     assert value['selfLoss']['concealedHand'] > 0
-    assert '门清平胡' in ''.join(value['selfLoss']['reasons'])
+    assert '破坏门清' in ''.join(value['selfLoss']['reasons'])
     assert value['net'] == pytest.approx(
         value['gain'] - value['risk'] - value['selfLoss']['total'], abs=1e-9)
     assert value['net'] < value['gain']
@@ -177,7 +177,8 @@ def test_kong_value_matches_ts_engine_numbers():
     assert kong_gain('discard-gang') == 20
     assert kong_gain('added-kong') == 40
     assert kong_gain('concealed-kong') == 80
-    assert kong_gain('wind-kong') == 80
+    # 风杠 2026-09-15 起加成与明杠同档（+1）→ 即时 60 + 加成 10 = 70（原 80）
+    assert kong_gain('wind-kong') == 70
 
     route = kong_candidate_value('discard-gang', LUXURY_ROUTE, [], JOKERS, tile='m3')
     assert route['selfLoss']['sevenPairs'] == pytest.approx(42.4, abs=0.05)
@@ -187,7 +188,9 @@ def test_kong_value_matches_ts_engine_numbers():
     luxury_win = ['m3', 'm3', 'm3', 'm3', 'm1', 'm1', 'm2', 'm2', 'p1', 'p1', 's3', 's3', 'p7', 'p7']
     win = kong_candidate_value('concealed-kong', luxury_win, [], JOKERS, tile='m3')
     assert win['selfLoss']['sevenPairs'] == pytest.approx(160.0, abs=0.05)
-    assert win['net'] == pytest.approx(-93.0, abs=0.05)
+    # 2026-09-15：暗杠保留门清 → 不再计入"破坏门清"自损（原 -93.0 → -90.0）
+    assert win['selfLoss']['concealedHand'] == pytest.approx(0.0, abs=0.05)
+    assert win['net'] == pytest.approx(-90.0, abs=0.05)
 
     tenpai = kong_candidate_value('discard-gang', CONCEALED_TENPAI, [], JOKERS, tile='m5')
     assert tenpai['selfLoss']['concealedHand'] == pytest.approx(5.0, abs=0.05)

@@ -147,8 +147,9 @@ def test_concealed_hand_standard_only():
 # ── 杠加成 ──
 
 def test_kong_bonus_weights_and_pattern_double_counting():
-    assert KONG_BONUS == {'exposed': 1, 'concealed': 2, 'wind': 2}
-    assert BLOOD_FLOW_CONFIG.kong_bonus == {'exposed': 1, 'concealed': 2, 'wind': 2}
+    # 风杠 2026-09-15 起与明杠同档（+1）：实测出现率 10.7%/局，是暗杠（5.3%）的两倍
+    assert KONG_BONUS == {'exposed': 1, 'concealed': 2, 'wind': 1}
+    assert BLOOD_FLOW_CONFIG.kong_bonus == {'exposed': 1, 'concealed': 2, 'wind': 1}
     # 无杠：基础倍率 = Σ(番值)（2026-09-15 口径）
     plain = _evaluate(['m2', 'm3', 'm4', 'm5', 'm6', 'm7',
                        'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'], 'p8')
@@ -171,13 +172,13 @@ def test_kong_bonus_weights_and_pattern_double_counting():
     four_ids = [i.id for i in four.score.items]
     assert 'four-kongs' in four_ids and 'all-triplets' in four_ids and 'three-kongs' not in four_ids
     assert four.score.kong_bonus == 0
-    # 风杠按 +2（风杠 2 + 明杠 1 = 3）
+    # 风杠 2026-09-15 起与明杠同档（+1）→ 风杠 1 + 明杠 1 = 2
     wind_meld = {'type': 'angang', 'tile': 'east',
                  'tiles': ['east', 'south', 'west', 'north'], 'windKong': True}
     wind = _evaluate(['m4', 'm5', 'm6', 'p7', 'p8', 'p9', 'east'], 'east',
                      melds=[wind_meld, _kong('gang', 'm1')])
     assert wind is not None
-    assert wind.score.kong_bonus == 3
+    assert wind.score.kong_bonus == 2
 
 
 def test_short_kong_hand_is_not_a_win():

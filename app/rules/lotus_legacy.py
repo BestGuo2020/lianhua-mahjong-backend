@@ -18,6 +18,9 @@ from app.rules.fans import FanContext
 
 BASE_SCORE = 100
 
+# 天胡/地胡固定番数：三家各付「底分 × 10」，不计庄家 ×2、不计点炮者 ×2。
+OPENING_WIN_FAN = 10
+
 
 @dataclass
 class LotusRoundState:
@@ -158,8 +161,8 @@ class LotusLegacyRuleSet:
                           win_tile: TileType | None = None,
                           discarder_is_dealer: bool = False) -> dict:
         if tianhu or dihu:
-            base_fan = 8
-            patterns = [{'label': '天胡' if tianhu else '地胡', 'multiplier': 8}]
+            base_fan = OPENING_WIN_FAN
+            patterns = [{'label': '天胡' if tianhu else '地胡', 'multiplier': OPENING_WIN_FAN}]
             self_draw_style = True
         else:
             pattern = evaluate_pattern(
@@ -183,7 +186,11 @@ class LotusLegacyRuleSet:
         for item in patterns:
             fan *= item.get('multiplier', 1)
         h = BASE_SCORE * base_fan
-        if not dealer and not self_draw_style:
+        if tianhu or dihu:
+            # 天地胡（10 番）平收：三家等额各付 底分×10，赢家实收 3H。
+            # 地胡虽是庄家点炮，庄家那一笔同样不翻倍（对齐前端 openingWinPayments）。
+            settlement = {'H': h, 'dealerPays': h, 'nonDealerPays': h, 'total': 3 * h}
+        elif not dealer and not self_draw_style:
             settlement = {
                 'H': h, 'dealerPays': 2 * h, 'nonDealerPays': h,
                 'total': (6 if discarder_is_dealer else 5) * h,

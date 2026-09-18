@@ -29,10 +29,17 @@ class SettlementService:
         payer_index: Optional[int] = None,
         dealer_index: Optional[int] = None,
         discarder_index: Optional[int] = None,
+        equal_payment: bool = False,
     ) -> SettlementResult:
-        """莲花麻将收付表：未胡三家按身份支付，普通点炮者的那一笔翻倍。"""
+        """莲花麻将收付表：未胡三家按身份支付，普通点炮者的那一笔翻倍。
+
+        equal_payment=True 用于天胡/地胡（10 番）的平收：三家等额各付
+        `底分 × base_fan`，不计庄家 ×2、不计点炮者 ×2。
+        """
         h = 100 * base_fan
-        if not winner_is_dealer and not self_draw_style:
+        if equal_payment:
+            dealer_pay, non_dealer_pay = h, h
+        elif not winner_is_dealer and not self_draw_style:
             dealer_pay, non_dealer_pay = 2 * h, h
         elif winner_is_dealer and not self_draw_style:
             dealer_pay, non_dealer_pay = 0, 2 * h
@@ -45,7 +52,9 @@ class SettlementService:
         ]
         def payment_for(payer: int) -> int:
             base_payment = dealer_pay if payer == dealer_index else non_dealer_pay
-            return base_payment * 2 if not self_draw_style and payer == discarder_index else base_payment
+            if equal_payment or self_draw_style or payer != discarder_index:
+                return base_payment
+            return base_payment * 2
 
         deltas = [{'playerIndex': winner_index,
                    'amount': sum(payment_for(payer) for payer in payers)}]

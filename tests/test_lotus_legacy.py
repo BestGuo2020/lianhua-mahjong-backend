@@ -121,6 +121,73 @@ def test_lotus_ruleset_score_has_base_and_display_fan():
     assert result['settlement']['total'] == 500
 
 
+def test_lotus_tianhu_and_dihu_are_ten_fan_and_pay_flat():
+    """天地胡：10 番，三家各付 底分×10，不计庄家 ×2、不计点炮者 ×2。"""
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = []
+    hand = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
+            'p1', 'p2', 'p3', 's1', 's1']
+    tianhu = rules.score_legacy_hand(hand, 0, dealer=True, self_draw=True, tianhu=True)
+    assert tianhu['baseFan'] == 10
+    assert tianhu['fan'] == 10
+    assert tianhu['patterns'] == [{'label': '天胡', 'multiplier': 10}]
+    assert tianhu['settlement'] == {
+        'H': 1000, 'dealerPays': 1000, 'nonDealerPays': 1000, 'total': 3000,
+    }
+    # 地胡是庄家点炮，但庄家那一笔同样不翻倍。
+    dihu = rules.score_legacy_hand(
+        hand, 0, dealer=False, self_draw=False, dihu=True,
+        win_tile='s1', discarder_is_dealer=True,
+    )
+    assert dihu['baseFan'] == 10
+    assert dihu['patterns'] == [{'label': '地胡', 'multiplier': 10}]
+    assert dihu['settlement'] == {
+        'H': 1000, 'dealerPays': 1000, 'nonDealerPays': 1000, 'total': 3000,
+    }
+
+
+@pytest.mark.parametrize(
+    ('winner_index', 'discarder_index'),
+    [(0, None), (1, 0)],
+)
+def test_lotus_opening_win_pays_flat_one_share_per_player(winner_index, discarder_index):
+    """天胡（庄家自摸）与地胡（闲家胡庄家首弃）都是三家各付 1000。"""
+    result = settlement_service.calculate_lotus_win(
+        player_count=4, winner_index=winner_index, base_fan=10,
+        winner_is_dealer=winner_index == 0, self_draw_style=True,
+        dealer_index=0, discarder_index=discarder_index, equal_payment=True,
+    )
+    expected = {index: (3000 if index == winner_index else -1000) for index in range(4)}
+    assert result.total_won == 3000
+    assert {item['playerIndex']: item['amount'] for item in result.deltas} == expected
+
+
+def test_lotus_dihu_dealer_discarder_pays_one_share_only():
+    """地胡走完整对局路径：庄家既是庄又是点炮者，也只付一份 1000。"""
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = []
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.phase = 'checking'
+    manager.players[0].discards = ['m3']
+    manager.players[1].hand = [
+        'm1', 'm2', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
+        'p1', 'p2', 'p3', 's1', 's1',
+    ]
+
+    manager.end_game(1, {'winTile': 'm3', 'dihu': True, 'sourceFrom': 0})
+
+    assert manager.phase == 'settled'
+    assert manager.result['winType'] == 'dihu'
+    assert manager.result['multiplier'] == 10
+    assert manager.result['points'] == 1000
+    assert manager.result['totalWon'] == 3000
+    assert [player.score for player in manager.players] == [1000, 5000, 1000, 1000]
+
+
 def test_lotus_discard_win_uses_the_physical_discard_tile():
     rules = LotusLegacyRuleSet()
     rules.round_state.joker_tiles = []

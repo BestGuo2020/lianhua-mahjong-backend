@@ -1152,12 +1152,15 @@ class GameManager:
                 win_tile=options.get('winTile'),
                 discarder_is_dealer=options.get('sourceFrom') == self.dealer,
             )
+            # 天胡/地胡（10 番）走平收：三家等额各付 底分×10，不计庄家/点炮者翻倍。
+            opening_win = bool(options.get('tianhu') or options.get('dihu'))
             settlement = self.settlements.calculate_lotus_win(
                 len(self.players), winner_index, score['baseFan'],
                 winner_index == self.dealer,
-                bool(options.get('selfDraw') or options.get('robbedKong') or options.get('kongBloom') or options.get('tianhu') or options.get('dihu')),
+                bool(options.get('selfDraw') or options.get('robbedKong') or options.get('kongBloom') or opening_win),
                 dealer_index=self.dealer,
                 discarder_index=options.get('sourceFrom'),
+                equal_payment=opening_win,
             )
             self.settlements.apply_deltas(self.players, settlement.deltas)
             win_type = (

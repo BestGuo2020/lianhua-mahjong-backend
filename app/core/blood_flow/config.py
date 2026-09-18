@@ -37,7 +37,8 @@ PATTERNS: dict[str, PatternDefinition] = {
     # 高番
     'mixed-terminals': PatternDefinition('mixed-terminals', '混幺九', 12, ('all-with-terminals', 'all-triplets')),
     'three-kongs': PatternDefinition('three-kongs', '三杠', 12),
-    'luxury-seven-pairs': PatternDefinition('luxury-seven-pairs', '豪华七对', 12,
+    # 豪华七对 2026-09-18 由 12 → 6 番（暂定，与前端 config.ts 同步）
+    'luxury-seven-pairs': PatternDefinition('luxury-seven-pairs', '豪华七对', 6,
                                             ('sevenPairs', 'all-triplets', 'three-concealed-triplets',
                                              'four-concealed-triplets', 'one-suit-three-joints',
                                              'one-suit-four-joints')),
@@ -194,7 +195,7 @@ class BloodFlowAiConfig:
     # 开杠价值（第 3 步）：杠候选按 收益 − 防守风险 − 自手牌型损失 计分。
     kong_value: KongValueConfig = BLOOD_FLOW_KONG_VALUE
     # 七对潜力模型（2026-09-13 追加）：'off' = 旧口径（七对只按 4 番估、多余精牌丢掉）；
-    # 'ev' = 对齐引擎 is_seven_pairs 的记账 + 新增豪华七对（12 番）方向。
+    # 'ev' = 对齐引擎 is_seven_pairs 的记账 + 豪华七对方向（豪华七对 2026-09-18 由 12 → 6 番 暂定）。
     seven_pairs_model: str = 'ev'
 
 

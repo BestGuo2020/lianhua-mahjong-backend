@@ -89,6 +89,14 @@ def _verify_seat(room: RoomSession, seat: int, rejoin_code: str) -> None:
         raise HTTPException(status_code=403, detail={'code': 'INVALID_REJOIN_CODE'})
 
 
+def _reserved_seats_payload(room: RoomSession) -> list[dict]:
+    """房主预留的空位（大模型专属，真人不可占）：只下发 providerId/style，不含任何 key。"""
+    return [
+        {'seat': seat, 'providerId': item['providerId'], 'style': item.get('style') or None}
+        for seat, item in sorted(room.reserved_seats.items())
+    ]
+
+
 def _room_response(room: RoomSession) -> dict:
     return {
         'roomId': room.room_id,
@@ -111,6 +119,8 @@ def _room_response(room: RoomSession) -> dict:
             }
             for state in room.seats
         ],
+        # 房主预留的空位（真人不可占）；其余空位「自动选择」= 真人可占、空着由默认提供商补位。
+        'reservedSeats': _reserved_seats_payload(room),
     }
 
 
@@ -153,6 +163,15 @@ class SeatLlmRequest(BaseModel):
 
 class StartRoomRequest(BaseModel):
     llmSeats: list[SeatLlmRequest] = Field(default_factory=list)
+
+
+class LlmSeatReservationRequest(BaseModel):
+    """房主为某个空位写/清大模型预留：省略 providerId = 取消预留（改回「自动选择」）。"""
+    seat: int = Field(ge=0, le=3)            # 房主自己的座位（身份校验）
+    rejoinCode: str
+    reserveSeat: int = Field(ge=0, le=3)     # 要预留 / 取消预留的空位
+    providerId: Optional[str] = Field(default=None, max_length=32)
+    style: Optional[Literal['激进', '稳健', '话痨', '高冷']] = None
 
 
 # ─── 路由 ────────────────────────────────────────────────
@@ -326,6 +345,36 @@ async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> d
         raise HTTPException(status_code=409, detail={'code': str(exc)})
     logger.bind(room_id=room_id).info(f"开局触发 status={room.status}")
     return {'roomId': room.room_id, 'status': room.status}
+
+
+@router.post('/{room_id}/llm-seats')
+def reserve_llm_seat(room_id: str, body: LlmSeatReservationRequest) -> dict:
+    """房主为某个空位写 / 清大模型预留（该座位真人不可入，开局按预留装配）。
+
+    语义：房主在房间面板为某空位**显式选择**模型 = 该座预留给大模型；
+    改回「自动选择」（省略 providerId）= 取消预留，真人可占、空着仍由默认提供商补位。
+    预留是房间级状态：房主刷新 / 换人 / 开下一局都保留，随房间信息 reservedSeats 下发。
+    """
+    room = _room_or_404(room_id)
+    _verify_seat(room, body.seat, body.rejoinCode)
+    if room.creator_seat != body.seat:
+        raise HTTPException(status_code=403, detail={'code': 'NOT_CREATOR'})
+    if room.status not in ('lobby', 'finished'):
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
+    provider_id = (body.providerId or '').strip().lower()
+    if provider_id:
+        if not room.effective_llm_enabled:
+            raise HTTPException(status_code=409, detail={'code': 'LLM_NOT_ENABLED'})
+        if provider_id not in load_llm_providers():
+            raise HTTPException(status_code=409, detail={'code': 'INVALID_LLM_SEATS'})
+    try:
+        room.set_reserved_seat(body.reserveSeat, provider_id or None, body.style)
+    except RoomError as exc:
+        logger.bind(room_id=room_id, seat=body.reserveSeat).warning(f"预留设置失败 {exc}")
+        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    logger.bind(room_id=room_id, seat=body.reserveSeat).info(
+        f"预留座位更新 provider={provider_id or '取消预留'}")
+    return {'roomId': room.room_id, 'reservedSeats': _reserved_seats_payload(room)}
 
 
 @router.delete('/{room_id}')

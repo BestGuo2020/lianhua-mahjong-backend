@@ -151,6 +151,9 @@ class BloodFlowRoomSession:
         self.llm_enabled = bool(llm_enabled)
         # LLM 席位：seat → LlmProviderConfig（baseUrl/apiKey/model/style/timeoutMs/...）。
         self.llm_seats: dict[int, dict] = {}
+        # 房主显式点选模型的空位（预留）：真人不可占，开局按预留装配（与经典房间同契约）。
+        # 座位范围与真人可入座一致（range(capacity)）。
+        self.reserved_seats: dict[int, dict] = {}
         # 非真人座位身份（昵称/头像/二次元角色/音色）：开局按供应商推导，快照直接下发。
         self._seat_identity: dict[int, dict] = {}
         # 模型原话与语音（对齐经典房间）：llm_message 气泡 + llm_audio 服务端合成音频。
@@ -211,9 +214,13 @@ class BloodFlowRoomSession:
                 if not state.avatar:
                     state.avatar = resolve_seat_avatar('', state.player_id, self.storage)
                 return state.seat, True, state
-        seat = next((s for s in range(self.capacity) if self.seats[s] is None), None)
+        seat = next((s for s in range(self.capacity)
+                     if self.seats[s] is None and s not in self.reserved_seats), None)
         if seat is None:
-            raise RoomError('ROOM_FULL')
+            # 空位都被房主预留给大模型 → 专用码（与经典房间同口径）。
+            raise RoomError('SEATS_RESERVED'
+                            if any(s in self.reserved_seats for s in range(self.capacity))
+                            else 'ROOM_FULL')
         code = _make_rejoin_code()
         state = _Seat(seat, nickname, code, player_id, character_id)
         state.avatar = resolve_seat_avatar(avatar, player_id, self.storage)
@@ -356,6 +363,21 @@ class BloodFlowRoomSession:
         self._window_deadline_ms = 0
         self._drive_task = asyncio.ensure_future(self._drive())
 
+    def set_reserved_seat(self, seat: int, provider_id: Optional[str],
+                          style: Optional[str] = None) -> None:
+        """房主为某个空位写 / 清大模型预留：provider_id 为空 → 取消预留（真人可占）。
+
+        与经典房间同契约；座位范围取 range(capacity)（血流真人可入座即这一段）。
+        """
+        if not 0 <= seat < self.capacity:
+            raise RoomError('INVALID_SEAT')
+        if self.seats[seat] is not None:
+            raise RoomError('SEAT_OCCUPIED')
+        if provider_id:
+            self.reserved_seats[seat] = {'providerId': provider_id, 'style': style or ''}
+        else:
+            self.reserved_seats.pop(seat, None)
+
     def _resolve_llm_seats(self, llm_seats: list, default_provider: Optional[str]) -> None:
         """服务端供应商解析：显式席位 providerId 优先，其余空位用默认提供商。
 
@@ -380,6 +402,9 @@ class BloodFlowRoomSession:
             return
         fallback_id = default_provider or default_provider_id()
         explicit = {entry.get('seat'): entry for entry in llm_seats if isinstance(entry.get('seat'), int)}
+        # 房间级预留兜底：开局请求没带（房主换了客户端/字段丢失）也按预留装配。
+        for seat, reserved in self.reserved_seats.items():
+            explicit.setdefault(seat, reserved)
         for seat in range(self.capacity):
             if self.seats[seat] is not None:
                 continue   # 真人座位不派大模型

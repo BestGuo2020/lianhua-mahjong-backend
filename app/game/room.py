@@ -306,6 +306,10 @@ class RoomSession:
         self._llm_seat_providers: dict[int, str] = {}
         # 每座位策略覆盖（激进/稳健/话痨/高冷）；未指定时使用 provider 默认策略。
         self._llm_seat_styles: dict[int, str] = {}
+        # 房主显式点选模型的空位（预留）：真人不可占，开局按预留的 provider/style 装配 LLM。
+        # 与 _llm_seat_providers 的区别：后者是开局一次性入参，这里是房间级持续状态
+        # （房主刷新/换人/开下一局都保留；房主把该位改回「自动选择」即清除）。
+        self.reserved_seats: dict[int, dict] = {}
         # 开局时传入的服务端默认提供商 id（未指定座位时使用）
         self._llm_default_provider: Optional[str] = None
         # 当前场次 LLM 吐槽：即时广播给前端，整场结束后逐条写日志。
@@ -390,20 +394,42 @@ class RoomSession:
         for state in self.seats:
             if state is not None and state.nickname == nickname:
                 raise RoomError('NICKNAME_TAKEN')
-        for seat, state in enumerate(self.seats):
-            if state is None:
-                # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
-                controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout,
-                                          room_id=self.room_id, rule_set=self.rules)
-                state = SeatState(seat, nickname, _make_rejoin_code(), controller,
-                                  player_id=player_id, character_id=character_id)
-                self.seats[seat] = state
-                self._ensure_seat_avatar(state, preferred=avatar)
-                if self.creator_seat is None:
-                    self.creator_seat = seat
-                self._persist_seat(seat)
-                return seat, False, state
-        raise RoomError('ROOM_FULL')
+        seat = self._first_joinable_seat()
+        if seat is None:
+            # 真人没占满但空位都被房主预留给大模型：用专用码给出可读原因
+            # （笼统的「房间已满」会和面板上看着还有空位自相矛盾）。
+            raise RoomError('SEATS_RESERVED' if self.reserved_seats else 'ROOM_FULL')
+        # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
+        controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout,
+                                  room_id=self.room_id, rule_set=self.rules)
+        state = SeatState(seat, nickname, _make_rejoin_code(), controller,
+                          player_id=player_id, character_id=character_id)
+        self.seats[seat] = state
+        self._ensure_seat_avatar(state, preferred=avatar)
+        if self.creator_seat is None:
+            self.creator_seat = seat
+        self._persist_seat(seat)
+        return seat, False, state
+
+    def _first_joinable_seat(self) -> Optional[int]:
+        """第一个可被真人占用的座位：空且未被房主预留给大模型。"""
+        return next((seat for seat, state in enumerate(self.seats)
+                     if state is None and seat not in self.reserved_seats), None)
+
+    def set_reserved_seat(self, seat: int, provider_id: Optional[str],
+                          style: Optional[str] = None) -> None:
+        """房主为某个空位写 / 清大模型预留：provider_id 为空 → 取消预留（真人可占）。
+
+        预留只作用于空位——真人已坐的座位不给预留，避免出现「把真人挤走」的语义。
+        """
+        if not 0 <= seat < self.player_count:
+            raise RoomError('INVALID_SEAT')
+        if self.seats[seat] is not None:
+            raise RoomError('SEAT_OCCUPIED')
+        if provider_id:
+            self.reserved_seats[seat] = {'providerId': provider_id, 'style': style or ''}
+        else:
+            self.reserved_seats.pop(seat, None)
 
     def resume_by_code(self, rejoin_code: str):
         """WS 重连：按重进码定位原座位。原会话仍在线 → ALREADY_CONNECTED。"""
@@ -769,10 +795,16 @@ class RoomSession:
             raise RoomError('LLM_NOT_ENABLED')
         await self._cancel_tts_tasks()
         self._tts_match_generation += 1
-        self._llm_seat_providers = {item['seat']: item['providerId'] for item in (llm_seats or [])}
-        self._llm_seat_styles = {
-            item['seat']: item['style'] for item in (llm_seats or []) if item.get('style')
-        }
+        # 预留座位先行、开局入参覆盖：房主换机器/刷新/换客户端都不丢预留，
+        # 而入参是房主此刻的最新意图（刚清掉预留时以入参为准）。
+        providers = {seat: item['providerId'] for seat, item in self.reserved_seats.items()}
+        providers.update({item['seat']: item['providerId'] for item in (llm_seats or [])})
+        styles = {seat: item['style'] for seat, item in self.reserved_seats.items()
+                  if item.get('style')}
+        styles.update({item['seat']: item['style'] for item in (llm_seats or [])
+                       if item.get('style')})
+        self._llm_seat_providers = providers
+        self._llm_seat_styles = styles
         self._llm_default_provider = default_provider
         self._llm_messages = []
         self._llm_message_seq = 0

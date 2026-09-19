@@ -8,6 +8,21 @@ PROVIDER_TYPES = (
     'deepseek', 'qwen', 'kimi', 'doubao', 'minimax', 'openai', 'glm', 'claude', 'custom',
 )
 
+# 支持 enable_thinking 的千问型号（QWEN_PREFIX 吸收 `qwen/`、`dashscope/` 等供应商前缀，`^` 只锚定一次）：
+# - `[.-]\d`：dot 命名与破折号尺寸（qwen3.7-plus / qwen3.8-27b / qwen3-32b / qwen3-30b-a3b）；
+# - `-(?:max|plus|flash|turbo)`：连字符名字版本（qwen3-max / qwen3-max-preview）；
+# - 商业系列别名（qwen-max / qwen-plus / qwen-flash / qwen-turbo）。
+# 不匹配 qwen2.5-*、qwen-long、qwen350、qwen3-coder-*、qwen3-vl-* 这类已知或不认识的命名。
+# 千问型号名前缀：吸收 `qwen/`、`dashscope/` 等供应商前缀，只匹配一次 `^`。
+QWEN_PREFIX = r'^(?:[a-z0-9_.-]+/)*qwen-?3?'
+QWEN_THINKING_TOGGLE = re.compile(
+    rf'{QWEN_PREFIX}(?:[.-]\d|-(?:max|plus|flash|turbo)|$)')
+# 纯思考型号：qwq、显式 thinking 变体，以及只发思考版的超大 MoE 版
+# （qwen3.8-2.4t-a95b）。`-preview` 命名语义不明，仍按可切换型号显式关闭思考。
+QWEN_THINKING_ONLY = re.compile(
+    rf'^(?:[a-z0-9_.-]+/)*(?:qwq|qwen-?3?.*(?:thinking|reasoner)'
+    rf'|qwen-?3\.\d+-[a-z0-9.]+t-a\d+b$)')
+
 
 @dataclass(frozen=True)
 class ReasoningPolicy:
@@ -76,14 +91,20 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
             kind, 'explicit-off', '已强制关闭 DeepSeek 思考模式',
             {'thinking': {'type': 'disabled'}})
     if kind == 'qwen':
-        if re.match(r'^(?:qwq|.*thinking)', name):
+        # 型号名漏识别 = 不下发 enable_thinking=false = 默认思考的型号只出思考、content 全空（qwen3-32b 实测）。
+        if QWEN_THINKING_ONLY.match(name):
             return _policy(kind, 'reasoning-only', '该千问型号属于推理专用模型')
-        if re.match(r'^qwen-?3\.(?:5|6|7|8)(?:[.-]|$)', name):
+        # 千问 3 开源尺寸默认开启思考（qwen3-32b / qwen3-235b-a22b / qwen3.8-27b …），必须显式关闭；
+        # 商业版 qwen3.x 与 qwen-max/plus/flash/turbo 系列的混合思考同样用 enable_thinking 控制。
+        if QWEN_THINKING_TOGGLE.match(name):
             return _policy(kind, 'explicit-on', '已开启千问条件思考', {
                 'enable_thinking': True,
             }) if reasoning else _policy(
                 kind, 'explicit-off', '已强制关闭千问思考模式',
                 {'enable_thinking': False})
+        # qwen3-coder 与 VL/Omni 多模态不走麻将决策的思考开关，不附加供应商参数。
+        if re.match(r'^qwen.*(?:coder|vl|omni)', name):
+            return _policy(kind, 'naturally-off', '该千问型号按普通模型调用，不附加思考参数')
         return _policy(kind, 'unknown', '无法确认该千问型号是否支持非思考模式')
     if kind == 'kimi':
         if re.match(r'^kimi-k3(?:[.-]|$)', name):

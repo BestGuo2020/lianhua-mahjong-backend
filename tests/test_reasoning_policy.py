@@ -119,8 +119,55 @@ def test_conditional_reasoning_explicitly_enables_supported_models(
     assert result.request_body == expected
 
 
+@pytest.mark.parametrize('model', [
+    'qwen3-32b', 'qwen3-235b-a22b', 'qwen3-30b-a3b', 'qwen3-14b', 'qwen3-8b', 'qwen3-0.6b',
+    'qwen3.8-27b', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.6-35b-a3b', 'qwen3.5-flash',
+    'qwen3-max', 'qwen3-max-preview', 'qwen3.7-max-preview', 'qwen-max', 'qwen-plus',
+    'qwen-flash', 'qwen-turbo', 'qwen-plus-2025-04-28',
+])
+def test_thinking_by_default_qwen_models_force_enable_thinking_false(model):
+    """型号名漏识别时不下发 enable_thinking=false，正文会全空（2026-09-16 实测 qwen3-32b）。
+
+    qwen3.x 商业版（qwen3-max 等）文档上默认关闭，但混合开关同样归零风险，一并显式下发。
+    """
+    result = resolve_reasoning_policy(
+        'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', model)
+    assert result.mode == 'explicit-off'
+    assert result.request_body == {'enable_thinking': False}
+
+
+@pytest.mark.parametrize('model', ['qwen3-32b', 'qwen3-235b-a22b', 'qwen3.8-27b', 'qwen-max', 'qwen3-max'])
+def test_qwen_open_source_and_commercial_families_can_still_enable_thinking(model):
+    result = resolve_reasoning_policy(
+        'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', model, reasoning=True)
+    assert result.mode == 'explicit-on'
+    assert result.request_body == {'enable_thinking': True}
+
+
+@pytest.mark.parametrize('model', [
+    'qwen3-coder-plus', 'qwen3-coder-480b-a35b', 'qwen3-vl-plus', 'qwen2.5-vl-72b',
+    'qwen3-omni-flash',
+])
+def test_non_thinking_qwen_models_keep_plain_request(model):
+    result = resolve_reasoning_policy('qwen', 'https://proxy.example.com/v1', model)
+    assert result.mode == 'naturally-off'
+    assert result.request_body == {}
+
+
+@pytest.mark.parametrize('model', [
+    'qwen3.8-2.4t-a95b', 'qwen3-235b-a22b-thinking-2507',
+    'qwen3-next-80b-a3b-thinking', 'qwq-plus',
+])
+def test_thinking_only_qwen_models_are_identified(model):
+    result = resolve_reasoning_policy('qwen', 'https://proxy.example.com/v1', model)
+    assert result.mode == 'reasoning-only'
+    assert result.request_body == {}
+
+
 def test_legacy_provider_type_inference():
     assert infer_provider_type('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.7-plus') == 'qwen'
     assert infer_provider_type('https://proxy.local/v1', 'kimi-k2.6') == 'kimi'
     assert infer_provider_type('https://api.example.com/v1', 'mystery-model') == 'custom'
-    assert resolve_reasoning_policy('qwen', 'https://proxy.local/v1', 'qwen-plus').mode == 'unknown'
+    # 能力矩阵外的千问老型号保持未知，不误报为可切换。
+    assert resolve_reasoning_policy(
+        'qwen', 'https://proxy.local/v1', 'qwen-long').mode == 'unknown'

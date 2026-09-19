@@ -265,7 +265,11 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         payload['max_completion_tokens'] = max_tokens
     else:
         payload['max_tokens'] = max_tokens
-    if reasoning_policy.provider_type == 'qwen' or glm_5_3_flash or relay_kimi_thinking:
+    # DashScope 兼容模式：千问「JSON 模式 + 思考」同开时返回空正文
+    # （finish=stop、content 与 reasoning_content 均为空），千问深思路径不带 response_format。
+    qwen_deep_reasoning = reasoning and reasoning_policy.provider_type == 'qwen'
+    if not qwen_deep_reasoning and (
+            reasoning_policy.provider_type == 'qwen' or glm_5_3_flash or relay_kimi_thinking):
         payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
     request_started = time.monotonic()

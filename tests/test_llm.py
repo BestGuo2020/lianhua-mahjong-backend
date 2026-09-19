@@ -934,6 +934,39 @@ class TestProviderRegistry:
         assert captured['response_format'] == {'type': 'json_object'}
         run(http.aclose())
 
+    def test_qwen_deep_reasoning_drops_json_mode(self, monkeypatch):
+        """DashScope 千问「JSON 模式 + 思考」同开时返回空正文，深思路径必须去掉 response_format。"""
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+                'usage': {
+                    'completion_tokens': 6,
+                    'completion_tokens_details': {'reasoning_tokens': 0},
+                },
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True,
+            base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+            api_key='sk-qwen', model='qwen3-32b', timeout_s=40,
+            provider_id='qwen')
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'], reasoning=True)) \
+            == ('A1', '稳住')
+        assert captured['enable_thinking'] is True
+        assert 'response_format' not in captured
+        run(http.aclose())
+
     def test_kimi_custom_proxy_tolerates_reasoning_leak_and_overrides_sampling(
             self, monkeypatch):
         from app.llm.client import request_llm_decision

@@ -170,7 +170,7 @@ def _discard_heuristic(hand: list[TileType], discarded: TileType,
         neighbors += 1 if f'{suit}{rank + 1}' in hand else 0
         edge_penalty = 0 if rank in (1, 9) else 1
     honor_penalty = 0 if match else (12 if early_round else 3)
-    joker_penalty = 100 if discarded in _wildcard_set(jokers) else 0
+    joker_penalty = 100 if discarded in jokers else 2 if discarded == 'white' else 0
     return same * 4 + neighbors * 2 + edge_penalty + honor_penalty + joker_penalty
 
 
@@ -294,7 +294,7 @@ def _best_discard_after_claim(hand: list[TileType], exposed_melds: int,
         visible_tiles = hand
     if public_tiles is None:
         public_tiles = []
-    joker_set = _wildcard_set(jokers)
+    joker_set = set(jokers)
     has_natural = any(tile not in joker_set for tile in hand)
     candidates = []
     for index, tile in enumerate(hand):
@@ -531,7 +531,7 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
     if random is None:
         random = _random.random
     options = options or {}
-    joker_set = _wildcard_set(jokers)
+    joker_set = set(jokers)
     has_natural = any(tile not in joker_set for tile in hand)
     extras = {
         'melds': options.get('melds'),

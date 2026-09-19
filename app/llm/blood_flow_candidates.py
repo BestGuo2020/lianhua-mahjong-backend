@@ -77,8 +77,8 @@ def _is_classic(view: dict) -> bool:
 
 
 def protected_discards(view: dict) -> set[str]:
-    """血流 AI 候选保护：癞子与白板默认不打（与前端 lotusDiscardCandidates 同口径）。"""
-    return {*view.get('jokers', []), 'white'}
+    """血流 AI 候选保护：只保护精牌，非精白板参与评估（与前端 lotusDiscardCandidates 同口径）。"""
+    return set(view.get('jokers', []))
 
 
 def candidate_actions(view: dict) -> list[dict]:
@@ -250,7 +250,7 @@ def validate_blood_flow_action(view: dict, action: dict) -> bool:
 
 def blood_flow_prompt_rules() -> str:
     """规则摘要（逐字对齐前端 ``BLOOD_FLOW_PROMPT_RULES``，含 v3 的兜/弃政策段与 2026-09-15 番表变更）。"""
-    return ('莲花麻将血流：沿用翻精、白板受限替代、数牌吃和字牌顺；支持鸡胡、七对、十三幺、十三烂、'
+    return ('莲花麻将血流：非精白板按进张、番型和风险取舍，价值相近优先保留；沿用翻精、白板受限替代、数牌吃和字牌顺；支持鸡胡、七对、十三幺、十三烂、'
             '七星十三烂及清一色、混一色、碰碰胡、大小三元、大小四喜、九莲宝灯、绿一色、清幺九、'
             '混幺九、三暗刻、四暗刻、字一色、三杠、四杠、豪华七对、断幺九、全带幺、'
             '门清（1番：无副露即可，可与任何番种叠加）、平胡（1番：存在"4顺子+1将、无刻子"的拆解，'

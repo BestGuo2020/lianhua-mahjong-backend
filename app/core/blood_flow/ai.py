@@ -803,7 +803,7 @@ def _legal_actions(view: dict) -> list[dict]:
     actions = [dict(a) for a in (view.get('ownActions') or [])]
     if view['public']['seats'][view['seat']]['locked']:
         return actions
-    protected = {*view.get('jokers', []), 'white'}
+    protected = set(view.get('jokers', []))
     hand = view['players'][view['seat']].get('hand') or []
     discards = [a for a in actions if a['kind'] == 'discard']
     ordinary = [a for a in discards if hand[a['index']] not in protected]
@@ -813,7 +813,7 @@ def _legal_actions(view: dict) -> list[dict]:
 
 
 def _fallback_discard(hand: list[str], jokers: list[str], discards: list[dict]) -> dict:
-    protected = {*jokers, 'white'}
+    protected = set(jokers)
     ordinary = [a for a in discards if hand[a['index']] not in protected]
     return (ordinary or discards)[0] if (ordinary or discards) else {'kind': 'pass'}
 

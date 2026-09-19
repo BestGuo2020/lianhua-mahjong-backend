@@ -11,7 +11,7 @@ def _protected_discard_tiles(ctx, rules: GameRuleSet) -> set[str]:
         jokers = list(getattr(ctx, 'jokers', None) or [])
         if not jokers:
             jokers = list(getattr(getattr(rules, 'round_state', None), 'jokers', []) or [])
-        return {*jokers, 'white'}
+        return set(jokers)
     return {tile for tile in ctx.hand if rules.is_joker_tile(tile)}
 
 

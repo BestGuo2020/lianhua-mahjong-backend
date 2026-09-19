@@ -100,10 +100,8 @@ def _opponent_risk_profiles(ctx, rules: GameRuleSet) -> list:
 
 
 def _protected_discard_tiles(ctx, rules: GameRuleSet) -> set[str]:
-    """LLM 默认必须保留的牌：广麻白板；莲花双精牌 + 白板受限替代牌。"""
+    """LLM 默认必须保留的牌：广麻白板；莲花双精牌（非精白板参与评估）。"""
     protected = set(_joker_tiles(ctx, rules))
-    if rules.code == 'lotus-legacy':
-        protected.add('white')
     return protected
 
 

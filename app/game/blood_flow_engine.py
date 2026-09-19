@@ -490,7 +490,7 @@ def wind_kong(hand: list[str]) -> bool:
 
 
 def fallback_discard(hand: list[str], jokers: list[str], allowed: list[int]) -> int:
-    protected = {*jokers, 'white'}
+    protected = set(jokers)
     candidates = [i for i in allowed if hand[i] not in protected]
     return (candidates or allowed)[0] if (candidates or allowed) else 0
 

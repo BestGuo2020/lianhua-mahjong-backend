@@ -72,7 +72,7 @@ def project_kong_bloom(*, kind: ProjectedKongKind, hand: list[TileType],
 def has_ready_discard(hand: list[TileType], exposed_melds: int,
                       jokers: list[TileType]) -> bool:
     """摸牌态存在一个合法弃牌可进入听牌；有普通牌时不弃精牌或白板。"""
-    protected = {*jokers, 'white'}
+    protected = set(jokers)
     has_natural = any(tile not in protected for tile in hand)
     for index, tile in enumerate(hand):
         if has_natural and tile in protected:

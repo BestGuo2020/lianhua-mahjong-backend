@@ -92,3 +92,17 @@ class TestLotusChooseDiscardIndex:
             'publicTiles': ['m4', 'm4', 'm4'],
         })
         assert hand[index] == 'm4'
+
+
+def test_non_joker_white_is_discarded_for_two_sided_wait():
+    hand = ['m1', 'm2', 'm3', 'p2', 'p3', 's5', 's5', 'white']
+    for wall_count in (90, 40):
+        index = choose_discard_index(hand, ['s8', 's9'], lambda: 0,
+                                     {'exposedMelds': 2, 'wallCount': wall_count})
+        assert hand[index] == 'white'
+
+
+def test_substitute_white_is_kept_when_it_completes_a_meld():
+    hand = ['s6', 's7', 'white', 'p2', 'p3', 's5', 's5', 'east']
+    index = choose_discard_index(hand, ['s8', 's9'], lambda: 0, {'exposedMelds': 2})
+    assert hand[index] == 'east'

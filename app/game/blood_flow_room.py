@@ -88,7 +88,7 @@ def _fallback_policy(engine: BloodFlowEngine, seat: int) -> dict:
     discards = [a for a in options if a['kind'] == 'discard']
     if discards:
         ordinary = [a for a in discards
-                    if engine.players[seat]['hand'][a['index']] not in {*engine.jokers, 'white'}]
+                    if engine.players[seat]['hand'][a['index']] not in set(engine.jokers)]
         return (ordinary or discards)[0]
     return next((a for a in options if a['kind'] == 'pass'), options[0])
 

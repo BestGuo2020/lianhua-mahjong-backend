@@ -217,23 +217,23 @@ class TestCandidates:
         assert [c['label'] for c in discards] == ['出1万', '出2万']
         assert built['request']['state']['jokerTiles'] == ['白板']
 
-    def test_lotus_double_jokers_and_white_are_protected(self):
+    def test_lotus_protects_jokers_but_allows_substitute_white(self):
         rules = get_rule_set('lotus-legacy')
         rules.round_state.joker_tiles = ['m5', 'm6']
         ctx = turn_ctx(hand=['m5', 'm6', 'white', 'm1'], jokers=['m5', 'm6'])
         built = build_request(ctx, rules, 'r1', 'v1', 'turn')
         discards = [c for c in built['request']['candidates']
                     if c['action']['kind'] == 'discard']
-        assert [c['label'] for c in discards] == ['出1万']
+        assert [c['label'] for c in discards] == ['出白板', '出1万']
 
     def test_all_wildcards_still_produce_discard_candidates_with_warning(self):
         rules = get_rule_set('lotus-legacy')
         rules.round_state.joker_tiles = ['m5', 'm6']
-        ctx = turn_ctx(hand=['m5', 'm6', 'white'], jokers=['m5', 'm6'])
+        ctx = turn_ctx(hand=['m5', 'm6'], jokers=['m5', 'm6'])
         built = build_request(ctx, rules, 'r1', 'v1', 'turn')
         discards = [c for c in built['request']['candidates']
                     if c['action']['kind'] == 'discard']
-        assert [c['label'] for c in discards] == ['出5万', '出6万', '出白板']
+        assert [c['label'] for c in discards] == ['出5万', '出6万']
         assert all(any('癞子/精牌' in risk for risk in c['features']['risks'])
                    for c in discards)
 
@@ -279,13 +279,13 @@ class TestValidation:
         lotus.round_state.joker_tiles = ['m5', 'm6']
         lotus_ctx = turn_ctx(hand=['m5', 'white', 'm1'], jokers=['m5', 'm6'])
         assert not validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 0}, lotus)
-        assert not validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 1}, lotus)
+        assert validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 1}, lotus)
         assert validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 2}, lotus)
 
     def test_all_wildcards_can_discard_to_avoid_empty_action_set(self):
         rules = get_rule_set('lotus-legacy')
         rules.round_state.joker_tiles = ['m5', 'm6']
-        ctx = turn_ctx(hand=['m5', 'white'], jokers=['m5', 'm6'])
+        ctx = turn_ctx(hand=['m5', 'm6'], jokers=['m5', 'm6'])
         assert validate_action(ctx, {'kind': 'discard', 'handIndex': 0}, rules)
 
     def test_rejects_wind_kong_that_breaks_four_wind_wait(self):
@@ -502,7 +502,7 @@ class TestPromptRules:
         assert '白板只能替代上述精牌面或白板本身' in user
         assert '出5万' not in user
         assert '出6万' not in user
-        assert '出白板' not in user
+        assert '出白板' in user
 
 
 # ── LLMPlayer（mock 供应商）──────────────────────────────────

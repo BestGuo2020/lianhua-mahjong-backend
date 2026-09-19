@@ -88,12 +88,16 @@ def test_luxury_route_rejects_discard_gang():
 
 
 def test_luxury_win_rejects_concealed_kong():
+    """四张在手（暗杠会拆掉豪华七对）→ 不暗杠（对齐前端 kongSelfLoss.test.ts 同用例）。"""
     hand = ['m3', 'm3', 'm3', 'm3', 'm1', 'm1', 'm2', 'm2', 'p1', 'p1', 's3', 's3', 'p7', 's8']
     actions = [*({'kind': 'discard', 'index': index} for index in range(len(hand))),
                {'kind': 'concealed-kong', 'tile': 'm3'}]
     view = seat_view(hand, own_actions=actions, window=turn_window('m3'))
     loss = kong_self_loss('concealed-kong', hand, [], JOKERS, tile='m3')
-    assert loss['sevenPairs'] > kong_gain('concealed-kong')
+    # 2026-09-18 豪华七对 12 → 6 番：七对/豪华那一项由约 147 降到约 73.5，**已低于**暗杠即时收益 80；
+    # 但自手总损失还含门清/向听等项（≈83.5），仍然压过杠收益，所以「为保路线不暗杠」的行为未被翻转。
+    assert loss['sevenPairs'] < kong_gain('concealed-kong')
+    assert loss['total'] > kong_gain('concealed-kong')
     assert decide_blood_flow_action_ev(view, BLOOD_FLOW_AI)['kind'] == 'discard'
 
 
@@ -171,7 +175,12 @@ def test_mode_off_falls_back_to_legacy_gang():
 
 
 def test_kong_value_matches_ts_engine_numbers():
-    """跨语言护栏：与前端 kongValue.ts 打印的示例数字一致（见设计文档「具体数字」表）。"""
+    """跨语言护栏：与前端 kongValue.ts 打印的示例数字一致（见设计文档「具体数字」表）。
+
+    数值取自前端实测（同 fixtures 的前端护栏：
+    src/game/variants/lotus/bloodFlow/crossLanguageNumbers.test.ts；2026-09-18
+    豪华七对 12 → 6 番后重取，前端 kongSelfLoss.test.ts 已先改口径）。
+    """
     base = BLOOD_FLOW_CONFIG.base_points
     assert base == 10
     assert kong_gain('discard-gang') == 20
@@ -181,16 +190,18 @@ def test_kong_value_matches_ts_engine_numbers():
     assert kong_gain('wind-kong') == 70
 
     route = kong_candidate_value('discard-gang', LUXURY_ROUTE, [], JOKERS, tile='m3')
-    assert route['selfLoss']['sevenPairs'] == pytest.approx(42.4, abs=0.05)
-    # 2026-09-15：门清平胡拆成门清(1番)+平胡(1番)，"破坏门清"的自损项随之减半 → net 上移。
-    assert route['net'] == pytest.approx(-35.45, abs=0.05)
+    # 2026-09-15：门清平胡拆成门清(1番)+平胡(1番)，"破坏门清"的自损项随之减半；
+    # 2026-09-18：豪华七对 12 → 6 番，七对/豪华项 42.4 → 31.43，net 随之上移 -35.45 → -24.43。
+    assert route['selfLoss']['sevenPairs'] == pytest.approx(31.43, abs=0.05)
+    assert route['net'] == pytest.approx(-24.43, abs=0.05)
 
     luxury_win = ['m3', 'm3', 'm3', 'm3', 'm1', 'm1', 'm2', 'm2', 'p1', 'p1', 's3', 's3', 'p7', 'p7']
     win = kong_candidate_value('concealed-kong', luxury_win, [], JOKERS, tile='m3')
-    assert win['selfLoss']['sevenPairs'] == pytest.approx(160.0, abs=0.05)
-    # 2026-09-15：暗杠保留门清 → 不再计入"破坏门清"自损（原 -93.0 → -90.0）
+    # 已成形的豪华七对：整项由 12 番时代的 160 降到 100，net -90 → -30。
+    assert win['selfLoss']['sevenPairs'] == pytest.approx(100.0, abs=0.05)
+    # 2026-09-15：暗杠保留门清 → 不再计入"破坏门清"自损。
     assert win['selfLoss']['concealedHand'] == pytest.approx(0.0, abs=0.05)
-    assert win['net'] == pytest.approx(-90.0, abs=0.05)
+    assert win['net'] == pytest.approx(-30.0, abs=0.05)
 
     tenpai = kong_candidate_value('discard-gang', CONCEALED_TENPAI, [], JOKERS, tile='m5')
     assert tenpai['selfLoss']['concealedHand'] == pytest.approx(5.0, abs=0.05)

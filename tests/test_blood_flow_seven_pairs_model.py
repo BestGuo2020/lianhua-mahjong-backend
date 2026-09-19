@@ -1,9 +1,9 @@
 """七对潜力模型 v2 后端镜像测试 —— 对齐前端 sevenPairsModel.test.ts。
 
-规则/口径（2026-09-13 用户定案，引擎实测见 tmp/luxury-seven-pairs-analysis.test.ts）：
+规则/口径（2026-09-13 用户定案，引擎实测见 tmp/kong-crosscheck.test.ts）：
   · 精牌能把刻子/对子补成四张 → 豪华七对不必等第四张（3 张实体 + 1 精即成立）；
   · 旧口径 `pairs + min(singles, jokers)` 会丢掉多余精牌，导致"精越多、豪华七对越确定、估值反而越低"；
-  · 新口径按引擎 is_seven_pairs 记账（剩余精牌两两成对），并新增豪华七对（12 番）方向。
+  · 新口径按引擎 is_seven_pairs 记账（剩余精牌两两成对），并新增豪华七对方向（2026-09-18 起 6 番）。
 
 最后一段是**跨语言护栏**：潜力合计与豪华七对进度必须与前端逐位一致。
 """
@@ -68,12 +68,19 @@ def test_off_model_has_no_luxury_direction_and_matches_legacy():
         assert seven['progress'] == pytest.approx(min(1.0, _seven_pairs_potential(hand, WILD) / 28), abs=1e-9)
 
 
-def test_luxury_direction_outweighs_plain_seven_pairs():
+def test_luxury_direction_yields_to_plain_seven_pairs_at_six_fan():
+    """刻子 + 5 对（无精）：6 番后豪华方向让位于普通七对（对齐前端 sevenPairsModel.test.ts）。
+
+    12 番时代：豪华 12 × 0.6² = 4.32 > 七对 4 → 豪华是最高档；
+    2026-09-18 降到 6 番后：6 × 0.6² = 2.16 < 4 → 仅有裸刻子（四张可达性 0.6）时普通七对更值钱。
+    只有「精牌可补成四张」（可达性 1）时豪华方向才重新领先，见
+    test_model_raises_valuation_for_joker_rich_pairs_hand。
+    """
     luxury = direction(H1, 'luxury-seven-pairs', 'ev')
     seven = direction(H1, 'sevenPairs', 'ev')
     assert luxury['weight'] == BLOOD_FLOW_CONFIG.patterns['luxury-seven-pairs'].weight
     assert luxury['progress'] == pytest.approx(_seven_pairs_progress(H1, WILD) * 0.6, abs=1e-9)
-    assert luxury['score'] > seven['score']
+    assert luxury['score'] < seven['score']
 
 
 def test_model_raises_valuation_for_joker_rich_pairs_hand():
@@ -106,15 +113,20 @@ def test_luxury_progress_is_product_of_both_halves():
 
 
 @pytest.mark.parametrize('hand,off_total,ev_total,luxury_progress', [
-    (H1, 11.523, 14.696, 0.514),
-    (H2, 11.523, 20.339, 0.857),
-    (H3, 58.036, 66.852, 0.857),
-    (H4, 92.798, 102.512, 0.857),
-    (H5, 23.109, 31.925, 0.857),
-    (H6, 7.530, 7.883, 0.171),
+    (H1, 11.523, 13.110, 0.514),
+    (H2, 11.523, 15.931, 0.857),
+    (H3, 58.036, 62.444, 0.857),
+    (H4, 92.798, 98.104, 0.857),
+    (H5, 23.109, 27.517, 0.857),
+    (H6, 7.530, 7.707, 0.171),
 ])
 def test_cross_language_guard(hand, off_total, ev_total, luxury_progress):
-    """与前端的潜力合计/豪华七对进度逐位一致（tmp/luxury-seven-pairs-analysis.test.ts 打印同一组数字）。"""
+    """与前端的潜力合计/豪华七对进度逐位一致（前端同 fixtures 护栏：
+    src/game/variants/lotus/bloodFlow/crossLanguageNumbers.test.ts）。
+
+    'off' 合计与进度不含番值，未受 2026-09-18 豪华七对 12 → 6 番影响；
+    'ev' 合计按 6 番重取（旧值 14.696 / 20.339 / 66.852 / 102.512 / 31.925 / 7.883 是 12 番时代）。
+    """
     assert pattern_potential_total(hand, [], JOKERS, 'off') == pytest.approx(off_total, abs=0.001)
     assert pattern_potential_total(hand, [], JOKERS, 'ev') == pytest.approx(ev_total, abs=0.001)
     assert direction(hand, 'luxury-seven-pairs', 'ev')['progress'] == pytest.approx(luxury_progress, abs=0.001)

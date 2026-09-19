@@ -20,6 +20,17 @@ _VOICE_KEY_RE = re.compile(r'^[a-z0-9_-]{1,40}$')
 _requests: dict[str, deque[float]] = defaultdict(deque)
 
 
+def _is_identity_version(value: object) -> bool:
+    """anime 固定文案身份的版本段只校验形状（1..1000 的正整数）。
+
+    2026-09-19 修正：此前硬编码 ``parts[1] != 1 or parts[2] != 1``，于是一旦前端递增
+    schema/cache 版本，**全部**固定台词合成会被 422 拒掉（前端单测发现不了，只有线上才暴露）。
+    身份的具体版本号由前端持有（``ANIME_FIXED_TTS_*_VERSION``），后端只保证它是安全的形状。
+    """
+
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 1000
+
+
 class LocalTtsRequest(BaseModel):
     text: str = Field(min_length=1, max_length=30)
     voiceKey: str = Field(min_length=1, max_length=40)
@@ -53,7 +64,7 @@ class LocalTtsRequest(BaseModel):
             raise ValueError('invalid cacheIdentity') from exc
         if not isinstance(parts, list) or len(parts) != 12 \
                 or parts[0] != 'llm-anime-fixed-tts' \
-                or parts[1] != 1 or parts[2] != 1:
+                or not _is_identity_version(parts[1]) or not _is_identity_version(parts[2]):
             raise ValueError('invalid cacheIdentity')
         return value
 

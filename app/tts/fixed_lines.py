@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 from app.game.anime_characters import (
+    ANIME_ACTION_LINE_KEYS,
     ANIME_VOICE_LINE_KEYS,
     AnimeVoiceLineKey,
     CharacterId,
@@ -21,7 +22,8 @@ from app.tts.config import normalize_voice_key
 
 FixedLinePurpose = Literal['action', 'round-reaction']
 
-_ACTION_LINE_KEYS = frozenset(ANIME_VOICE_LINE_KEYS[:6])
+# 显式动作键集合（不再按 ANIME_VOICE_LINE_KEYS 的位置切片：加变体键时位置会变）。
+_ACTION_LINE_KEYS = frozenset(ANIME_ACTION_LINE_KEYS)
 
 
 @dataclass(frozen=True, slots=True)

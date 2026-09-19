@@ -114,6 +114,28 @@ async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
             'cacheIdentity': 'arbitrary-cache-split',
         })
         assert invalid_cache.status_code == 422
+        # 版本段递增必须继续被接受：硬编码具体版本号会让新版前端整体 422（2026-09-19 实测踩到）。
+        bumped = json.dumps([
+            'llm-anime-fixed-tts', 1, 2, 'deepseek', 'chi', 'action',
+            '这一手稳住。', 'deepseek', 'speaker', 'default', 'fallback', '稳健',
+        ], ensure_ascii=False, separators=(',', ':'))
+        bumped_response = await http.post('/api/local-tts/synthesize', json={
+            'text': '这一手稳住。', 'voiceKey': 'deepseek', 'style': '稳健',
+            'cacheIdentity': bumped,
+        })
+        assert bumped_response.status_code == 200
+        for bad_identity in (
+            json.dumps(['llm-anime-fixed-tts', 0, 1] + [None] * 9),        # 版本不是正整数
+            json.dumps(['llm-anime-fixed-tts', 1, '1'] + [None] * 9),      # 版本是字符串
+            json.dumps(['llm-anime-fixed-tts', True, 1] + [None] * 9),     # 布尔不是版本
+            json.dumps(['other-marker', 1, 1] + [None] * 9),               # 非约定标记
+            json.dumps(['llm-anime-fixed-tts', 1, 1]),                     # 段数不足
+        ):
+            rejected = await http.post('/api/local-tts/synthesize', json={
+                'text': '测试。', 'voiceKey': 'deepseek', 'style': '稳健',
+                'cacheIdentity': bad_identity,
+            })
+            assert rejected.status_code == 422
         too_long = await http.post('/api/local-tts/synthesize', json={
             'text': '太' * 31, 'voiceKey': 'deepseek', 'style': '稳健',
         })

@@ -4,8 +4,10 @@ import re
 import pytest
 
 from app.game.anime_characters import (
+    ANIME_ACTION_LINE_KEYS,
     ANIME_CHARACTER_CATALOG,
     ANIME_CHARACTER_SCHEMA_VERSION,
+    ANIME_RESULT_LINE_KEYS,
     ANIME_TTS_SPEAKERS,
     ANIME_TTS_STYLE,
     ANIME_TTS_VOICE_KEYS,
@@ -73,7 +75,7 @@ EXPECTED_VOICES = {
 
 
 def test_catalog_freezes_twelve_ids_labels_aliases_and_schema():
-    assert ANIME_CHARACTER_SCHEMA_VERSION == 1
+    assert ANIME_CHARACTER_SCHEMA_VERSION == 2
     assert DEFAULT_ANIME_CHARACTER_ID == 'deepseek'
     assert tuple(profile.id for profile in ANIME_CHARACTER_CATALOG) == CHARACTER_IDS
     assert len(ANIME_CHARACTER_CATALOG) == len(set(CHARACTER_IDS)) == 12
@@ -99,9 +101,13 @@ def test_voice_contract_only_uses_backend_supported_keys_and_stable_style():
         assert profile.tts_style == ANIME_TTS_STYLE == '稳健'
 
 
-def test_every_character_has_eleven_bounded_fixed_lines():
-    action_keys = set(ANIME_VOICE_LINE_KEYS[:6])
-    result_keys = set(ANIME_VOICE_LINE_KEYS[6:])
+def test_every_character_has_fourteen_bounded_fixed_lines():
+    # 显式键集合，不再按位置切片（2026-09-19 加入 hu-2 / zimo-2 / qiangganghu-2 后必须同步改动）。
+    action_keys = set(ANIME_ACTION_LINE_KEYS)
+    result_keys = set(ANIME_RESULT_LINE_KEYS)
+    assert action_keys | result_keys == set(ANIME_VOICE_LINE_KEYS)
+    assert action_keys & result_keys == set()
+    assert len(action_keys) == 9 and len(result_keys) == 5
     combinations: set[tuple[str, str, str, str]] = set()
 
     for profile in ANIME_CHARACTER_CATALOG:
@@ -112,11 +118,33 @@ def test_every_character_has_eleven_bounded_fixed_lines():
         for line_key, text in profile.lines.items():
             combinations.add((profile.id, line_key, text, profile.voice_key))
 
-    assert len(combinations) == 12 * 11 == 132
+    assert len(combinations) == 12 * 14 == 168
     assert anime_fixed_line('deepseek', 'chi') == '吃一口！'
     assert anime_fixed_line('missing', 'draw') == ANIME_CHARACTER_CATALOG[1].lines['draw']
     with pytest.raises(KeyError):
         anime_fixed_line('deepseek', 'arbitrary')  # type: ignore[arg-type]
+
+
+def test_fixed_lines_avoid_report_style_and_x_becomes_y_phrasing():
+    """2026-09-19 用户评审：报告腔与「某某成某」都不像人说的话。
+
+    `推演` / `判断失误` 属角色人设与自然口语，不在红线内；红线针对"任务汇报"用词。
+    """
+    report_style = re.compile(r'完成|成立|结论|验证|样本|误差|记录|最优|计算|命中率')
+    x_becomes_y = re.compile(r'成(?:胡|局|杠|章|牌|和)')
+    offenders = [
+        (profile.id, key, text)
+        for profile in ANIME_CHARACTER_CATALOG
+        for key, text in profile.lines.items()
+        if report_style.search(text) or x_becomes_y.search(text)
+    ]
+    assert offenders == []
+    # 反例自检：口语化的「成了」「算准了」不在这条红线里；旧写法会被拦住。
+    assert not report_style.search('这一手，成了。')
+    assert not x_becomes_y.search('这一手，成了。')
+    assert not report_style.search('这次判断失误，下局调整。')
+    assert report_style.search('杠，推演完成。')
+    assert x_becomes_y.search('这张正好成胡。')
 
 
 @pytest.mark.parametrize('value', [None, 1, '', 'unknown', '../qwen', 'qwen/path', 'qwen x'])
@@ -158,7 +186,7 @@ def test_combined_resolution_has_frozen_priority_and_deepseek_fallback():
 
 def test_serializable_contract_uses_frontend_field_names_and_returns_a_copy():
     contract = anime_character_catalog_contract()
-    assert contract['schemaVersion'] == 1
+    assert contract['schemaVersion'] == 2
     assert contract['defaultCharacter'] == 'deepseek'
     assert contract['ttsStyle'] == '稳健'
     assert contract['voiceLineKeys'] == list(ANIME_VOICE_LINE_KEYS)

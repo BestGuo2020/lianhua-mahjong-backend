@@ -82,7 +82,9 @@ def _fallback_policy(engine: BloodFlowEngine, seat: int) -> dict:
     if engine.seats[seat]['locked']:
         if win:
             return win
-        return {'kind': 'discard', 'index': engine.players[seat]['drawnTileIndex']}
+        # 胡后可能收到大明杠响应；只能从当前合法动作中回退，不能提交 index=-1 的弃牌。
+        return next((a for a in options if a['kind'] in ('gang', 'concealed-kong', 'added-kong', 'wind-kong')),
+                    next((a for a in options if a['kind'] == 'discard'), {'kind': 'pass'}))
     if win:
         return win
     discards = [a for a in options if a['kind'] == 'discard']

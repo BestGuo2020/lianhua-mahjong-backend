@@ -95,8 +95,8 @@ def stress_policy(engine: BloodFlowEngine, seat: int) -> dict:
     if engine.seats[seat]['locked']:
         if win:
             return win
-        drawn = engine.players[seat]['drawnTileIndex']
-        return {'kind': 'discard', 'index': drawn}
+        return next((a for a in options if a['kind'] in ('gang', 'concealed-kong', 'added-kong', 'wind-kong')),
+                    next((a for a in options if a['kind'] == 'discard'), {'kind': 'pass'}))
     if win:
         return win
     discards = [a for a in options if a['kind'] == 'discard']

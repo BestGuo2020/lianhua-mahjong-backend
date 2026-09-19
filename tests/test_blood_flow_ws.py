@@ -25,8 +25,9 @@ def choose(view: dict) -> dict:
     if win:
         return win
     if view['public']['seats'][view['seat']]['locked']:
-        drawn = view['players'][view['seat']]['drawnTileIndex']
-        return {'kind': 'discard', 'index': drawn}
+        # 胡后也可收到杠响应；测试客户端必须按当前合法动作提交。
+        return next((a for a in actions if a['kind'] in ('gang', 'concealed-kong', 'added-kong', 'wind-kong')),
+                    next((a for a in actions if a['kind'] == 'discard'), {'kind': 'pass'}))
     discards = [a for a in actions if a['kind'] == 'discard']
     if discards:
         hand = view['players'][view['seat']]['hand']

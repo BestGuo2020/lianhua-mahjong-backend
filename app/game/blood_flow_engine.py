@@ -13,6 +13,7 @@ from app.core.blood_flow.types import SourceTileEvent, WinEvaluation
 from app.rules.blood_flow import BloodFlowRuleSet
 
 SEATS = (0, 1, 2, 3)
+KONG_ACTIONS = frozenset(('gang', 'concealed-kong', 'added-kong', 'wind-kong'))
 
 
 def next_seat(seat: int) -> int:
@@ -163,7 +164,8 @@ class BloodFlowEngine:
                     moves.append({'kind': 'pass'})
         # 开杠（暗杠/风杠/补杠）只在「本手来自摸牌」时提供：碰/吃之后的这一手必须先出牌，
         # 与经典玩法的 userDrewThisTurn 门控同口径（此前碰完就能立刻开杠，用户报为错误）。
-        if self.draw_source and not self.seats[seat]['locked'] and self.wall:
+        # 胡后仍可开杠；吃碰后的回合仍须先出牌。
+        if self.draw_source and self.wall:
             for tile in concealed_kongs(player['hand'], self.jokers):
                 moves.append({'kind': 'concealed-kong', 'tile': tile})
             if wind_kong(player['hand']):
@@ -197,15 +199,18 @@ class BloodFlowEngine:
         return True
 
     def expire(self) -> None:
-        """本地回退：未决定的座位 回合→摸打/兜底弃牌，其余→过；锁手座位有胡则必胡。"""
+        """本地回退：未决定的座位 回合→摸打/兜底弃牌，其余→过；锁手座位按杠、胡的顺序兜底。"""
         window = self.window
         if self.interrupted or not window:
             return
         for seat in SEATS:
             if window['options'][seat] and window['decisions'][seat] is None:
-                # 锁手座位的胡是唯一选项（不得过胡）：兜底也必须走胡，否则等于「过」。
-                forced_win = next((a for a in window['options'][seat]
-                                   if a['kind'] == 'win' and self.seats[seat]['locked']), None)
+                # 锁手后不能过胡，但可优先开杠。
+                forced_win = None
+                if self.seats[seat]['locked']:
+                    # 与前端默认杠优先一致：仅到期后兜底，不提前替真人选择。
+                    forced_win = next((a for a in window['options'][seat] if a['kind'] in KONG_ACTIONS), None)
+                    forced_win = forced_win or next((a for a in window['options'][seat] if a['kind'] == 'win'), None)
                 if forced_win is not None:
                     window['decisions'][seat] = forced_win
                 elif window['kind'] == 'turn':
@@ -232,6 +237,16 @@ class BloodFlowEngine:
     def resolve_window(self) -> None:
         window = self.window
         winners = [s for s in SEATS if window['decisions'][s] and window['decisions'][s]['kind'] == 'win']
+        # 与前端默认规则对齐：同一弃牌的竞争按 杠 > 碰 > 吃 > 胡 裁决。
+        if window['kind'] != 'turn':
+            meld_claimants = sorted(
+                (s for s in SEATS if window['decisions'][s]
+                 and window['decisions'][s]['kind'] in ('gang', 'peng', 'chi')),
+                key=lambda s: (claim_rank(window['decisions'][s]['kind']),
+                               (s - window['source']['seat'] + 4) % 4),
+            )
+            if meld_claimants:
+                return self.claim_meld(meld_claimants[0], window['decisions'][meld_claimants[0]], window['source'])
         if winners:
             return self.apply_win_batch(window, winners)
         if window['kind'] == 'turn':
@@ -280,14 +295,14 @@ class BloodFlowEngine:
             if win:
                 self.evaluation[seat] = win
                 actions.append({'kind': 'win'})
-            if source['kind'] == 'discard' and self.wall and not self.seats[seat]['locked']:
+            if source['kind'] == 'discard' and self.wall:
                 hand = self.players[seat]['hand']
                 count = hand.count(source['tile'])
                 if count >= 3:
                     actions.append({'kind': 'gang'})
-                if count >= 2:
+                if count >= 2 and not self.seats[seat]['locked']:
                     actions.append({'kind': 'peng'})
-                if seat == next_seat(source['seat']):
+                if seat == next_seat(source['seat']) and not self.seats[seat]['locked']:
                     for chi in lotus_chi_options(hand, source['tile']):
                         actions.append({'kind': 'chi', 'tiles': chi['tiles']})
             # 锁手后不得过胡：已胡过的座位仍可点炮/抢杠继续胡，但「过」不再是选项（用户确认）。

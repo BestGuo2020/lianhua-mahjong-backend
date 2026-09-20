@@ -17,7 +17,10 @@ from app.llm.config import LlmServerConfig, llm_semaphore
 from app.llm.reasoning_budget import (
     adaptive_reasoning_budget, record_reasoning_length, record_reasoning_success,
 )
-from app.llm.reasoning import infer_provider_dialect, resolve_reasoning_policy
+from app.llm.reasoning import (
+    dashscope_thinking_body, infer_provider_dialect, is_dashscope_endpoint,
+    resolve_reasoning_policy,
+)
 
 
 class LlmClientError(Exception):
@@ -261,6 +264,11 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     if reasoning:
         max_tokens = adaptive_reasoning_budget(cfg, reasoning_policy, max_tokens)
     payload.update(reasoning_policy.request_body)
+    # DashScope 上别家模型（glm / kimi / deepseek…）的原生思考参数无效，统一改用 enable_thinking。
+    if is_dashscope_endpoint(cfg.base_url):
+        dashscope_body = dashscope_thinking_body(reasoning_policy.mode)
+        if dashscope_body:
+            payload.update(dashscope_body)
     if reasoning and reasoning_policy.provider_type == 'openai':
         payload['max_completion_tokens'] = max_tokens
     else:

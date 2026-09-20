@@ -32,24 +32,30 @@ class ReasoningPolicy:
     request_body: dict = field(default_factory=dict)
     accept_reasoning_response: bool = False
 
+# 型号名里的厂商指纹优先于地址指纹：DashScope/百炼这类聚合端点也托管别家模型
+# （`glm-4.7`、`kimi-k2.6`、`deepseek-v4-flash` 等），只看地址会把它们误判成千问，
+# 进而下发千问专属参数、关闭思考失效（实测 glm-4.7 因此每次都思考 2.8k 字、单次 25s）。
+# 地址兜底仍保留：`dashscope|aliyuncs|qwen` 继续把纯千问接入点判成 qwen。
+MODEL_PROVIDER_RULES = (
+    (re.compile(r'deepseek'), 'deepseek'),
+    (re.compile(r'qwen|qwq'), 'qwen'),
+    (re.compile(r'moonshot|kimi'), 'kimi'),
+    (re.compile(r'volces|volcengine|doubao'), 'doubao'),
+    (re.compile(r'minimax'), 'minimax'),
+    (re.compile(r'api\.openai\.com|\bgpt-|\bo[134](?:[.-]|\s|$)'), 'openai'),
+    (re.compile(r'bigmodel|\bglm-'), 'glm'),
+    (re.compile(r'anthropic|\bclaude'), 'claude'),
+)
+
+
 def infer_provider_type(base_url: str, model: str, provider_id: str = '') -> str:
-    source = f'{base_url} {model} {provider_id}'.lower()
-    if 'deepseek' in source:
-        return 'deepseek'
+    model_name = (model or '').lower()
+    for pattern, provider_type in MODEL_PROVIDER_RULES:
+        if pattern.search(model_name):
+            return provider_type
+    source = f'{base_url} {model_name} {provider_id}'.lower()
     if re.search(r'dashscope|\.maas\.aliyuncs|qwen|qwq', source):
         return 'qwen'
-    if re.search(r'moonshot|kimi', source):
-        return 'kimi'
-    if re.search(r'volces|volcengine|doubao', source):
-        return 'doubao'
-    if 'minimax' in source:
-        return 'minimax'
-    if re.search(r'api\.openai\.com|\bgpt-|\bo[134](?:[.-]|\s|$)', source):
-        return 'openai'
-    if re.search(r'bigmodel|\bglm-', source):
-        return 'glm'
-    if re.search(r'anthropic|\bclaude', source):
-        return 'claude'
     return 'custom'
 
 
@@ -59,11 +65,29 @@ def infer_provider_dialect(base_url: str) -> str:
     if host == 'api.orcarouter.ai':
         return 'orcarouter'
     if re.match(
-            r'^(?:api\.deepseek\.com|dashscope\.aliyuncs\.com|api\.moonshot\.(?:cn|ai)|'
+            r'^(?:api\.deepseek\.com|dashscope\.aliyuncs\.com|'
+            r'token-plan\.cn-beijing\.maas\.aliyuncs\.com|api\.moonshot\.(?:cn|ai)|'
             r'ark\.[^.]+\.volces\.com|api\.minimax\.(?:chat|io)|api\.openai\.com|'
             r'open\.bigmodel\.cn|api\.z\.ai|api\.anthropic\.com)$', host):
         return 'official'
     return 'compatible'
+
+
+def is_dashscope_endpoint(base_url: str) -> bool:
+    """DashScope/百炼托管端点：千问与别家模型（glm / kimi / deepseek…）都挂在这里。"""
+    host = (urlparse(base_url).hostname or '').lower()
+    return bool(re.search(r'(?:^|\.)dashscope\.aliyuncs\.com$', host)
+                or re.match(r'^token-plan\.[a-z0-9-]+\.maas\.aliyuncs\.com$', host))
+
+
+def dashscope_thinking_body(mode: str) -> dict | None:
+    """DashScope 上开关思考的统一参数是 enable_thinking；各家原生参数在这里实测无效
+    （glm-4.7 收到 thinking:{type:disabled} 仍思考 2.8k 字、单次 25s，换 enable_thinking:false 后 0.8s）。"""
+    if mode == 'explicit-off':
+        return {'enable_thinking': False}
+    if mode in ('explicit-on', 'always-on'):
+        return {'enable_thinking': True}
+    return None
 
 
 def _policy(provider_type: str, mode: str, message: str,
@@ -164,8 +188,12 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
                 'reasoning_effort': effort,
             })
         if re.match(r'^glm-(?:4\.(?:5|6|7)|5)(?:[.-]|$)', name):
-            return _policy(kind, 'explicit-off', '已强制关闭 GLM 思考模式',
-                           {'thinking': {'type': 'disabled'}})
+            # 与 DeepSeek 分支一致：条件命中时才开启思考，普通决策显式关闭。
+            return _policy(kind, 'explicit-on', '已开启 GLM 条件思考', {
+                'thinking': {'type': 'enabled'},
+            }) if reasoning else _policy(
+                kind, 'explicit-off', '已强制关闭 GLM 思考模式',
+                {'thinking': {'type': 'disabled'}})
         if re.match(r'^glm-4(?:[.-]|$)', name):
             return _policy(kind, 'naturally-off', '该 GLM 型号本身不是思考模型')
         return _policy(kind, 'unknown', '无法确认该 GLM 型号是否支持非思考模式')

@@ -1,7 +1,8 @@
 import pytest
 
 from app.llm.reasoning import (
-    infer_provider_dialect, infer_provider_type, resolve_reasoning_policy,
+    dashscope_thinking_body, infer_provider_dialect, infer_provider_type,
+    is_dashscope_endpoint, resolve_reasoning_policy,
 )
 
 
@@ -162,6 +163,33 @@ def test_thinking_only_qwen_models_are_identified(model):
     result = resolve_reasoning_policy('qwen', 'https://proxy.example.com/v1', model)
     assert result.mode == 'reasoning-only'
     assert result.request_body == {}
+
+
+def test_dashscope_hosted_third_party_models_infer_by_model_name():
+    """DashScope 也托管别家模型：型号名优先，避免被地址带成千问后下发无效参数。"""
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    assert infer_provider_type(dash, 'glm-4.7') == 'glm'
+    assert infer_provider_type(dash, 'kimi-k2.6') == 'kimi'
+    assert infer_provider_type(dash, 'deepseek-v4-flash') == 'deepseek'
+    assert infer_provider_type(dash, 'qwen3-32b') == 'qwen'
+    assert infer_provider_type(dash, 'some-new-model') == 'qwen'
+    # token-plan 是百炼的另一个接入点，与 dashscope 同方言
+    assert is_dashscope_endpoint(dash)
+    assert is_dashscope_endpoint('https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1')
+    assert not is_dashscope_endpoint('https://open.bigmodel.cn/api/paas/v4')
+
+
+def test_dashscope_endpoint_switches_native_thinking_params_to_enable_thinking():
+    """实测 glm-4.7 在 DashScope 收 thinking:{type:disabled} 仍思考 2.8k 字、单次 25s。"""
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    quick = resolve_reasoning_policy('glm', dash, 'glm-4.7')
+    deep = resolve_reasoning_policy('glm', dash, 'glm-4.7', reasoning=True)
+    assert quick.mode == 'explicit-off' and deep.mode == 'explicit-on'
+    assert dashscope_thinking_body(quick.mode) == {'enable_thinking': False}
+    assert dashscope_thinking_body(deep.mode) == {'enable_thinking': True}
+    # 原生端点保留各家方言
+    native = resolve_reasoning_policy('glm', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4.7')
+    assert native.request_body == {'thinking': {'type': 'disabled'}}
 
 
 def test_legacy_provider_type_inference():

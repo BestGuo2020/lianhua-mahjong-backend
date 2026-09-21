@@ -1,7 +1,8 @@
 """房间限时（60 分钟）清理单测 —— 超过限时的房间自动解散
 
 规则（RoomSession.is_expired）：
-- 对局中（playing）绝不回收 → 等 _drive 在对局结束超时时自动释放
+- 对局中（playing）不参与 TTL 回收（长局不该被腰斩）→ 等 _drive 在对局结束超时时
+  自动释放；僵尸/卡死另走 sweep_stalled（看门狗，见 test_room_watchdog.py）
 - 非对局中且超过限时（deadline）→ 回收，与是否有人在座/在线无关
 
 直接操作注册表 + 回拨 deadline，无需真实服务。
@@ -42,11 +43,20 @@ def test_connected_room_expires_after_deadline(fresh_rooms):
 
 
 def test_playing_room_not_swept_past_deadline(fresh_rooms):
-    """对局中超过限时 → 清扫不回收（等 _drive 在对局结束自动释放）。"""
+    """对局中的房间不参与 TTL 回收（长局不该被 60 分钟腰斩）。
+
+    僵尸/卡死交给另一条通道：sweep_stalled（看门狗）。本房没有驱动任务
+    ⇒ 判为僵尸 ⇒ 被强制收尾，但**不被 TTL 回收**——两条通道职责不重叠。
+    """
     room = rooms.create('EXP4', mode='east', capacity=2)
     room.status = 'playing'
     _backdate(room, 1)
     assert rooms.sweep_expired() == []
+
+    # 新语义锚点：playing 不再是「无人管」，僵尸由 sweep_stalled 收尾。
+    assert rooms.sweep_stalled() == ['EXP4']
+    assert room.status == 'finished'
+    assert rooms.get('EXP4') is not None
 
 
 def test_finished_room_expires_after_deadline(fresh_rooms):

@@ -198,6 +198,8 @@ $env:PYTHONIOENCODING='utf-8'                                 # PowerShell
 | `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_DATABASE` | Supabase pooler 默认 | PostgreSQL 连接覆盖 |
 | `ROOM_MAX` | `4` | 本服务器最多同时存在的房间数（大厅「剩余房间」用） |
 | `ROOM_LIFETIME` | `3600` | 房间限时（秒）；非对局中超时自动解散，对局中等结束自动释放 |
+| `ROOM_MATCH_MAX` | `5400` | 单场对局硬上限（秒）；超过即由看门狗判定卡死并强制收尾 |
+| `ROOM_WATCHDOG_INTERVAL` | `30` | 僵尸/卡死房间的看门狗扫描间隔（秒）；`0` = 关闭（紧急开关） |
 | `DOCS_SHOW` | `False` | 是否暴露 `/docs` 接口文档 |
 | `LOG_LEVEL` | `INFO` | 日志级别（`DEBUG` 输出逐动作细节：出牌/碰/杠等） |
 | `LOG_DIR` | `logs` | 日志目录（滚动文件，已 gitignore） |

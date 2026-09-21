@@ -24,7 +24,14 @@ from pydantic import BaseModel, Field
 from app.api.deps import AuthenticatedUser, require_wakudemo_login
 from app.game.anime_characters import resolve_anime_character_id
 from app.game.manager import PLAY_PACE
-from app.game.room import RoomError, RoomSession, room_registry
+from app.game.room import (
+    RoomError,
+    RoomSession,
+    match_finished_of,
+    match_id_of,
+    match_phase_of,
+    room_registry,
+)
 from app.llm.config import (LLM_STYLES, default_provider_id,
                             llm_server_available, load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname
@@ -104,6 +111,11 @@ def _room_response(room: RoomSession) -> dict:
         'rulesetId': room.ruleset_id,
         'capacity': room.capacity,
         'status': room.status,
+        # 场次身份：客户端据此判断「房间里正进行的是不是我等的那一场」。
+        # matchId 是内存真源（会被下一场覆盖），本人那场以 WS rejoin_ok 的 matchId 为准。
+        'matchId': match_id_of(room),
+        'matchFinished': match_finished_of(room),
+        'phase': match_phase_of(room),
         'creatorSeat': room.creator_seat,
         'timeLimitSeconds': room.lifetime,  # 房间限时（前端静态提示用）
         'llmEnabled': room.llm_enabled,
@@ -189,6 +201,13 @@ def create_room(body: CreateRoomRequest,
     """
     if room_registry.find_room_by_player(user.player_id) is not None:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
+    room_registry.sweep_expired()
+    # 顺带收尾「任务已死」的僵尸对局房：否则它们既不参与 TTL 回收（playing 豁免）
+    # 又会把槽位占满，玩家看到的是 ROOM_LIMIT_REACHED 而实际一个活房间都没有。
+    # 这里在 REST 线程池里跑 ⇒ 不传 allow_cancel（卡死类交给事件循环的看门狗）。
+    room_registry.sweep_stalled()
+    # 收尾后 status 不再是 playing ⇒ 过期的那些随即被 TTL 通道回收（真正释放槽位）。
+    # 未过期的僵尸房变成普通 finished 房：座位上的人可重开或关闭，不再两头堵死。
     room_registry.sweep_expired()
     if room_registry.count() >= MAX_ROOMS:
         raise HTTPException(status_code=409, detail={'code': 'ROOM_LIMIT_REACHED'})

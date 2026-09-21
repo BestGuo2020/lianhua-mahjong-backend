@@ -181,6 +181,10 @@ class BloodFlowRoomSession:
         self._rejoin_attempts: dict[str, list[float]] = {}
         self._drive_task: Optional[asyncio.Task] = None
         self.round_result: Optional[dict] = None
+        # 本场开局时刻（看门狗 ROOM_MATCH_MAX 判据，对齐经典 RoomSession）；未开局为 None。
+        self.match_started_at: Optional[float] = None
+        # 强制收尾幂等闸（见 force_finish）。
+        self._forced_finishing = False
 
     # ── 生命周期（api/rooms.py 契约） ──
 
@@ -363,7 +367,39 @@ class BloodFlowRoomSession:
         self.engine = None
         self._hold_window_until = 0.0
         self._window_deadline_ms = 0
+        # 新一场：硬上限计时重新起算，并清掉上一场的强制收尾闸（对齐经典 start）。
+        self.match_started_at = time.monotonic()
+        self._forced_finishing = False
         self._drive_task = asyncio.ensure_future(self._drive())
+
+    # ── 强制收尾（看门狗）───────────────────────────────
+
+    def force_finish(self, reason: str = 'stalled', *, cancel_task: bool = True) -> bool:
+        """强制收尾当前场次，返回是否真的收尾了（幂等，非对局中返回 False）。
+
+        与经典 RoomSession.force_finish 同契约：**纯同步、绝不 await**；
+        cancel_task 只允许事件循环里的调用方传 True（Task.cancel 非线程安全）。
+        血流没有 match_finished 消息，终局靠 bf_snapshot.matchFinished 下发。
+        """
+        if self._forced_finishing or self.status != 'playing':
+            return False
+        self._forced_finishing = True
+        self.status = 'finished'
+        self.match_finished = True
+        if cancel_task and self._drive_task is not None and not self._drive_task.done():
+            self._drive_task.cancel()
+        # 对局已判死：在途 TTS 不再播（对齐经典）。
+        self._tts_match_generation += 1
+        self._cancel_tts_tasks_nowait()
+        self.broadcast_snapshot()
+        logger.bind(room_id=self.room_id).warning(
+            f"血流对局被强制收尾 reason={reason}")
+        return True
+
+    async def finalize_forced(self) -> None:
+        """血流房间不落库（无 match 记录）：善后只需按限时口径回收房间。"""
+        if self.is_past_deadline():
+            room_registry.remove(self.room_id)
 
     def set_reserved_seat(self, seat: int, provider_id: Optional[str],
                           style: Optional[str] = None) -> None:

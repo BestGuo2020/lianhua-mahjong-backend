@@ -209,6 +209,8 @@ async def test_disconnect_takeover_and_rejoin(server, fresh_rooms):
         ok = await read_until(a, 'rejoin_ok')
         seat = ok['seat']
         assert seat == 0
+        # 未开局：尚无场次身份（房间无 storage，match_id 保持 None）
+        assert ok['matchId'] is None
         async with httpx.AsyncClient(base_url=server['http']) as http:
             await http.post('/api/rooms/TEST4/start')
         # 等到第一次回合请求，证明对局已开始
@@ -224,11 +226,16 @@ async def test_disconnect_takeover_and_rejoin(server, fresh_rooms):
         await safe_close(a)
 
     # 正确重进码 → 恢复原座位 + 全量快照（自己的手牌完整、他人手牌隐藏）
+    room.match_id = 'm-ws-1'
     a2 = await websockets.asyncio.client.connect(ws_url(server['ws'], 'TEST4', codes['老赵']))
     try:
         ok2 = await read_until(a2, 'rejoin_ok')
         assert ok2['seat'] == seat and ok2['rejoin'] is True
+        # 本人参与的那场靠 rejoin_ok 锚定：REST 的 matchId 会被下一场覆盖，
+        # 而内存 match_id 是权威（本房无 storage，直接写内存态验证接线）。
+        assert ok2['matchId'] == 'm-ws-1'
         snap = await read_until(a2, 'state_snapshot')
+        assert snap['matchId'] == 'm-ws-1'
         own = snap['players'][seat]
         assert all(t is not None for t in own['hand']), '重连后应看到自己的完整手牌'
         other_seat = (seat + 1) % 4

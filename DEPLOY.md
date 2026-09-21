@@ -103,6 +103,23 @@ WakuDemo 跨站 Cookie 在部分浏览器会受第三方 Cookie 策略影响，�
 配置到 Uvicorn `FORWARDED_ALLOW_IPS`。无法可靠恢复客户端 IP 时，应在网关限流并设置
 `WAKUDEMO_LOGIN_RATE_LIMIT_PER_MINUTE=0`，不要盲目信任 `*`。
 
+### 单机 LLM 透传通道（无 CORS 的供应商）
+
+单机的大模型是**浏览器直连供应商**，而千问 Token Plan / Coding Plan 端点对预检
+（OPTIONS + Origin）直接 401、不带任何 `Access-Control-*` 头（2026-09-18 实测），
+网页无法直连，因此后端提供白名单透传：
+`POST /api/llm/relay/<upstream>/chat/completions`（实现见 `app/api/llm_relay.py`）。
+
+- 上游白名单在服务端：`LLM_RELAY_UPSTREAMS`（缺省含 `token-plan`）。客户端只能传 id，
+  **不能传 URL**，避免本端点变成 SSRF 跳板。
+- Key 由浏览器自带并原样透传给上游：服务端不保存、不写日志、不回显。
+- 前端 AI 设置里的「千问 Token Plan（经网关）」预置已指向该通道；玩家需要自己填
+  `sk-sp-` 开头的 Token Plan Key（套餐凭证与按量付费 `sk-` Key 不可混用）。
+- **反代这条路由必须关闭响应缓冲**（Nginx/OpenResty 加 `proxy_buffering off;`，
+  实现已回 `X-Accel-Buffering: no`）：否则 SSE 会被攒到结束才吐，前端 40s 决策预算
+  全被代理吃掉，表现为「决策超时」。
+- 单 IP 每分钟上限由 `LLM_RELAY_RATE_LIMIT_PER_MINUTE` 控制（缺省 600）。
+
 ## 5. 已知边界
 
 - 服务器必须能访问 `ghcr.io`（国内服务器可考虑给 `ghcr.io` 配加速，或改推腾讯云 TCR）。

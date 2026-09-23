@@ -155,12 +155,19 @@ class LLMPlayer(AIPlayer):
         self.requests += 1
         ids = [candidate['id'] for candidate in request['candidates']]
         system, user = build_prompt(self.config.style, request)
+        quick_policy = resolve_reasoning_policy(
+            getattr(self.config, 'provider_type', ''), self.config.base_url, self.config.model,
+            getattr(self.config, 'provider_id', ''))
         reasoning_policy = resolve_reasoning_policy(
             getattr(self.config, 'provider_type', ''), self.config.base_url, self.config.model,
             getattr(self.config, 'provider_id', ''), reasoning=True)
-        always_thinking = reasoning_policy.mode == 'always-on'
-        supports_reasoning = (reasoning_policy.mode == 'explicit-on' or always_thinking) \
-            and not is_reasoning_suppressed(self.config, reasoning_policy)
+        always_thinking = quick_policy.mode in ('always-on', 'reasoning-only')
+        # 百炼 Kimi K3 等没有可调强度，不能把普通请求误升为更短的深思请求。
+        adjustable = quick_policy.mode != reasoning_policy.mode or \
+            quick_policy.request_body != reasoning_policy.request_body
+        supports_reasoning = (reasoning_policy.mode in ('explicit-on', 'always-on')
+                              and adjustable
+                              and not is_reasoning_suppressed(self.config, reasoning_policy))
         use_reasoning = supports_reasoning and self.reasoning.admit(
             request, self.seat, self.reasoning.config.min_remaining_budget_ms)
         reasoning_status_active = use_reasoning

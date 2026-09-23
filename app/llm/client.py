@@ -205,7 +205,7 @@ async def _read_sse_response(response: httpx.Response,
 
 
 async def _call_once(cfg: LlmServerConfig, system: str, user: str,
-                     budget_s: Optional[float], max_tokens: int = 64,
+                     budget_s: Optional[float], max_tokens: Optional[int] = None,
                      strict_length: bool = True, attempt_no: int = 1,
                      reasoning: bool = False,
                      on_reasoning_progress: Optional[Callable[[], None]] = None) -> str:
@@ -232,36 +232,34 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     reasoning_policy = resolve_reasoning_policy(
         getattr(cfg, 'provider_type', ''), cfg.base_url, cfg.model,
         getattr(cfg, 'provider_id', ''), reasoning=reasoning)
-    always_thinking = reasoning_policy.mode == 'always-on'
+    always_thinking = reasoning_policy.mode in ('always-on', 'reasoning-only')
     model_name = (cfg.model or '').strip().lower().rsplit('/', 1)[-1]
     kimi_k3 = reasoning_policy.provider_type == 'kimi' \
         and re.match(r'^kimi-k3(?:[.-]|$)', model_name)
     kimi_k2_switchable = reasoning_policy.provider_type == 'kimi' \
         and re.match(r'^kimi-k2[.-](?:5|6)(?:[.-]|$)', model_name)
     glm_5_3_flash = reasoning_policy.provider_type == 'glm' \
-        and re.match(r'^glm-5\.3-flash(?:[.-]|$)', model_name)
+        and re.match(r'^glm-5\.3-flashx?(?:[.-]|$)', model_name)
     dialect = infer_provider_dialect(cfg.base_url)
     if reasoning_policy.provider_type == 'claude' \
             and re.match(r'^claude-sonnet-5(?:[.-]|$)', model_name):
         payload.pop('temperature', None)
         payload.pop('top_p', None)
-    if kimi_k3:
+    if kimi_k3 or (reasoning_policy.provider_type == 'kimi' and
+                   re.match(r'^(?:kimi-k2[.-]7-code|kimi-k2-thinking)(?:[.-]|$)', model_name)):
         payload.pop('temperature', None)
         payload.pop('top_p', None)
     relay_kimi_thinking = reasoning and kimi_k2_switchable and dialect != 'official'
     orca_long_reasoning = reasoning and dialect == 'orcarouter' \
         and reasoning_policy.provider_type in ('deepseek', 'qwen', 'kimi')
-    if orca_long_reasoning:
-        max_tokens = max(max_tokens, 65536)
-    elif relay_kimi_thinking:
-        max_tokens = max(max_tokens, 2048)
-    elif glm_5_3_flash:
-        max_tokens = max(max_tokens, 1024 if reasoning else 128 if dialect == 'official' else 512)
-    elif not reasoning and kimi_k3:
-        max_tokens = max(max_tokens, 128)
-    elif always_thinking:
-        max_tokens = max(max_tokens, 512)
     if reasoning:
+        max_tokens = max_tokens or 512
+        if orca_long_reasoning:
+            max_tokens = max(max_tokens, 65536)
+        elif relay_kimi_thinking:
+            max_tokens = max(max_tokens, 2048)
+        elif glm_5_3_flash:
+            max_tokens = max(max_tokens, 1024)
         max_tokens = adaptive_reasoning_budget(cfg, reasoning_policy, max_tokens)
     payload.update(reasoning_policy.request_body)
     # DashScope 上别家模型（glm / kimi / deepseek…）的原生思考参数无效，统一改用 enable_thinking。
@@ -269,10 +267,11 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         dashscope_body = dashscope_thinking_body(reasoning_policy.mode)
         if dashscope_body:
             payload.update(dashscope_body)
-    if reasoning and reasoning_policy.provider_type == 'openai':
-        payload['max_completion_tokens'] = max_tokens
-    else:
-        payload['max_tokens'] = max_tokens
+    if max_tokens is not None:
+        if reasoning and reasoning_policy.provider_type == 'openai':
+            payload['max_completion_tokens'] = max_tokens
+        else:
+            payload['max_tokens'] = max_tokens
     # DashScope 兼容模式：千问「JSON 模式 + 思考」同开时返回空正文
     # （finish=stop、content 与 reasoning_content 均为空），千问深思路径不带 response_format。
     qwen_deep_reasoning = reasoning and reasoning_policy.provider_type == 'qwen'
@@ -404,7 +403,7 @@ async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
         try:
             call = _call_once(
                 cfg, system, messages_http_user, budget_s=request_timeout,
-                max_tokens=512 if reasoning else 64,
+                max_tokens=512 if reasoning else None,
                 attempt_no=2 if error_for_retry is not None else 1,
                 reasoning=reasoning,
                 on_reasoning_progress=on_reasoning_progress)

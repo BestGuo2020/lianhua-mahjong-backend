@@ -1111,7 +1111,7 @@ class TestProviderRegistry:
             model='z-ai/glm-5.3-flash', provider_id='glm-orca', provider_type='custom')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'z-ai/glm-5.3-flash'
-        assert captured['max_tokens'] == 512
+        assert 'max_tokens' not in captured
         assert captured['reasoning_effort'] == 'low'
         assert captured['response_format'] == {'type': 'json_object'}
         assert 'thinking' not in captured
@@ -1167,7 +1167,7 @@ class TestProviderRegistry:
         assert run(request_llm_decision(
             cfg, 'system', 'user', ['A1'], reasoning=True)) == ('A1', '稳住')
         assert captured['max_tokens'] == 1024
-        assert captured['reasoning_effort'] == 'low'
+        assert captured['reasoning_effort'] == 'high'
         assert captured['response_format'] == {'type': 'json_object'}
         run(http.aclose())
 
@@ -1192,7 +1192,7 @@ class TestProviderRegistry:
             enabled=True, base_url='https://open.bigmodel.cn/api/paas/v4', api_key='sk-glm',
             model='glm-5.3-flash', provider_type='glm')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
-        assert captured['max_tokens'] == 128
+        assert 'max_tokens' not in captured
         assert captured['reasoning_effort'] == 'low'
         assert captured['response_format'] == {'type': 'json_object'}
         run(http.aclose())
@@ -1246,7 +1246,7 @@ class TestProviderRegistry:
             model='kimi/kimi-k3', provider_id='kimi-orca', provider_type='kimi')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'kimi/kimi-k3'
-        assert captured['max_tokens'] == 128
+        assert 'max_tokens' not in captured
         assert captured['reasoning_effort'] == 'low'
         assert 'thinking' not in captured
         assert 'temperature' not in captured
@@ -1903,3 +1903,85 @@ class TestMeta:
         assert 'drawing' in meta['stateVersion']
         assert meta['scores'] == [1000, 1000, 1000, 1000]
         assert len(meta['peers']) == 4
+
+
+@pytest.mark.parametrize(('model', 'reasoning', 'fields', 'absent'), [
+    ('glm-5.3', False, {'enable_thinking': True, 'reasoning_effort': 'low'},
+     ('max_tokens', 'thinking')),
+    ('glm-5.3', True, {'enable_thinking': True, 'reasoning_effort': 'high'},
+     ('thinking',)),
+    ('glm-4.6v', False, {'enable_thinking': False},
+     ('max_tokens', 'thinking', 'reasoning_effort')),
+    ('glm-4.6v', True, {'enable_thinking': True},
+     ('thinking', 'reasoning_effort')),
+    ('deepseek-v4-flash-0731', False,
+     {'enable_thinking': True, 'reasoning_effort': 'low'},
+     ('max_tokens', 'thinking')),
+    ('deepseek-v4-flash-0731', True,
+     {'enable_thinking': True, 'reasoning_effort': 'high'},
+     ('thinking',)),
+    ('kimi-k3', False, {'enable_thinking': True},
+     ('reasoning_effort', 'max_tokens', 'temperature', 'top_p')),
+    ('kimi-k2.7-code', False, {},
+     ('reasoning_effort', 'max_tokens', 'temperature', 'top_p')),
+])
+def test_dashscope_hosted_third_party_payloads(monkeypatch, model, reasoning, fields, absent):
+    import httpx
+    from app.llm.client import request_llm_decision
+    from app.llm.config import LlmServerConfig
+
+    captured = {}
+
+    async def handler(request: httpx.Request):
+        captured.update(json.loads(request.content))
+        thinking = reasoning or model != 'glm-4.6v'
+        return httpx.Response(200, json={'choices': [{
+            'message': {'content': '{"choice":"A1","message":"稳住"}',
+                        **({'reasoning_content': '内部思考'} if thinking else {})},
+            'finish_reason': 'stop',
+        }]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+    cfg = LlmServerConfig(
+        enabled=True, base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+        api_key='sk-test', model=model, provider_type='qwen')
+    assert run(request_llm_decision(cfg, 'system', 'user', ['A1'], reasoning=reasoning)) == ('A1', '稳住')
+    for key, value in fields.items():
+        assert captured[key] == value
+    for key in absent:
+        assert key not in captured
+    run(http.aclose())
+
+
+def test_dashscope_conditional_tier_only_when_adjustable(monkeypatch):
+    from app.llm.config import LlmServerConfig
+
+    calls = []
+
+    async def fake_decision(_cfg, _system, _user, _ids, **options):
+        calls.append(options['reasoning'])
+        return 'A1', '稳住。'
+
+    monkeypatch.setattr('app.game.llm_player.request_llm_decision', fake_decision)
+    for model, expected in [('kimi-k3', False), ('glm-5.3', True)]:
+        player = LLMPlayer(
+            delays={'turn': 0, 'after_kong': 0, 'claim': 0},
+            config=LlmServerConfig(
+                enabled=True,
+                base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+                api_key='sk-test', model=model, provider_type='qwen', style='稳健'),
+            seat=1,
+        )
+        admissions = []
+
+        def admit(*_args):
+            admissions.append(True)
+            return True
+
+        monkeypatch.setattr(player.reasoning, 'admit', admit)
+        ctx = turn_ctx(hand=['m3', 'm5', 'm6'], turnOrigin='draw')
+        ctx.wallCount = 12
+        assert run(player.request_turn(ctx))['kind'] == 'discard'
+        assert calls[-1] is expected
+        assert len(admissions) == (1 if expected else 0)

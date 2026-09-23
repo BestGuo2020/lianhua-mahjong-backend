@@ -38,7 +38,7 @@ def test_glm_5_3_flash_uses_official_and_orcarouter_dialects():
     relay = resolve_reasoning_policy(
         'custom', 'https://proxy.example.com/v1', 'z-ai/glm-5.3-flash', reasoning=True)
     assert official.mode == orca.mode == relay.mode == 'always-on'
-    assert official.request_body == {'reasoning_effort': 'low'}
+    assert official.request_body == {'reasoning_effort': 'high'}
     assert orca.request_body == {'reasoning_effort': 'medium'}
     assert relay.request_body == {'reasoning_effort': 'low'}
 
@@ -199,3 +199,99 @@ def test_legacy_provider_type_inference():
     # 能力矩阵外的千问老型号保持未知，不误报为可切换。
     assert resolve_reasoning_policy(
         'qwen', 'https://proxy.local/v1', 'qwen-long').mode == 'unknown'
+
+
+@pytest.mark.parametrize('model', [
+    'glm-4.5v', 'glm-4.6v', 'glm-4.6v-flash', 'glm-4.6v-flashx',
+])
+def test_dashscope_glm_vision_models_are_switchable(model):
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    quick = resolve_reasoning_policy('qwen', dash, model)
+    deep = resolve_reasoning_policy('qwen', dash, model, reasoning=True)
+    assert quick.provider_type == deep.provider_type == 'glm'
+    assert quick.mode == 'explicit-off'
+    assert deep.mode == 'explicit-on'
+    assert dashscope_thinking_body(quick.mode) == {'enable_thinking': False}
+    assert dashscope_thinking_body(deep.mode) == {'enable_thinking': True}
+
+
+@pytest.mark.parametrize('model', [
+    'glm-5', 'glm-5.1', 'glm-5.2', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx',
+])
+def test_dashscope_glm_low_quick_high_conditional(model):
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    quick = resolve_reasoning_policy('qwen', dash, model)
+    deep = resolve_reasoning_policy('qwen', dash, model, reasoning=True)
+    assert quick.provider_type == deep.provider_type == 'glm'
+    assert quick.request_body == {'reasoning_effort': 'low'}
+    assert deep.request_body == {'reasoning_effort': 'high'}
+    assert dashscope_thinking_body(quick.mode) == {'enable_thinking': True}
+
+
+@pytest.mark.parametrize('model', ['deepseek-v4-flash-0731', 'deepseek-v4-pro-0813'])
+def test_dashscope_deepseek_versions_support_low_and_high(model):
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    quick = resolve_reasoning_policy('qwen', dash, model)
+    deep = resolve_reasoning_policy('qwen', dash, model, reasoning=True)
+    assert quick.provider_type == deep.provider_type == 'deepseek'
+    assert quick.mode == deep.mode == 'explicit-on'
+    assert quick.request_body == {'reasoning_effort': 'low'}
+    assert deep.request_body == {'reasoning_effort': 'high'}
+
+
+def test_dashscope_thinking_only_models_avoid_unsupported_low_effort():
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    for model, provider, mode in [
+        ('deepseek-r1', 'deepseek', 'reasoning-only'),
+        ('kimi-k3', 'kimi', 'always-on'),
+        ('kimi-k2.7-code', 'kimi', 'reasoning-only'),
+        ('kimi-k2-thinking', 'kimi', 'reasoning-only'),
+        ('Moonshot-Kimi-K2-Instruct', 'kimi', 'naturally-off'),
+    ]:
+        policy = resolve_reasoning_policy('qwen', dash, model)
+        assert (policy.provider_type, policy.mode, policy.request_body) == (provider, mode, {})
+
+
+def test_dashscope_workspace_and_token_plan_relay_are_detected():
+    maas = 'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
+    relay = 'https://www.bestguo.top:58000/api/llm/relay/token-plan'
+    assert is_dashscope_endpoint(maas)
+    assert is_dashscope_endpoint(relay)
+    assert infer_provider_dialect(maas) == 'official'
+
+
+@pytest.mark.parametrize(('model', 'provider', 'mode'), [
+    ('glm-5', 'glm', 'explicit-on'), ('glm-4.5-air', 'glm', 'explicit-off'),
+    ('glm-5.1', 'glm', 'explicit-on'), ('glm-5.2', 'glm', 'explicit-on'),
+    ('glm-5.3', 'glm', 'always-on'), ('glm-4.5', 'glm', 'explicit-off'),
+    ('glm-4.6', 'glm', 'explicit-off'), ('glm-4.7', 'glm', 'explicit-off'),
+    ('deepseek-r1-distill-qwen-7b', 'deepseek', 'reasoning-only'),
+    ('deepseek-r1-distill-qwen-32b', 'deepseek', 'reasoning-only'),
+    ('deepseek-v4-flash-0731', 'deepseek', 'explicit-on'),
+    ('deepseek-r1', 'deepseek', 'reasoning-only'),
+    ('deepseek-v4-pro', 'deepseek', 'explicit-off'),
+    ('deepseek-r1-distill-qwen-14b', 'deepseek', 'reasoning-only'),
+    ('deepseek-v4-pro-0813', 'deepseek', 'explicit-on'),
+    ('deepseek-v3.1', 'deepseek', 'explicit-off'),
+    ('deepseek-v3.2', 'deepseek', 'explicit-off'),
+    ('deepseek-v4-flash', 'deepseek', 'explicit-off'),
+    ('kimi-k2.5', 'kimi', 'explicit-off'),
+    ('kimi-k2-thinking', 'kimi', 'reasoning-only'),
+    ('kimi-k2.7-code', 'kimi', 'reasoning-only'),
+    ('Moonshot-Kimi-K2-Instruct', 'kimi', 'naturally-off'),
+    ('kimi-k3', 'kimi', 'always-on'),
+])
+def test_all_screenshot_models_are_classified(model, provider, mode):
+    dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    policy = resolve_reasoning_policy('qwen', dash, model)
+    assert (policy.provider_type, policy.mode) == (provider, mode)
+
+
+@pytest.mark.parametrize('model', [
+    'glm-4.5v', 'glm-4.6v', 'glm-4.6v-flash', 'glm-4.6v-flashx',
+])
+def test_glm_vision_official_endpoint_uses_native_toggle(model):
+    quick = resolve_reasoning_policy('glm', 'https://api.z.ai/api/paas/v4', model)
+    deep = resolve_reasoning_policy('glm', 'https://api.z.ai/api/paas/v4', model, reasoning=True)
+    assert quick.request_body == {'thinking': {'type': 'disabled'}}
+    assert deep.request_body == {'thinking': {'type': 'enabled'}}

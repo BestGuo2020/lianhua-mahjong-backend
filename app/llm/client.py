@@ -245,8 +245,10 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             and re.match(r'^claude-sonnet-5(?:[.-]|$)', model_name):
         payload.pop('temperature', None)
         payload.pop('top_p', None)
-    if kimi_k3 or (reasoning_policy.provider_type == 'kimi' and
-                   re.match(r'^(?:kimi-k2[.-]7-code|kimi-k2-thinking)(?:[.-]|$)', model_name)):
+    if (kimi_k3 or (reasoning_policy.provider_type == 'kimi' and
+                    re.match(r'^(?:kimi-k2[.-]7-code|kimi-k2-thinking)(?:[.-]|$)', model_name))
+            or (reasoning_policy.provider_type == 'minimax' and
+                re.match(r'^minimax-m(?:1|2)(?:[.-]|$)', model_name))):
         payload.pop('temperature', None)
         payload.pop('top_p', None)
     relay_kimi_thinking = reasoning and kimi_k2_switchable and dialect != 'official'

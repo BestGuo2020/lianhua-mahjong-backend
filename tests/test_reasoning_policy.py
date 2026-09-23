@@ -280,6 +280,8 @@ def test_dashscope_workspace_and_token_plan_relay_are_detected():
     ('kimi-k2.7-code', 'kimi', 'reasoning-only'),
     ('Moonshot-Kimi-K2-Instruct', 'kimi', 'naturally-off'),
     ('kimi-k3', 'kimi', 'always-on'),
+    ('MiniMax-M2.5', 'minimax', 'reasoning-only'),
+    ('MiniMax-M2.1', 'minimax', 'reasoning-only'),
 ])
 def test_all_screenshot_models_are_classified(model, provider, mode):
     dash = 'https://dashscope.aliyuncs.com/compatible-mode/v1'

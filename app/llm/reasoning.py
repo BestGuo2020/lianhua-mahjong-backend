@@ -185,6 +185,8 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
             return _policy(kind, 'naturally-off', '该豆包型号按非思考模型调用')
         return _policy(kind, 'unknown', '无法确认该豆包接入点是否支持非思考模式')
     if kind == 'minimax':
+        if dashscope and re.match(r'^minimax-m2\.(?:1|5)(?:[.-]|$)', name):
+            return _policy(kind, 'reasoning-only', '百炼 MiniMax M2.1/M2.5 仅思考，未提供 low 强度档')
         if re.match(r'^minimax-m(?:1|2)(?:[.-]|$)', name):
             return _policy(kind, 'reasoning-only', 'MiniMax M1/M2 系列没有可靠关闭开关')
         if re.match(r'^minimax-(?:text|01)', name):

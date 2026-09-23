@@ -1964,7 +1964,8 @@ def test_dashscope_conditional_tier_only_when_adjustable(monkeypatch):
         return 'A1', '稳住。'
 
     monkeypatch.setattr('app.game.llm_player.request_llm_decision', fake_decision)
-    for model, expected in [('kimi-k3', False), ('glm-5.3', True)]:
+    for model, expected in [('kimi-k3', False), ('MiniMax-M2.5', False),
+                            ('MiniMax-M2.1', False), ('glm-5.3', True)]:
         player = LLMPlayer(
             delays={'turn': 0, 'after_kong': 0, 'claim': 0},
             config=LlmServerConfig(
@@ -1985,3 +1986,32 @@ def test_dashscope_conditional_tier_only_when_adjustable(monkeypatch):
         assert run(player.request_turn(ctx))['kind'] == 'discard'
         assert calls[-1] is expected
         assert len(admissions) == (1 if expected else 0)
+
+
+@pytest.mark.parametrize('model', ['MiniMax-M2.5', 'MiniMax-M2.1'])
+def test_dashscope_minimax_m2_models_send_supported_fields(monkeypatch, model):
+    import httpx
+    from app.llm.client import request_llm_decision
+    from app.llm.config import LlmServerConfig
+
+    captured = {}
+
+    async def handler(request: httpx.Request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{
+            'message': {'reasoning_content': '只供内部推理',
+                        'content': '{"choice":"A1","message":"稳住"}'},
+            'finish_reason': 'stop',
+        }]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+    cfg = LlmServerConfig(
+        enabled=True, base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+        api_key='sk-test', model=model, provider_type='qwen')
+    assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+    assert captured['model'] == model
+    for key in ('temperature', 'top_p', 'thinking', 'enable_thinking',
+                'reasoning_effort', 'response_format', 'max_tokens'):
+        assert key not in captured
+    run(http.aclose())

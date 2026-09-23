@@ -12,8 +12,9 @@ import json
 from typing import Optional
 
 from app.core.blood_flow.ai import _exposure_visible_tiles
-from app.core.blood_flow.config import (BLOOD_FLOW_AI, BLOOD_FLOW_CONFIG,
-                                        BLOOD_FLOW_KONG_VALUE)
+from app.core.blood_flow.config import (BLOOD_FLOW_LLM_AI,
+                                        BLOOD_FLOW_CONFIG, BLOOD_FLOW_KONG_VALUE,
+                                        BloodFlowAiConfig)
 from app.core.blood_flow.kong_value import kong_candidate_value
 from app.core.lotus_rules import chi_options as lotus_chi_options
 from app.core.lotus_rules import waiting_tiles as lotus_waiting_tiles
@@ -48,7 +49,9 @@ def _tile_name(tile: str) -> str:
     return tile_name(tile)
 
 
-def _risk_profiles_with_seats(view: dict) -> list[tuple[int, object]]:
+def _risk_profiles_with_seats(
+        view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI,
+) -> list[tuple[int, object]]:
     """(绝对座位, 风险档案) 列表；lotus-classic 与 'off' 开关下均为空。
 
     只用其他座位的牌河 / 副露 / 已胡次数 / 锁手（公共信息），不含任何对手暗手。
@@ -56,16 +59,18 @@ def _risk_profiles_with_seats(view: dict) -> list[tuple[int, object]]:
     if _is_classic(view):
         return []
     from app.core.blood_flow.ai import blood_flow_opponent_risk, _profiles_of
-    rows = blood_flow_opponent_risk(view, BLOOD_FLOW_AI)
+    rows = blood_flow_opponent_risk(view, config)
     return [(row['seat'], profile) for row, profile in zip(rows, _profiles_of(rows))]
 
 
-def _risk_profiles(view: dict) -> list:
+def _risk_profiles(
+        view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI,
+) -> list:
     """对手牌型风险的公共信息输入：只取其他座位的牌河 / 副露 / 已胡次数 / 锁手。
 
     血流专用（本模块只服务血流）；``lotus-classic`` 无普通点炮 —— 恒不产生风险定价。
     """
-    return [profile for _seat, profile in _risk_profiles_with_seats(view)]
+    return [profile for _seat, profile in _risk_profiles_with_seats(view, config)]
 
 
 def _is_classic(view: dict) -> bool:
@@ -81,26 +86,62 @@ def protected_discards(view: dict) -> set[str]:
     return set(view.get('jokers', []))
 
 
-def candidate_actions(view: dict) -> list[dict]:
-    """候选动作：与前端 ``bloodFlowAiActions(view, BLOOD_FLOW_AI, defense)`` 同源。
+def candidate_actions(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> list[dict]:
+    """候选动作：与前端 ``bloodFlowAiActions(view, config, defense)`` 同源。
 
     锁手不动；未锁手时先按血流规则过滤受保护弃牌（全保护时兜底保留），再套兜/弃政策的
     候选层硬约束（v3：兜牌时撤掉全部吃碰杠、弃牌只留放炮成本最小档；两个出口不受限）。
     引擎侧 ``decide_blood_flow_action_ev`` 与 LLM 候选共用这一份。
     """
     from app.core.blood_flow.ai import blood_flow_ai_actions
-    return blood_flow_ai_actions(view, BLOOD_FLOW_AI)
+    return blood_flow_ai_actions(view, config)
+
+
+def _big_hand_route_advice(view: dict, config: BloodFlowAiConfig) -> Optional[dict]:
+    if not config.route_advice_only or config.big_hand_route.mode != 'llm':
+        return None
+    seat = view['seat']
+    if view['public']['seats'][seat]['locked']:
+        return None
+    window = view.get('window') or {}
+    source = window.get('source') or {}
+    if (view.get('wallCount', 0) <= 0 and window.get('kind') == 'turn'
+            and source.get('kind') == 'draw' and source.get('seat') == seat
+            and any(a.get('kind') == 'win' for a in view.get('ownActions') or [])):
+        return None
+    from app.core.blood_flow.big_hand_route import detect_big_hand_route
+    route = detect_big_hand_route(
+        view['players'][seat].get('hand') or [],
+        view['players'][seat].get('melds') or [],
+        view.get('jokers') or [], config.big_hand_route)
+    if route is None:
+        return None
+
+    def display_need(value: str) -> str:
+        try:
+            return _tile_name(value)
+        except (KeyError, TypeError):
+            return value
+
+    return {
+        'id': route['id'], 'label': route['label'], 'weight': route['weight'],
+        'progress': route['progress'], 'need': [display_need(value) for value in route['need']],
+        'keepers': [_tile_name(tile) for tile in route['keepers']],
+        'naturalOnly': route['naturalOnly'], 'claims': route['claims'],
+        **({'mainSuit': route['mainSuit']} if route.get('mainSuit') else {}),
+    }
 
 
 def build_blood_flow_candidates(view: dict, request_id: str,
                                 suggestion: Optional[dict] = None,
-                                ev_by_key: Optional[dict] = None) -> dict:
+                                ev_by_key: Optional[dict] = None,
+                                config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> dict:
     """构建候选。suggestion = decide_blood_flow_action_ev 的结果（None 则退化为首个候选）。
 
     ev_by_key: {'win': {...}, 'discard:3': {'reform': {...}}, 'pass': {...}, ...} 由
     blood_flow_ev_context 派生，注入 features['ev']。
     """
-    actions = candidate_actions(view)
+    actions = candidate_actions(view, config)
     seat = view['seat']
     hand = view['players'][seat]['hand']
     melds = view['players'][seat]['melds']
@@ -108,7 +149,8 @@ def build_blood_flow_candidates(view: dict, request_id: str,
     window = view.get('window')
     own_score = view.get('ownScore')
     chi_actions = [a for a in actions if a['kind'] == 'chi']
-    profiles = _risk_profiles(view)
+    profiles = _risk_profiles(view, config)
+    route_advice = _big_hand_route_advice(view, config)
     visible_tiles = _visible_tiles(view)
     # 风险定价与本地 EV 同源：用含本家暗手的可见牌口径（前端 input.visibleTiles）。
     exposure_tiles = _exposure_visible_tiles(view)
@@ -144,7 +186,7 @@ def build_blood_flow_candidates(view: dict, request_id: str,
             features['ev'] = ev_by_key[key]
         # 开杠价值（第 3 步）：杠候选带上"杠收益 − 防守风险 − 自手牌型损失"的拆解，
         # 让模型看得到这一杠要拆掉什么（engineSuggestion 已经按同一口径算过）。
-        kong_value = kong_feature(view, action)
+        kong_value = kong_feature(view, action, config)
         if kong_value is not None:
             features['kongValue'] = kong_value
         candidates.append({
@@ -162,6 +204,7 @@ def build_blood_flow_candidates(view: dict, request_id: str,
         'candidates': candidates,
         'engineSuggestion': suggestion_id or (candidates[0]['id'] if candidates else None),
         'ruleVersion': BLOOD_FLOW_CONFIG.version,
+        'bigHandRoute': route_advice,
     }
 
 
@@ -206,7 +249,8 @@ def _base_features(view: dict, action: dict) -> dict:
     return features
 
 
-def kong_feature(view: dict, action: dict) -> Optional[dict]:
+def kong_feature(view: dict, action: dict,
+                 config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> Optional[dict]:
     """杠候选的开杠价值特征（第 3 步，对齐前端 bloodFlowDecisionInput 的 features.kongValue）。
 
     ``杠收益 − 防守风险 − 自手牌型损失 = net``：net ≤ 0 表示这一杠会拆掉自己的七对/豪华七对、
@@ -230,7 +274,7 @@ def kong_feature(view: dict, action: dict) -> Optional[dict]:
         kind=kind, hand=list(hand), melds=list(melds), jokers=list(view.get('jokers') or []),
         tile=tile, meld_index=action.get('meldIndex'),
         public_tiles=_visible_tiles(view),
-        config=getattr(BLOOD_FLOW_AI, 'kong_value', BLOOD_FLOW_KONG_VALUE))
+        config=getattr(config, 'kong_value', BLOOD_FLOW_KONG_VALUE))
     loss = value['selfLoss']
     feature = {
         'gain': round(value['gain']), 'risk': round(value['risk']),
@@ -243,9 +287,10 @@ def kong_feature(view: dict, action: dict) -> Optional[dict]:
     return feature
 
 
-def validate_blood_flow_action(view: dict, action: dict) -> bool:
+def validate_blood_flow_action(view: dict, action: dict,
+                               config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> bool:
     """模型输出动作必须落在当前窗口的合法候选中（执行前复核；与引擎同口径的整值相等）。"""
-    return any(a == action for a in candidate_actions(view))
+    return any(a == action for a in candidate_actions(view, config))
 
 
 def blood_flow_prompt_rules() -> str:
@@ -283,17 +328,18 @@ def blood_flow_prompt_rules() -> str:
             '不要因为缺少选项而报错。')
 
 
-def ev_features_for(view: dict) -> dict:
+def ev_features_for(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> dict:
     """EV 特征注入表（features['ev']）：与本地 EV 决策同源（blood_flow_ev_context）。"""
     from app.core.blood_flow.ai import blood_flow_ev_context
-    ctx = blood_flow_ev_context(view)
+    ctx = blood_flow_ev_context(view, config)
     ev_by_key: dict[str, dict] = {}
     if ctx['winOffered']:
-        declined = bool(view.get('ownScore') and ctx['potentialTotal'] >= 2.0
+        declined = bool(view.get('ownScore') and ctx['potentialTotal'] >= config.potential_floor
                         and view['ownScore']['paymentPerPayer'] < ctx['floor'])
         ev_by_key['win'] = {'win': {
             'immediateTotal': ctx['immediateTotal'], 'lockedChain': round(ctx['chainAfterWin']),
             'floor': ctx['floor'], 'floorStage': ctx['floorStage'],
+            **({'floorWaived': True} if ctx.get('floorWaived') else {}),
             **({'declinedReason': '、'.join(
                 BLOOD_FLOW_CONFIG.patterns[d['id']].label for d in ctx['topDirections']) or '牌型潜力'}
                 if declined else {}),
@@ -317,13 +363,15 @@ _STYLE_SPEECH_GUIDE = {
 }
 
 
-def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, str]:
+def build_blood_flow_prompt(style: str, view: dict, built: dict,
+                            config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> tuple[str, str]:
     """血流决策提示词：system（人设 + 血流出牌 + EV 依据 + 可覆盖要理由）+ user（数据 JSON）。"""
     system = (
         f'你是广东麻将桌上的牌友，风格：{style}。\n'
         '你的任务只有一件事：从候选动作列表中选择一个编号，并输出一句 ≤16 字的牌桌台词。\n'
         f'{_STYLE_SPEECH_GUIDE.get(style, _STYLE_SPEECH_GUIDE["稳健"])}\n'
         '候选动作均已按血流规则校验合法；规则摘要与候选特征是唯一权威事实。\n'
+        '若提供 bigHandRoute，它只是路线建议，候选仍包含所有已提供的合法动作。\n'
         'engineSuggestion 是本地期望收益模型的贪婪建议，可以覆盖它来表现自己的性格与判断，'
         '但覆盖时 message 必须简述理由；采纳时可留空短句。\n'
         'features.ev 只是期望估算（封顶 128 倍/人、自摸 2 倍×3 家、锁手连锁、首胡门槛、改张/单吊任意听、'
@@ -335,7 +383,7 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, s
     seat = view['seat']
     player = view['players'][seat]
     from app.core.blood_flow.ai import blood_flow_defense_policy, blood_flow_known_wins
-    defense = blood_flow_defense_policy(view, BLOOD_FLOW_AI)
+    defense = blood_flow_defense_policy(view, config)
     user_payload = {
         'ruleSummary': blood_flow_prompt_rules(),
         'requestId': built['requestId'],
@@ -356,7 +404,7 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, s
         # 顶层对手风险档（与 TS bloodFlowDecisionPrompt 同形状）：只保留有信号的对手，
         # 无信号时是空数组（字段始终存在）。数据源与候选级 features.opponentRisk 同源。
         'opponentRisk': [{'seat': seat, 'tier': profile.tier, 'signals': list(profile.signals)}
-                         for seat, profile in _risk_profiles_with_seats(view)
+                         for seat, profile in _risk_profiles_with_seats(view, config)
                          if profile.tier > 0],
         # 对手已公开的番型（谁已胡过十三幺/九莲等，玩家视角本就公开）——对齐前端
         # bloodFlowDecisionPrompt 的 opponentPatterns。
@@ -370,9 +418,10 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict) -> tuple[str, s
             'ownAnyWaitReachable': defense['own'].any_wait_reachable,
             'ownCeiling': defense['own'].ceiling_multiplier,
             # true = 候选已在引擎侧收窄（吃碰杠已撤、弃牌只剩安全档），模型只能在此范围内选择。
-            'restricted': defense['result'].mode == 'fold' and BLOOD_FLOW_AI.defense.mode == 'hard',
+            'restricted': defense['result'].mode == 'fold' and config.defense.mode == 'hard',
         },
         'engineSuggestion': built['engineSuggestion'],
+        **({'bigHandRoute': built['bigHandRoute']} if built.get('bigHandRoute') else {}),
         'candidates': [{
             'id': c['id'], 'label': c['label'], 'features': c['features'],
             'summary': _candidate_summary(c),

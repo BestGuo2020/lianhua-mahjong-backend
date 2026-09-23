@@ -1,15 +1,17 @@
 """血流本地 AI 贪婪 EV 策略 —— 翻译自前端 patternPotentials.ts / evContext.ts / ai.ts 的 decideBloodFlowActionEv。
 
 view 为前端 BloodFlowSeatView 同构 dict（room._seat_view 输出）。
-弃牌排序 v1 沿用后端 lotus_ai.decide_turn（未注入番型潜力/放炮成本回调，见验收页口径）。
+EV 决策、source-v2 收益预测和大牌路线策略与前端 bloodFlow AI 保持同口径。
 """
 
-from functools import cmp_to_key
+from functools import cmp_to_key, lru_cache
 from typing import Callable, Optional
 
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
 from app.core.lotus_ai import decide_turn as lotus_decide_turn
 from app.core.lotus_rules import waiting_tiles as lotus_waiting_tiles
+from app.core.blood_flow.evaluate import evaluate_win
+from app.core.blood_flow.types import WinEvaluationInput
 from app.core.opponent_pattern_risk import (OPPONENT_RISK, OpponentRiskProfile,
                                             max_opponent_risk_tier,
                                             opponent_pattern_exposure,
@@ -21,6 +23,7 @@ from .config import (BLOOD_FLOW_AI, BLOOD_FLOW_CONFIG, BLOOD_FLOW_DEFENSE,
                      BLOOD_FLOW_KONG_VALUE, BloodFlowAiConfig, KongValueConfig)
 from .defense_policy import decide_defense_policy, own_hand_facts
 from .kong_value import kong_candidate_value
+from .big_hand_route import narrow_actions_to_route
 
 HONORS: tuple[str, ...] = ('east', 'south', 'west', 'north', 'red', 'green', 'white')
 DRAGONS: tuple[str, ...] = ('red', 'green', 'white')
@@ -437,14 +440,120 @@ def _remaining_count(tile: str, visible: list[str]) -> int:
     return max(0, 4 - visible.count(tile))
 
 
-def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
-                 visible: list[str], wall_count: int, model: str = 'off') -> float:
+def _forecast_meld_key(melds: list) -> tuple:
+    result = []
+    for meld in melds:
+        if isinstance(meld, dict):
+            field = meld.get
+        else:
+            field = lambda name, default=None: getattr(meld, name, default)
+        result.append((field('type', ''), field('tile', ''),
+                       tuple(field('tiles', []) or []), bool(field('windKong', False))))
+    return tuple(result)
+
+
+@lru_cache(maxsize=20_000)
+def _canonical_forecast_win_income(concealed: tuple[str, ...], meld_key: tuple,
+                                   jokers: tuple[str, ...], winning_tile: str,
+                                   source: str) -> float:
+    melds = tuple({
+        'type': kind, 'tile': tile, 'tiles': list(tiles),
+        **({'windKong': True} if wind_kong else {}),
+    } for kind, tile, tiles, wind_kong in meld_key)
+    evaluation = evaluate_win(WinEvaluationInput(
+        concealed=concealed, melds=melds, winning_tile=winning_tile,
+        source=source, jokers=jokers, opening=None,
+    ), BLOOD_FLOW_CONFIG)
+    if evaluation is None:
+        return 0.0
+    payers = 3 if source in ('self-draw', 'kong-bloom') else 1
+    return float(evaluation.score.payment_per_payer * payers)
+
+
+def forecast_win_income(concealed: list[str], melds: list[dict], jokers: list[str],
+                        winning_tile: str, source: str) -> float:
+    """Gross income from the canonical scorer for one physical winning tile."""
+    return _canonical_forecast_win_income(
+        tuple(concealed), _forecast_meld_key(melds), tuple(jokers), winning_tile, source)
+
+
+def unseen_counts(visible: list[str]) -> list[tuple[str, int]]:
+    return [(tile, max(0, 4 - visible.count(tile))) for tile in TILE_TYPES]
+
+
+def own_draw_opportunities(wall: int, horizon: int, offset: int = 4) -> int:
+    """Normal-turn opportunities before the horizon-th own draw is passed."""
+    if wall < offset or horizon <= 0:
+        return 0
+    return min(horizon, 1 + (wall - offset) // 4)
+
+
+def normal_opportunities(wall: int, horizon: int, offset: int = 4) -> dict:
+    if wall <= 0 or horizon <= 0:
+        return {'own': 0, 'opponent': 0}
+    own = own_draw_opportunities(wall, horizon, offset)
+    consumed = max(0, min(wall, offset + 4 * horizon - 1))
+    return {'own': own, 'opponent': max(0, consumed - own)}
+
+
+def forecast_source_components(hand: list[str], melds: list[dict], jokers: list[str],
+                               visible: list[str], wall: int, horizon: int,
+                               offset: int = 4) -> dict:
+    counts = unseen_counts(visible)
+    unseen = sum(count for _tile, count in counts)
+    opportunities = normal_opportunities(wall, horizon, offset)
+    waits = set(waiting_tiles_cached(hand, len(melds), jokers))
+    self_per_draw = 0.0
+    ron_per_discard = 0.0
+    if (opportunities['own'] or opportunities['opponent']) and unseen:
+        for tile, count in counts:
+            if not count or tile not in waits:
+                continue
+            self_per_draw += count / unseen * forecast_win_income(
+                hand, melds, jokers, tile, 'self-draw')
+            ron_per_discard += count / unseen * forecast_win_income(
+                hand, melds, jokers, tile, 'discard')
+    return {
+        **opportunities,
+        'selfPerDraw': self_per_draw,
+        'ronPerDiscard': ron_per_discard,
+    }
+
+
+def forecast_calibrated_income(hand: list[str], melds: list[dict], jokers: list[str],
+                               visible: list[str], wall: int, horizon: int,
+                               offset: int, calibration) -> float:
+    components = forecast_source_components(hand, melds, jokers, visible, wall, horizon, offset)
+    own = min(horizon, wall, components['own'] * calibration.draw_scale)
+    discards = components['opponent'] * calibration.discard_scale
+    return (own * components['selfPerDraw'] * calibration.self_yield
+            + discards * components['ronPerDiscard'] * calibration.ron_yield)
+
+
+def forecast_self_draw_income(hand: list[str], melds: list[dict], jokers: list[str],
+                              visible: list[str], wall: int, horizon: int,
+                              offset: int = 4) -> float:
+    draws = own_draw_opportunities(wall, horizon, offset)
+    if not draws:
+        return 0.0
+    counts = unseen_counts(visible)
+    unseen = sum(count for _tile, count in counts)
+    if not unseen:
+        return 0.0
+    per_draw = sum(count / unseen * forecast_win_income(
+        hand, melds, jokers, tile, 'self-draw') for tile, count in counts if count)
+    return min(draws, unseen) * per_draw
+
+
+def _chain_ev_legacy(hand: list[str], melds: list[dict], jokers: list[str],
+                     visible: list[str], wall_count: int, model: str,
+                     config: BloodFlowAiConfig) -> float:
     if not hand:
         return 0.0
     waits = waiting_tiles_cached(hand, len(melds), jokers)
     if not waits:
         return 0.0
-    chain_factor = min(1.0, BLOOD_FLOW_AI.chain_horizon / max(1, wall_count / 4))
+    chain_factor = min(1.0, config.chain_horizon / max(1, wall_count / 4))
     total = 0.0
     for tile in waits:
         remaining = _remaining_count(tile, visible)
@@ -452,10 +561,26 @@ def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
             continue
         self_income = estimate_win_income([*hand, tile], melds, jokers, 'self-draw', model)
         discard_income = estimate_win_income([*hand, tile], melds, jokers, 'discard', model)
-        average = (BLOOD_FLOW_AI.self_draw_weight * self_income['total'] + discard_income['total']) \
-            / (BLOOD_FLOW_AI.self_draw_weight + 1)
+        average = (config.self_draw_weight * self_income['total'] + discard_income['total']) \
+            / (config.self_draw_weight + 1)
         total += remaining * average * chain_factor
     return total
+
+
+def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
+                 visible: list[str], wall_count: int, model: str = 'off',
+                 config: BloodFlowAiConfig = BLOOD_FLOW_AI, offset: int = 4) -> float:
+    if wall_count <= 0:
+        return 0.0
+    if config.chain_forecast == 'source-v2' and config.opportunity_calibration is not None:
+        return forecast_calibrated_income(
+            hand, melds, jokers, visible, wall_count, config.chain_horizon,
+            offset, config.opportunity_calibration)
+    if config.chain_forecast == 'self-draw-v1':
+        return forecast_self_draw_income(
+            hand, melds, jokers, visible, wall_count, config.chain_horizon, offset)
+    return _chain_ev_legacy(hand, melds, jokers, visible, wall_count, model, config)
+
 
 
 def is_any_tile_wait(waits: list[str]) -> bool:
@@ -694,6 +819,28 @@ def _apply_defense_constraint(view: dict, actions: list[dict], config: BloodFlow
 
 # ── EV 上下文与决策 ──
 
+def _is_last_opportunity_ron(view: dict, config: BloodFlowAiConfig) -> bool:
+    if not config.win_opportunity_guards:
+        return False
+    seat = view['seat']
+    if view['public']['seats'][seat]['locked']:
+        return False
+    window = view.get('window') or {}
+    source = window.get('source') or {}
+    score = view.get('ownScore') or {}
+    actions = view.get('ownActions') or []
+    if (window.get('kind') == 'turn' or source.get('kind') != 'discard'
+            or source.get('seat') == seat or score.get('source') != 'discard'
+            or score.get('paymentPerPayer', 0) <= 0
+            or view.get('wallCount', 0) > config.late_game_wall_count
+            or not any(action.get('kind') == 'win' for action in actions)
+            or any(action.get('kind') not in ('win', 'pass') for action in actions)):
+        return False
+    players = view.get('players') or []
+    offset = ((seat - source.get('seat', seat) + len(players)) % max(1, len(players))) or 4
+    return own_draw_opportunities(view.get('wallCount', 0), 2, offset) <= 1
+
+
 def first_win_floor(wall_count: int, config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> int:
     if wall_count <= config.late_game_wall_count:
         return config.first_win_floor_late
@@ -738,9 +885,19 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
     melds = player.get('melds') or []
     jokers = list(view.get('jokers') or [])
     visible = _visible_tiles(view)
+    forecast_visible = _exposure_visible_tiles(view)
     wall_count = view.get('wallCount', 0)
     drawn_index = player.get('drawnTileIndex', -1)
     window = view.get('window')
+    source = (window or {}).get('source') or {}
+    source_seat = source.get('seat', seat)
+    player_count = max(1, len(view.get('players') or []))
+    draw_offset = ((seat - source_seat + player_count) % player_count) or player_count
+
+    def chain(tiles: list[str], offset: int = draw_offset) -> float:
+        chain_visible = forecast_visible if config.chain_forecast != 'legacy' else visible
+        return chain_ev_est(tiles, melds, jokers, chain_visible, wall_count,
+                            config.seven_pairs_model, config, offset)
     own_actions = view.get('ownActions') or []
     win_offered = any(a['kind'] == 'win' for a in own_actions)
     score = view.get('ownScore')
@@ -748,10 +905,10 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
     immediate_total = (score or {}).get('paymentPerPayer', 0) * payers
     locked_hand = [t for i, t in enumerate(hand) if i != drawn_index] \
         if (window and window.get('kind') == 'turn' and drawn_index >= 0) else list(hand)
-    chain_after_win = chain_ev_est(locked_hand, melds, jokers, visible, wall_count,
-                                   config.seven_pairs_model) if win_offered else 0.0
+    chain_after_win = chain(locked_hand) if win_offered else 0.0
     win_ev = immediate_total + chain_after_win
-    floor = first_win_floor(wall_count, config)
+    floor_waived = _is_last_opportunity_ron(view, config)
+    floor = 0 if floor_waived else first_win_floor(wall_count, config)
     floor_stage = 'late' if wall_count <= config.late_game_wall_count else \
         'early' if wall_count > config.early_game_wall_count else 'mid'
     potential_total = pattern_potential_total(locked_hand, melds, jokers, config.seven_pairs_model)
@@ -771,7 +928,7 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
                 continue
             reform_candidates.append({
                 'index': action['index'], 'tile': hand[action['index']],
-                'ev': chain_ev_est(after, melds, jokers, visible, wall_count, config.seven_pairs_model),
+                'ev': chain(after),
                 'anyWait': len(waits) >= len(TILE_TYPES), 'waitCount': len(waits),
                 'patterns': [BLOOD_FLOW_CONFIG.patterns[d['id']].label
                              for d in sorted(pattern_potentials(after, melds, jokers, config.seven_pairs_model),
@@ -785,7 +942,7 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
         kong_fee = BLOOD_FLOW_CONFIG.base_points * BLOOD_FLOW_CONFIG.kong_payments['added']
         rob_ev = {
             'winEv': win_ev,
-            'passEv': -kong_fee + chain_ev_est(hand, melds, jokers, visible, wall_count, config.seven_pairs_model)
+            'passEv': -kong_fee + chain(hand, draw_offset + 1)
             + pattern_potential_ev(hand, melds, jokers, wall_count, config.seven_pairs_model),
         }
 
@@ -793,7 +950,7 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
         'locked': locked, 'wallCount': wall_count, 'drawnIndex': drawn_index,
         'hand': hand, 'melds': melds, 'jokers': jokers, 'winOffered': win_offered,
         'immediateTotal': immediate_total, 'chainAfterWin': chain_after_win, 'winEv': win_ev,
-        'floor': floor, 'floorStage': floor_stage, 'potentialTotal': potential_total,
+        'floor': floor, 'floorWaived': floor_waived, 'floorStage': floor_stage, 'potentialTotal': potential_total,
         'topDirections': top_directions, 'developEv': develop_ev,
         'reformCandidates': reform_candidates, 'robEv': rob_ev,
     }
@@ -831,6 +988,49 @@ def blood_flow_ai_actions(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI,
     return _apply_defense_constraint(view, _drop_dominated_peng(legal), config, defense)
 
 
+def _is_final_self_draw_win(view: dict) -> bool:
+    window = view.get('window') or {}
+    source = window.get('source') or {}
+    return (view.get('wallCount', 0) <= 0 and window.get('kind') == 'turn'
+            and source.get('kind') == 'draw' and source.get('seat') == view.get('seat')
+            and any(action.get('kind') == 'win' for action in view.get('ownActions') or []))
+
+
+def narrow_routes_for_bot(view: dict, actions: list[dict],
+                          config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> dict:
+    """Apply the route commitment only to profiles configured for ordinary bots."""
+    route_config = config.big_hand_route
+    if _is_final_self_draw_win(view) or route_config.mode not in ('bot', 'all'):
+        return {'route': None, 'actions': actions, 'collapsed': False}
+    seat = view['seat']
+    player = view['players'][seat]
+    opponents = [p.get('score', 0) for p in view.get('players', []) if p.get('seat') != seat]
+    top_score = max(opponents, default=player.get('score', 0))
+    source = ((view.get('window') or {}).get('source') or {})
+    plan = narrow_actions_to_route(
+        player.get('hand') or [], player.get('melds') or [], view.get('jokers') or [], actions,
+        config=route_config, base_points=BLOOD_FLOW_CONFIG.base_points,
+        immediate_win_payment=(view.get('ownScore') or {}).get('paymentPerPayer', 0),
+        wall_count=view.get('wallCount'),
+        score_deficit=max(0, top_score - player.get('score', 0)),
+        claimed_tile=source.get('tile') if source.get('kind') == 'discard' else None,
+    )
+    if (config.route_opportunity_guard and plan['collapsed']
+            and not view['public']['seats'][seat]['locked']
+            and (view.get('window') or {}).get('kind') == 'turn'
+            and source.get('kind') == 'draw'
+            and any(action.get('kind') == 'win' for action in actions)
+            and not any(action.get('kind') == 'win' for action in plan['actions'])):
+        wildcards = {*view.get('jokers', []), 'white'}
+        held = sum(tile in wildcards for tile in player.get('hand') or [])
+        wall_floor = (route_config.min_wall_for_commit_with_jokers
+                      if held >= route_config.joker_relief_count
+                      else route_config.min_wall_for_commit)
+        if view.get('wallCount', 0) < wall_floor:
+            return {**plan, 'actions': actions, 'collapsed': False}
+    return plan
+
+
 def kong_evaluator_for(config: BloodFlowAiConfig = BLOOD_FLOW_AI):
     """开杠价值钩子（第 3 步）：注入给 lotus_ai 的 decide_turn / decide_claim（对齐前端 kongEvaluatorFor）。
 
@@ -865,7 +1065,9 @@ def _drop_dominated_peng(actions: list[dict]) -> list[dict]:
 def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> Optional[dict]:
     # 政策一次决策只算一遍；候选构造与兜牌分支共用（硬约束下候选必须用同一份 config）。
     defense = None if config.defense.mode == 'off' else blood_flow_defense_policy(view, config)
-    moves = blood_flow_ai_actions(view, config, defense)
+    legal = blood_flow_ai_actions(view, config, defense)
+    route_plan = narrow_routes_for_bot(view, legal, config)
+    moves = route_plan['actions']
     if not moves:
         return None
     if len(moves) == 1:
@@ -931,6 +1133,8 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
                 'canGang': any(a['kind'] == 'gang' for a in moves),
                 'canPeng': any(a['kind'] == 'peng' for a in moves),
                 'chiOptions': [a for a in moves if a['kind'] == 'chi'],
+                'claimMeldProjection': config.claim_meld_projection,
+                'claimReadyNetGuard': config.claim_ready_net_guard,
             }
             decision = lotus_decide_claim(claim_view)
             if decision['kind'] == 'chi':
@@ -942,6 +1146,8 @@ def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FL
             return pass_action
 
     if win:
+        if _is_final_self_draw_win(view):
+            return win
         ctx = blood_flow_ev_context(view, config)
         window = view.get('window') or {}
         source = window.get('source') or {}

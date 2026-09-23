@@ -8,7 +8,8 @@ import pytest
 
 from app.core.blood_flow.ai import (blood_flow_ai_actions, blood_flow_defense_policy,
                                     blood_flow_known_wins, blood_flow_opponent_risk,
-                                    blood_flow_safety_exposure, decide_blood_flow_action_ev)
+                                    blood_flow_safety_exposure, decide_blood_flow_action_ev,
+                                    narrow_routes_for_bot)
 from app.core.blood_flow.config import BLOOD_FLOW_AI, BLOOD_FLOW_DEFENSE
 from app.core.blood_flow.defense_policy import (decide_defense_policy, multiplier_of_tier,
                                                own_hand_facts)
@@ -287,12 +288,15 @@ def test_racing_hand_pushes_and_keeps_ev_choice():
     policy = blood_flow_defense_policy(view, BLOOD_FLOW_AI)
     assert policy['result'].mode == 'push'
     assert policy['own'].ceiling_multiplier >= 16
-    exposure = blood_flow_safety_exposure(view, BLOOD_FLOW_AI)
+    legal = blood_flow_ai_actions(view, BLOOD_FLOW_AI)
+    route_plan = narrow_routes_for_bot(view, legal, BLOOD_FLOW_AI)
+    assert route_plan['collapsed'] is True
+    assert route_plan['route']['id'] == 'thirteenOrphans'
+    assert [RACING_HAND[action['index']] for action in route_plan['actions']
+            if action['kind'] == 'discard'] == ['m5']
     decision = decide_blood_flow_action_ev(view, BLOOD_FLOW_AI)
     assert decision is not None and decision['kind'] == 'discard'
-    # 走的不是「只挑最小赔付」的兜牌路径：选的牌不是最便宜的那张。
-    assert exposure(RACING_HAND[decision['index']]) > \
-        min(exposure(tile) for tile in RACING_HAND)
+    assert RACING_HAND[decision['index']] == 'm5'
 
 
 def test_hard_constraint_strips_claims_and_keeps_only_the_safe_discard_band():

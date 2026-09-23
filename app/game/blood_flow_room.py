@@ -492,18 +492,19 @@ class BloodFlowRoomSession:
         cfg = self.llm_seats[seat]
         try:
             from app.core.blood_flow.ai import decide_blood_flow_action_ev
-            from app.core.blood_flow.config import BLOOD_FLOW_AI
+            from app.core.blood_flow.config import BLOOD_FLOW_LLM_AI
             from app.llm.blood_flow_candidates import (build_blood_flow_candidates,
                                                        build_blood_flow_prompt, ev_features_for)
             view = self._seat_view(seat)
             request_id = f'llm/{self.room_id}/{engine.round_id}/{engine.window["id"]}/{seat}'
-            suggestion = decide_blood_flow_action_ev(view, BLOOD_FLOW_AI)
-            built = build_blood_flow_candidates(view, request_id, suggestion=suggestion,
-                                                ev_by_key=ev_features_for(view))
+            suggestion = decide_blood_flow_action_ev(view, BLOOD_FLOW_LLM_AI)
+            built = build_blood_flow_candidates(
+                view, request_id, suggestion=suggestion,
+                ev_by_key=ev_features_for(view, BLOOD_FLOW_LLM_AI), config=BLOOD_FLOW_LLM_AI)
             candidate_ids = [c['id'] for c in built['candidates']]
             if not candidate_ids:
                 return None
-            system, user = build_blood_flow_prompt(cfg.style, view, built)
+            system, user = build_blood_flow_prompt(cfg.style, view, built, BLOOD_FLOW_LLM_AI)
             # 预算 = 决策窗口 − 安全余量 − 思考停顿：aiThink 前置后总耗时仍不越过 deadline。
             timeout_ms = max(2_000, min(int(cfg.timeout_s * 1000),
                                         self.decision_ms - 500 - self.pace.get('aiThink', 0)))

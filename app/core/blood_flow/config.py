@@ -1,6 +1,6 @@
 """血流规则配置 —— 对应 src/game/variants/lotus/bloodFlow/config.ts 的 BLOOD_FLOW_CONFIG。"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from app.core.blood_flow.types import PatternDefinition
@@ -164,6 +164,44 @@ BLOOD_FLOW_KONG_VALUE = KongValueConfig()
 
 
 @dataclass(frozen=True)
+class OpportunityCalibration:
+    """Calibrated normal-rotation opportunity rates used by source-v2."""
+    draw_scale: float = 0.9975786924939467
+    discard_scale: float = 0.8990627253064167
+    self_yield: float = 0.8478712071537614
+    ron_yield: float = 0.9877357078236184
+
+
+@dataclass(frozen=True)
+class BigHandRouteConfig:
+    """Commitment thresholds mirrored from bloodFlow/bigHandRoute.ts."""
+    mode: Literal['off', 'llm', 'bot', 'all'] = 'off'
+    enabled: tuple[str, ...] = ('thirteenOrphans', 'nineGates')
+    min_orphan_kinds: int = 12
+    min_suit_ranks: int = 9
+    min_suit_tiles: int = 12
+    pure_suit_min_tiles: int = 10
+    pure_suit_max_foreign: int = 2
+    mixed_suit_min_tiles: int = 10
+    mixed_suit_max_foreign: int = 1
+    all_triplets_min_units: int = 4
+    decline_win_ratio: float = 2.0
+    min_wall_for_commit: int = 20
+    min_deficit_for_commit: int = 300
+    min_wall_for_commit_with_jokers: int = 15
+    joker_relief_count: int = 2
+
+
+BLOOD_FLOW_BIG_HAND_ROUTE = BigHandRouteConfig()
+BLOOD_FLOW_BIG_HAND_ROUTE_WIDE = replace(
+    BLOOD_FLOW_BIG_HAND_ROUTE,
+    mode='bot',
+    enabled=('thirteenOrphans', 'nineGates', 'pureSuit', 'mixedSuit', 'allTriplets'),
+)
+SOURCE_V2_OPPORTUNITY_CALIBRATION = OpportunityCalibration()
+
+
+@dataclass(frozen=True)
 class BloodFlowAiConfig:
     """血流本地 AI 贪婪 EV 参数（对齐前端 config.ts BLOOD_FLOW_AI）。"""
     strategy: str = 'ev'
@@ -177,6 +215,8 @@ class BloodFlowAiConfig:
     potential_floor: float = 2.0
     reform_gain_ratio: float = 1.2
     chain_horizon: int = 8
+    chain_forecast: Literal['legacy', 'self-draw-v1', 'source-v2'] = 'source-v2'
+    opportunity_calibration: OpportunityCalibration | None = SOURCE_V2_OPPORTUNITY_CALIBRATION
     safety_cost_none: float = 0.25
     safety_cost_one: float = 0.1
     safety_cost_safe: float = 0.0
@@ -197,9 +237,26 @@ class BloodFlowAiConfig:
     # 七对潜力模型（2026-09-13 追加）：'off' = 旧口径（七对只按 4 番估、多余精牌丢掉）；
     # 'ev' = 对齐引擎 is_seven_pairs 的记账 + 豪华七对方向（豪华七对 2026-09-18 由 12 → 6 番 暂定）。
     seven_pairs_model: str = 'ev'
+    big_hand_route: BigHandRouteConfig = BLOOD_FLOW_BIG_HAND_ROUTE_WIDE
+    route_opportunity_guard: bool = True
+    claim_meld_projection: bool = True
+    claim_ready_net_guard: bool = True
+    route_advice_only: bool = False
+    win_opportunity_guards: bool = False
 
 
 BLOOD_FLOW_AI = BloodFlowAiConfig()
+BLOOD_FLOW_LLM_AI = replace(
+    BLOOD_FLOW_AI,
+    chain_forecast='legacy',
+    opportunity_calibration=None,
+    big_hand_route=replace(BLOOD_FLOW_BIG_HAND_ROUTE_WIDE, mode='llm'),
+    route_opportunity_guard=False,
+    claim_meld_projection=False,
+    claim_ready_net_guard=False,
+    route_advice_only=True,
+    win_opportunity_guards=True,
+)
 
 # 计时（毫秒）：对齐经典联机（非血流）与前端 config.ts。
 BLOOD_FLOW_TIMING: dict[str, int] = {

@@ -478,6 +478,14 @@ def decide_claim(view: dict) -> dict:
             return {'kind': 'gang'}
 
     extras = _extras(view)
+
+    def after_claim_extras(kind: str, tiles: list[TileType]) -> dict:
+        if view.get('claimMeldProjection', True) is False:
+            return extras
+        meld = {'type': kind, 'tile': view['tile'], 'tiles': list(tiles),
+                'from': view.get('from')}
+        return {**extras, 'melds': [*(view.get('melds') or []), meld]}
+
     baseline = _current_hand_quality(
         view['hand'], view['exposedMelds'], view['jokers'], view.get('visibleTiles'),
         view.get('wallCount'), extras=extras)
@@ -489,7 +497,7 @@ def decide_claim(view: dict) -> dict:
             after_peng, view['exposedMelds'] + 1, view['jokers'],
             view.get('visibleTiles'), view.get('earlyRound', False),
             view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'),
-            extras=extras)
+            extras=after_claim_extras('peng', [view['tile']] * 3))
         if discard:
             candidates.append({
                 'action': {'kind': 'peng', 'discardIndex': discard['index']},
@@ -504,7 +512,7 @@ def decide_claim(view: dict) -> dict:
             after_chi, view['exposedMelds'] + 1, view['jokers'],
             view.get('visibleTiles'), view.get('earlyRound', False),
             view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'),
-            extras=extras)
+            extras=after_claim_extras('chi', list(meld['tiles'])))
         if discard:
             candidates.append({
                 'action': {'kind': 'chi', 'meld': meld},
@@ -513,6 +521,8 @@ def decide_claim(view: dict) -> dict:
 
     improving = [c for c in candidates
                  if (c['quality']['ready'] or baseline['ready'])
+                 and (not view.get('claimReadyNetGuard') or baseline['ready']
+                      or c['quality']['netScore'] > baseline['netScore'])
                  and _compare_quality(c['quality'], baseline) > 0]
     if not improving:
         return {'kind': 'pass'}

@@ -592,6 +592,7 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
                             'sk-server-kimi', 'kimi-k2', '稳健', '小K'),
     }
     monkeypatch.setattr('app.api.rooms.load_llm_providers', lambda: providers)
+    monkeypatch.setattr('app.api.rooms.llm_server_available', lambda: True)
     monkeypatch.setattr('app.game.room.load_llm_providers', lambda: providers)
     monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
     monkeypatch.setattr('app.api.rooms.default_provider_id', lambda: 'ds')

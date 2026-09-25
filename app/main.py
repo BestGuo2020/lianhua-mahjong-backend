@@ -25,6 +25,7 @@ from app.api.account import router as account_router
 from app.api.auth import router as auth_router
 from app.api.tts import router as tts_router
 from app.api.local_tts import router as local_tts_router
+from app.api.llm_relay import router as llm_relay_router
 from app.auth.wakudemo import WakuDemoOAuthConfig
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
@@ -119,7 +120,7 @@ async def access_log_middleware(request: Request, call_next):
         return response
 
 
-# 启动即建表（SQLite，幂等）
+# 启动即按已配置的存储后端建表（幂等）
 storage.init()
 
 app.include_router(rooms_router)
@@ -129,6 +130,7 @@ app.include_router(account_router)
 app.include_router(auth_router)
 app.include_router(tts_router)
 app.include_router(local_tts_router)
+app.include_router(llm_relay_router)
 app.include_router(ws_router)
 
 

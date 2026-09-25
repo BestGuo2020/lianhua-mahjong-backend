@@ -256,16 +256,17 @@ def join_room(room_id: str, body: JoinRequest,
     联机身份由登录会话推导（wakudemo-<uid>），客户端 playerId 忽略。
     头像优先级：登录会话携带平台头像（http/https URL）→ 直接用并落库；
     否则回退服务端随机头像（按身份持久化）。
-    允许加入大厅（lobby）与已结束（finished）房间——对局结束后离开的玩家可
-    重新加入房间打下一场（start 已允许 finished 房间再开局）。对局中（playing）
-    拒绝：运行中的牌局控制器已接线，新加入者无法参与当前场。
+    新玩家仅可加入大厅（lobby）与已结束（finished）房间；原账号可在
+    对局中（playing）取回已有座位与重进码，不会重复占座。
     """
     room = _room_or_404(room_id)
-    if room.status not in ('lobby', 'finished'):
-        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
-    # 防重复占房：该登录身份已在别的房间占座 → 拒绝（避免跨标签页同时在两个房间）
-    if room_registry.find_room_by_player(user.player_id) is not None:
+    # 同一账号回到原房间时取回原座位与重进码；仍禁止跨房占座。
+    occupied_room = room_registry.find_room_by_player(user.player_id)
+    if occupied_room is not None and occupied_room is not room:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
+    if room.status not in ('lobby', 'finished') and not (
+            occupied_room is room and room.status == 'playing'):
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
     preferred_avatar = _safe_avatar_url(user.avatar_url)
     try:
         character_id = resolve_anime_character_id(body.characterId)

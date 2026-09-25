@@ -73,8 +73,14 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
     # 绑定座位：出站队列 + 后台发送任务
     queue: asyncio.Queue = asyncio.Queue()
     sender = asyncio.create_task(_sender(queue, websocket, room_id, seat))
-    room.conn.register(seat, queue, sender)
+    previous_socket = room.conn.register(seat, queue, sender, websocket)
     room.on_connect(seat)
+    if previous_socket is not None:
+        try:
+            await previous_socket.close()
+        except Exception:
+            # 旧连接可能已被浏览器关闭；新连接已经成为唯一有效座位。
+            pass
     logger.bind(room_id=room_id, seat=seat).info(f"WS 连接 昵称={state.nickname}")
 
     await room.conn.send_to_seat(seat, {
@@ -100,16 +106,20 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
     try:
         while True:
             message = await websocket.receive_json()
+            if not room.conn.is_current_connection(seat, queue):
+                await websocket.close()
+                break
             ok, err = room.handle_client_message(seat, message)
             if not ok:
                 logger.bind(room_id=room_id, seat=seat).warning(f"消息被拒 {err}")
                 await room.conn.send_to_seat(seat, {'kind': 'error', 'code': err})
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         duration = time.perf_counter() - start
         logger.bind(room_id=room_id, seat=seat).info(f"WS 断开 连接时长={duration:.1f}s")
-        room.on_disconnect(seat)
-        room.conn.unregister(seat)
+        if room.conn.is_current_connection(seat, queue):
+            room.on_disconnect(seat)
+            room.conn.unregister(seat, queue)
         if not sender.done():
             sender.cancel()

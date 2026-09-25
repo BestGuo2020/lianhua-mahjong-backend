@@ -466,6 +466,10 @@ class RoomSession:
             raise RoomError('BANNED')
         if rejoin_code:
             return self.resume_by_code(rejoin_code)
+        for state in self.seats:
+            if state is not None and player_id is not None and state.player_id == player_id:
+                self._ensure_seat_avatar(state, preferred=avatar)
+                return state.seat, True, state
         if sum(1 for s in self.seats if s is not None) >= self.capacity:
             raise RoomError('ROOM_FULL')
         for state in self.seats:
@@ -509,18 +513,13 @@ class RoomSession:
             self.reserved_seats.pop(seat, None)
 
     def resume_by_code(self, rejoin_code: str):
-        """WS 重连：按重进码定位原座位。原会话仍在线 → ALREADY_CONNECTED。"""
+        """WS 重连：持有原重进码者可接管尚未被检测为断线的旧连接。"""
         for seat, state in enumerate(self.seats):
             if state is not None and state.rejoin_code == rejoin_code:
                 if self.storage is not None and state.player_id \
                         and self.storage.is_banned('player', state.player_id):
                     logger.bind(room_id=self.room_id).warning("重连被拒 BANNED")
                     raise RoomError('BANNED')
-                if state.controller.connected:
-                    # 顶号尝试：原会话仍在线，拒绝（防双连接争抢同一座位）
-                    logger.bind(room_id=self.room_id, seat=seat).warning(
-                        "重连被拒 ALREADY_CONNECTED（顶号尝试）")
-                    raise RoomError('ALREADY_CONNECTED')
                 self._ensure_seat_avatar(state)   # 服务重启后内存头像丢失，按 player_id 恢复
                 return seat, state
         logger.bind(room_id=self.room_id).warning("重连被拒 INVALID_REJOIN_CODE")

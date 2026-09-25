@@ -57,33 +57,23 @@ async def test_rejoin_rate_reset_after_successful_resume(server, fresh_rooms):
     """成功恢复座位后清零失败计数：合法重连（即使之前失败过）不被限速。"""
     room, codes = await prepare_room('RECONN2', 1, ['小王'])
     code = codes['小王']
+    # 限速窗口中已有 4 次尝试：成功握手应清零，后续重进不受累积计数影响。
+    import time
+    room._rejoin_attempts[code] = [time.monotonic()] * 4
     a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'RECONN2', code))
     try:
         ok = await read_until(a, 'rejoin_ok')
         assert ok['seat'] == 0
-        # 顶号尝试 4 次（每次都被拒）→ 计数 4
-        for _ in range(4):
-            err_code = await ws_handshake(server['ws'], 'RECONN2', code)
-            assert err_code == 'ALREADY_CONNECTED'
-        # 第 5 次失败：计数到 5（但仍在限内）
-        assert await ws_handshake(server['ws'], 'RECONN2', code) == 'ALREADY_CONNECTED'
-        # 第 6 次 → 限速
-        assert await ws_handshake(server['ws'], 'RECONN2', code) == 'REJOIN_RATE_LIMITED'
+        assert code not in room._rejoin_attempts
+        a2 = await websockets.asyncio.client.connect(ws_url(server['ws'], 'RECONN2', code))
+        try:
+            ok2 = await read_until(a2, 'rejoin_ok')
+            assert ok2['seat'] == 0 and ok2['rejoin'] is True
+            assert code not in room._rejoin_attempts
+        finally:
+            await safe_close(a2)
     finally:
         await safe_close(a)
-
-    # 原连接断开后重连：此时限速仍生效（计数未清零）→ 先被限速
-    await asyncio.sleep(0.05)
-    assert await ws_handshake(server['ws'], 'RECONN2', code) == 'REJOIN_RATE_LIMITED'
-
-    # 等待窗口过期（30s）后可重连；为不拖慢测试，直接把窗口时间拨回过去
-    room._rejoin_attempts.pop(code, None)
-    a2 = await websockets.asyncio.client.connect(ws_url(server['ws'], 'RECONN2', code))
-    try:
-        ok2 = await read_until(a2, 'rejoin_ok')
-        assert ok2['seat'] == 0 and ok2['rejoin'] is True
-    finally:
-        await safe_close(a2)
 
 
 @pytest.mark.asyncio

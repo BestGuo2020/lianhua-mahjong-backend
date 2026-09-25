@@ -143,9 +143,21 @@ async def test_duplicate_occupancy_checks_login_identity(client, fake_auth, fres
         r1 = await http.post('/api/rooms', json={'mode': 'east'})
         r2 = await http.post('/api/rooms', json={'mode': 'east'})
         assert r1.status_code == 200 and r2.status_code == 200
-        await http.post(f"/api/rooms/{r1.json()['roomId']}/join",
-                        json={'nickname': '阿莲'})
-        # 同一登录身份已在房间 → 开新房/再占座被拒（即使客户端换 playerId）
+        first = (await http.post(f"/api/rooms/{r1.json()['roomId']}/join",
+                                 json={'nickname': '阿莲'})).json()
+        # 异常退出后，同账号再进原房间应取回原座和重进码，包括对局中。
+        same = await http.post(f"/api/rooms/{r1.json()['roomId']}/join",
+                               json={'nickname': '新昵称', 'playerId': 'other'})
+        assert same.status_code == 200
+        assert same.json()['rejoin'] is True
+        assert same.json()['seat'] == first['seat']
+        assert same.json()['rejoinCode'] == first['rejoinCode']
+        room_registry.get(r1.json()['roomId']).status = 'playing'
+        playing = await http.post(f"/api/rooms/{r1.json()['roomId']}/join",
+                                  json={'nickname': '阿莲'})
+        assert playing.status_code == 200
+        assert playing.json()['rejoinCode'] == first['rejoinCode']
+        # 同一登录身份已在房间 → 开新房/跨房占座被拒（即使客户端换 playerId）
         r3 = await http.post('/api/rooms', json={'mode': 'east', 'playerId': 'other'})
         assert r3.status_code == 409
         assert r3.json()['detail']['code'] == 'ALREADY_IN_ROOM'
@@ -376,11 +388,13 @@ async def test_dev_bypass_skips_login_and_uses_client_player_id(
         assert r.status_code == 200
         assert r.json()['playerId'] == 'wakudemo-dev-player-2'
 
-        # 同身份重复占座仍被拦截（防占房逻辑在旁路下也生效）
+        # 同身份回到原房间取回原座，而不是重复占座。
         r = await http.post(f'/api/rooms/{room_id}/join',
                             json={'nickname': '丙', 'playerId': 'dev-player-1'})
-        assert r.status_code == 409
-        assert r.json()['detail']['code'] == 'ALREADY_IN_ROOM'
+        assert r.status_code == 200
+        assert r.json()['rejoin'] is True
+        assert r.json()['seat'] == 0
+        assert sum(seat is not None for seat in room_registry.get(room_id).seats) == 2
 
 
 @pytest.mark.asyncio

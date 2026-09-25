@@ -279,21 +279,17 @@ async def test_rejoin_code_same_as_original_seat(server, fresh_rooms):
         a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'TEST6', state.rejoin_code))
         ok = await read_until(a, 'rejoin_ok')
         assert ok['rejoin'] is True and ok['seat'] == 0
-        # 同一码再次连接（此时已连 → 顶号被拒）
+        # 原连接还未被判定断线时，同一码也可接管；旧连接迟到退出不能断开新连接。
         a2 = await websockets.asyncio.client.connect(ws_url(server['ws'], 'TEST6', state.rejoin_code))
         try:
-            err = await read_until(a2, 'rejoin_err', timeout=5)
-            assert err['code'] == 'ALREADY_CONNECTED'
+            ok2 = await read_until(a2, 'rejoin_ok', timeout=5)
+            assert ok2['seat'] == 0 and ok2['rejoin'] is True
+            await safe_close(a)
+            assert room.seats[0].controller.connected is True
+            await a2.send('{"type":"ping"}')
+            pong = await read_until(a2, 'pong', timeout=5)
+            assert pong['kind'] == 'pong'
         finally:
-            await a2.close()
-        # 释放原连接后，同一码可恢复原座位
-        await safe_close(a)
-        await wait_until(lambda: not room.seats[0].controller.connected)
-        a3 = await websockets.asyncio.client.connect(ws_url(server['ws'], 'TEST6', state.rejoin_code))
-        try:
-            ok3 = await read_until(a3, 'rejoin_ok')
-            assert ok3['seat'] == 0 and ok3['rejoin'] is True
-        finally:
-            await safe_close(a3)
+            await safe_close(a2)
     finally:
         await safe_close(a)

@@ -491,11 +491,14 @@ class BloodFlowRoomSession:
             self.llm_request = request_llm_decision
         cfg = self.llm_seats[seat]
         try:
-            from app.core.blood_flow.ai import decide_blood_flow_action_ev
+            from app.core.blood_flow.ai import blood_flow_llm_safeguard, decide_blood_flow_action_ev
             from app.core.blood_flow.config import BLOOD_FLOW_LLM_AI
             from app.llm.blood_flow_candidates import (build_blood_flow_candidates,
                                                        build_blood_flow_prompt, ev_features_for)
             view = self._seat_view(seat)
+            safeguarded = blood_flow_llm_safeguard(view, BLOOD_FLOW_LLM_AI)
+            if safeguarded is not None:
+                return safeguarded['action']
             request_id = f'llm/{self.room_id}/{engine.round_id}/{engine.window["id"]}/{seat}'
             suggestion = decide_blood_flow_action_ev(view, BLOOD_FLOW_LLM_AI)
             built = build_blood_flow_candidates(

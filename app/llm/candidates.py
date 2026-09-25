@@ -13,6 +13,7 @@ from app.core.ai import decide_claim as core_decide_claim
 from app.core.ai import decide_turn as core_decide_turn
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
 from app.core.lotus_ai import decide_turn as lotus_decide_turn
+from app.core.lotus_ai import choose_discard_index as lotus_choose_discard_index
 from app.core.lotus_rules import evaluate_pattern
 from app.core.opponent_pattern_risk import (RISK_TIER_LABELS, max_opponent_risk_tier,
                                             opponent_pattern_feature,
@@ -105,7 +106,8 @@ def _protected_discard_tiles(ctx, rules: GameRuleSet) -> set[str]:
     return protected
 
 
-def _heuristic_score(hand: list[str], tile: str, protected: set[str]) -> int:
+def _heuristic_score(hand: list[str], tile: str, protected: set[str],
+                     classic: bool = False) -> int:
     same = sum(1 for t in hand if t == tile) - 1
     match = _SUITED_RE.match(tile)
     neighbors = 0
@@ -116,7 +118,9 @@ def _heuristic_score(hand: list[str], tile: str, protected: set[str]) -> int:
             neighbors += 1
         if f'{suit}{rank + 1}' in hand:
             neighbors += 1
-    honor = 0 if match else 6
+    ordinary_singleton_honor = (classic and same == 0
+                                and tile in ('east', 'south', 'west', 'north', 'green'))
+    honor = -6 if ordinary_singleton_honor else 0 if match else 6
     # 数值越低越适合打出；癞子/精牌给高额保留惩罚，作为候选兜底保护。
     wildcard_penalty = 100 if tile in protected else 0
     return same * 4 + neighbors * 2 + honor + wildcard_penalty
@@ -410,7 +414,8 @@ def _turn_candidates(ctx, rules: GameRuleSet) -> list[dict]:
         })
         discard_entries.append({
             'index': entry_index,
-            'heuristic': _heuristic_score(ctx.hand, tile, protected),
+            'heuristic': _heuristic_score(ctx.hand, tile, protected,
+                                          rule_code_for(rules.code) == 'lotus-classic'),
         })
     bands = _banded_efficiency(discard_entries)
     for candidate in candidates:
@@ -419,6 +424,12 @@ def _turn_candidates(ctx, rules: GameRuleSet) -> list[dict]:
         idx_in_candidates = next(i for i, c in enumerate(candidates)
                                  if c['id'] == candidate['id'])
         candidate['features'] = _features_of(ctx, candidate['action'], bands.get(idx_in_candidates, '中'), rules)
+    if rule_code_for(rules.code) == 'lotus-classic':
+        ordered = _ordered_classic_discards(ctx, candidates, rules)
+        for rank, candidate in enumerate(ordered):
+            fraction = 0.0 if len(ordered) <= 1 else rank / (len(ordered) - 1)
+            candidate['features']['efficiency'] = (
+                '优' if fraction <= 0.34 else '中' if fraction <= 0.67 else '差')
     return candidates
 
 
@@ -456,8 +467,104 @@ def _claim_candidates(ctx, rules: GameRuleSet) -> list[dict]:
     return candidates
 
 
-def _suggestion_turn(ctx, rules: GameRuleSet) -> Optional[dict]:
+def _ordered_classic_discards(ctx, candidates: list[dict], rules: GameRuleSet) -> list[dict]:
+    protected = _protected_discard_tiles(ctx, rules)
+
+    def number(value, fallback):
+        return value if type(value) in (int, float) else fallback
+
+    def key(candidate: dict):
+        features = candidate['features']
+        index = candidate['action']['handIndex']
+        return (number(features.get('shanten'), float('inf')),
+                -number(features.get('ukeire'), -1),
+                -number(features.get('effectiveRemaining'), -1),
+                _heuristic_score(ctx.hand, ctx.hand[index], protected, True), index)
+
+    return sorted((c for c in candidates if c['action']['kind'] == 'discard'), key=key)
+
+
+def _legacy_early_discard_suggestion(ctx, candidates: list[dict], action: dict) -> dict:
+    if action['kind'] != 'discard' or _g(ctx, 'wallCount') is None or ctx.wallCount <= 60:
+        return action
+    tile = ctx.hand[action['handIndex']]
+    baseline = next((c for c in candidates if c['action']['kind'] == 'discard'
+                     and ctx.hand[c['action']['handIndex']] == tile), None)
+    if baseline is None:
+        return action
+    base_features = baseline['features']
+    shanten, ukeire = base_features.get('shanten'), base_features.get('ukeire')
+    if type(shanten) not in (int, float) or type(ukeire) not in (int, float):
+        return action
+
+    def safety_rank(features: dict) -> int:
+        return {'高': 2, '中': 1, '低': 0}.get(features.get('safety'), -1)
+
+    def risk_payment(features: dict) -> float:
+        return (features.get('opponentRisk') or {}).get('payment', 0)
+
+    def risk_tier(features: dict) -> int:
+        return {'高': 2, '中': 1, '低': 0}.get(
+            (features.get('opponentRisk') or {}).get('tier'), 0)
+
+    alternatives = []
+    for candidate in candidates:
+        other = candidate['features']
+        if candidate['action']['kind'] != 'discard' \
+                or type(other.get('shanten')) not in (int, float) \
+                or type(other.get('ukeire')) not in (int, float):
+            continue
+        improves = (other['shanten'] < shanten
+                    or other['shanten'] == shanten and other['ukeire'] > ukeire)
+        if (improves and safety_rank(other) >= safety_rank(base_features)
+                and risk_payment(other) <= risk_payment(base_features)
+                and risk_tier(other) <= risk_tier(base_features)
+                and len(other.get('risks') or []) <= len(base_features.get('risks') or [])
+                and (base_features.get('specialPattern') == 'none'
+                     or other.get('specialPattern') == base_features.get('specialPattern'))):
+            alternatives.append(candidate)
+    alternatives.sort(key=lambda c: (c['features']['shanten'], -c['features']['ukeire'],
+                                      -safety_rank(c['features']), c['action']['handIndex']))
+    return alternatives[0]['action'] if alternatives else baseline['action']
+
+
+def inferior_classic_discard(request: dict, selected: dict) -> bool:
+    if request.get('ruleCode') != 'lotus-classic' or request.get('decision') != 'turn' \
+            or selected['action']['kind'] != 'discard' or not request.get('engineSuggestion'):
+        return False
+    recommended = next((c for c in request['candidates']
+                        if c['id'] == request['engineSuggestion']), None)
+    if recommended is None or recommended['action']['kind'] != 'discard':
+        return False
+    chosen = selected['features']
+    suggested = recommended['features']
+    values = (chosen.get('shanten'), suggested.get('shanten'),
+              chosen.get('ukeire'), suggested.get('ukeire'))
+    return (all(type(value) in (int, float) for value in values)
+            and values[0] > values[1] and values[2] <= values[3])
+
+
+def _suggestion_turn(ctx, rules: GameRuleSet, candidates: list[dict]) -> Optional[dict]:
     """确定性引擎建议（random=0）：胡由控制器短路，建议只在杠/弃牌候选中。"""
+    if _g(ctx, 'skipDraw', False):
+        if rules.code != 'lotus-legacy':
+            ordered = _ordered_classic_discards(ctx, candidates, rules)
+            return ordered[0]['action'] if ordered else None
+        index = lotus_choose_discard_index(
+            ctx.hand, list(_g(ctx, 'jokers') or []), random=lambda: 0.0,
+            options={'exposedMelds': ctx.exposedMelds,
+                     'visibleTiles': _g(ctx, 'visibleTiles'),
+                     'publicTiles': _g(ctx, 'publicTiles'),
+                     'upperLastDiscard': _g(ctx, 'upperLastDiscard'),
+                     'earlyRound': _g(ctx, 'earlyRound'),
+                     'wallCount': _g(ctx, 'wallCount'), 'melds': ctx.melds})
+        tile = ctx.hand[index]
+        suggested = next((c['action'] for c in candidates if c['action']['kind'] == 'discard'
+                          and ctx.hand[c['action']['handIndex']] == tile), None)
+        if suggested is None:
+            suggested = next((c['action'] for c in candidates
+                              if c['action']['kind'] == 'discard'), None)
+        return _legacy_early_discard_suggestion(ctx, candidates, suggested) if suggested else None
     view = {
         'hand': ctx.hand,
         'melds': ctx.melds,
@@ -475,9 +582,16 @@ def _suggestion_turn(ctx, rules: GameRuleSet) -> Optional[dict]:
             '_random': lambda: 0.0,
         })
         decision = lotus_decide_turn(view, list(_g(ctx, 'jokers') or []), rules)
+        return None if decision['kind'] == 'win' else _legacy_early_discard_suggestion(
+            ctx, candidates, decision)
     else:
         decision = core_decide_turn(view, rules, random=lambda: 0.0)
-    return None if decision['kind'] == 'win' else decision
+    if decision['kind'] == 'win':
+        return None
+    if decision['kind'] != 'discard':
+        return decision
+    ordered = _ordered_classic_discards(ctx, candidates, rules)
+    return ordered[0]['action'] if ordered else decision
 
 
 def _suggestion_claim(ctx, rules: GameRuleSet) -> Optional[dict]:
@@ -594,7 +708,7 @@ def build_request(ctx, rules: GameRuleSet, request_id: str, state_version: str,
     candidates = _turn_candidates(ctx, rules) if decision == 'turn' else _claim_candidates(ctx, rules)
     if not candidates:
         return None
-    suggestion = _suggestion_turn(ctx, rules) if decision == 'turn' else _suggestion_claim(ctx, rules)
+    suggestion = _suggestion_turn(ctx, rules, candidates) if decision == 'turn' else _suggestion_claim(ctx, rules)
     suggestion_id = None
     fallback = candidates[0]['action']
     if suggestion is not None:
@@ -625,6 +739,8 @@ def _actions_match(a: dict, b: dict) -> bool:
         return a.get('tile') == b.get('tile')
     if a['kind'] == 'chi':
         return a.get('optionIndex') == b.get('optionIndex')
+    if a['kind'] == 'discard':
+        return a.get('handIndex') == b.get('handIndex')
     return True
 
 

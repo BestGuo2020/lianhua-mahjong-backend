@@ -3,7 +3,7 @@
 LLMPlayer(AIPlayer)：覆盖 request_turn / request_claim；
 - 胡由引擎短路（v1 不放给 LLM）；唯一例外是杠后全听时先杠，确定性博杠上开花；
 - skipDraw 只允许出牌（候选枚举不含杠/胡）；
-- LLM 决定 → validate_action（§8.2，逐类型）→ 失败/超时/网络/HTTP → super().request_*（启发式兜底）；
+- LLM 决定 → validate_action（§8.2，逐类型）→ 失败/超时/网络/HTTP → 本次候选的确定性回退动作；
 - request_rob_kong 继承 AIPlayer（能抢必抢）。
 """
 
@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 from app.game.player import AIPlayer, ClaimContext, TurnContext
 from app.core.kong_projection import project_kong_bloom
-from app.llm.candidates import build_request
+from app.llm.candidates import build_request, inferior_classic_discard
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
 from app.llm.prompt import build_prompt
@@ -129,7 +129,7 @@ class LLMPlayer(AIPlayer):
         return action
 
     async def _decide(self, built: Optional[dict], ctx) -> Optional[dict]:
-        """LLM 决定 → 候选动作；失败/非法 → None（调用方回退启发式）。"""
+        """LLM 决定 → 候选动作；失败/非法 → 本次请求已验证的回退候选。"""
         if built is None or len(built['request']['candidates']) <= 1:
             return built['fallbackAction'] if built else None
         request = built['request']
@@ -147,11 +147,11 @@ class LLMPlayer(AIPlayer):
                     self.seat, request.get('decision', ''), kind, priority)
             except Exception:
                 pass
-        # 房间预算：超出后直接回退启发式（不阻塞游戏循环）
+        # 房间预算：超出后直接执行本次已计算的候选回退（不阻塞游戏循环）
         if self.config.max_requests_per_room > 0 \
                 and self.requests >= self.config.max_requests_per_room:
             notify_fallback()
-            return None
+            return built['fallbackAction']
         self.requests += 1
         ids = [candidate['id'] for candidate in request['candidates']]
         system, user = build_prompt(self.config.style, request)
@@ -218,7 +218,7 @@ class LLMPlayer(AIPlayer):
         except Exception:
             self.stats['fallbacks'] += 1
             notify_fallback()
-            return None
+            return built['fallbackAction']
         finally:
             if reasoning_status_active and self.on_status is not None:
                 try:
@@ -229,13 +229,17 @@ class LLMPlayer(AIPlayer):
         if candidate is None:
             self.stats['fallbacks'] += 1
             notify_fallback()
-            return None
+            return built['fallbackAction']
         # §8.2 自校验：对照请求时刻的 ctx 复核（引擎执行层还会再复核一次）
         if not validate_action(ctx, candidate['action'], self.rules):
             self.stats['invalid'] += 1
             self.stats['fallbacks'] += 1
             notify_fallback()
-            return None
+            return built['fallbackAction']
+        if inferior_classic_discard(request, candidate):
+            self.stats['fallbacks'] += 1
+            notify_fallback()
+            return built['fallbackAction']
         self.stats['successes'] += 1
         # choice 决定真实动作；message 可作牌桌闲聊/烟雾弹，不要求与动作一致。
         # 缺失或含幕后词时才回退当前程序台词。

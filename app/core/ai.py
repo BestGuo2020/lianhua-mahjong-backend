@@ -317,10 +317,36 @@ def choose_discard_index(
                 neighbors += 1
             if f'{suit}{number + 1}' in hand:
                 neighbors += 1
-        penalty = 10 if rules.is_joker_tile(tile) else 0
+        ordinary_singleton_honor = (rules.code in ('lotus-classic', 'lianhua_guangma') and same == 0
+                                    and tile in ('east', 'south', 'west', 'north', 'green'))
+        penalty = 10 if tile == 'white' else -6 if ordinary_singleton_honor else 0
         base = same * 4 + neighbors * 2 + penalty + _rand()
         risk = _feed_risk(tile, context)
         preliminary.append((base + risk, index, tile))
+    structural = _can_be_tenpai(len(hand) - 1, exposed_melds)
+    if structural:
+        visible = context.get('visibleTiles')
+        if visible is None:
+            visible = hand
+        visible_counts = {tile: visible.count(tile) for tile in set(visible)}
+        seen = set()
+        ready = []
+        for shape, index, tile in preliminary:
+            if tile in seen:
+                continue
+            seen.add(tile)
+            after = hand[:index] + hand[index + 1:]
+            waits = rules.waiting_tiles(after, exposed_melds)
+            if not waits:
+                continue
+            remaining = sum(max(0, 4 - visible_counts.get(wait, 0)) for wait in set(waits))
+            if remaining > 0:
+                ready.append((remaining, len(waits), shape, index, tile))
+        if ready:
+            ordinary = [item for item in ready if item[4] != 'white']
+            choices = ordinary or ready
+            choices.sort(key=lambda item: (-item[0], -item[1], item[2], item[3]))
+            return choices[0][3]
     shortlist = set()
     shortlisted_tiles = set()
     for _, index, tile in sorted(preliminary):
@@ -332,7 +358,7 @@ def choose_discard_index(
             break
     scored = []
     for base, index, _tile in preliminary:
-        if index not in shortlist or context.get('wallCount', 60) > 60:
+        if index not in shortlist or not structural or context.get('wallCount', 60) > 60:
             scored.append((base, index))
             continue
         _, _, _, progress = _discard_quality(

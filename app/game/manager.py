@@ -734,6 +734,11 @@ class GameManager:
             return
 
         kind = action['kind']
+        # 权威边界：碰/吃后跳摸回合不产生新的自摸/杠机会。即使控制器
+        # （含超时代打或旧客户端）错误返回了 win，也不能据此结算。
+        if not drawn_turn and kind != 'discard':
+            self._log.warning(f'无摸牌回合拒绝动作 seat={player_index} kind={kind}')
+            return await self.discard_tile(player_index, 0)
         if kind == 'win':
             self.end_game(player_index, {
                 'kongBloom': self.kong_draw_player_index == player_index,

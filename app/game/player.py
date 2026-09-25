@@ -167,6 +167,27 @@ class AIPlayer:
                 'earlyRound': ctx.earlyRound,
                 'wallCount': ctx.wallCount,
             })
+        # 碰/吃后没有摸牌：暗手即使碰巧成胡，也只能弃牌。庄家开局跳摸
+        # 已持 14 张牌，turnOrigin=opening 仍保留正常自摸/杠判断。
+        if ctx.skipDraw and ctx.turnOrigin != 'opening':
+            if self.rules.code == 'lotus-legacy':
+                from app.core.lotus_ai import choose_discard_index as lotus_choose_discard_index
+                index = lotus_choose_discard_index(
+                    view['hand'], view['jokers'], random=self._random,
+                    options={
+                        'exposedMelds': ctx.exposedMelds,
+                        'visibleTiles': view['visibleTiles'],
+                        'publicTiles': view['publicTiles'],
+                        'upperLastDiscard': ctx.upperLastDiscard,
+                        'earlyRound': ctx.earlyRound,
+                        'wallCount': ctx.wallCount,
+                        'melds': view['melds'],
+                    })
+            else:
+                index = choose_discard_index(
+                    view['hand'], self._random, self.rules, ctx.exposedMelds,
+                    context=view)
+            return {'kind': 'discard', 'handIndex': index}
         return _map_turn_decision(decide_turn(view, self.rules))
 
     async def request_claim(self, ctx: ClaimContext) -> dict:

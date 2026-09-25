@@ -37,6 +37,7 @@ def _pending_turn_player(hand: list, exposed_melds: int = 0) -> RemotePlayer:
     player._last_ctx = TurnContext(
         hand=hand, melds=[], exposedMelds=exposed_melds,
         kongBloom=False, skipDraw=False, afterKong=False,
+        canHu=is_winning_hand(hand, exposed_melds),
     )
     return player
 

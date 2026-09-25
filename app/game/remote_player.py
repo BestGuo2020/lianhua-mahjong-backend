@@ -139,6 +139,10 @@ class RemotePlayer:
         ctx = self._last_ctx
 
         if kind == 'turn':
+            # 碰/吃后未摸牌的窗口只能弃牌；庄家开局跳摸另按已摸牌处理。
+            if ctx is not None and ctx.skipDraw and ctx.turnOrigin != 'opening' \
+                    and mtype != 'discard':
+                return None, 'INVALID_ACTION'
             if mtype == 'discard':
                 hi = message.get('handIndex')
                 hand = getattr(ctx, 'hand', None) if ctx is not None else None
@@ -148,7 +152,8 @@ class RemotePlayer:
                 return {'kind': 'discard', 'handIndex': hi}, ''
             if mtype == 'hu':
                 # 自摸胡：手牌（含刚摸的牌）须已成形
-                if ctx is not None and self.rules.is_winning_hand(ctx.hand, ctx.exposedMelds):
+                if ctx is not None and ctx.canHu \
+                        and self.rules.is_winning_hand(ctx.hand, ctx.exposedMelds):
                     return {'kind': 'win'}, ''
                 return None, 'INVALID_ACTION'
             if mtype == 'gang':

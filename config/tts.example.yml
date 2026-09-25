@@ -74,6 +74,8 @@ providers:
         speaker: zh_female_tianmeitaozi_uranus_bigtts
       grok:
         speaker: ICL_uranus_zh_female_keainvsheng_tob
+      gemini:
+        speaker: ICL_uranus_zh_female_huoponvhai_tob
     styles:
       激进:
         speech_rate: 15

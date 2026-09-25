@@ -207,11 +207,19 @@ async def test_create_and_get_room(server, fresh_rooms, temp_storage):
         assert data['capacity'] == 4
         assert data['status'] == 'lobby'
         assert data['seats'] == [None, None, None, None]  # 4 个空座
+        # 场次身份（契约 C）：未开局 → 无场次、未结束、phase 回退房间 status
+        assert data['matchId'] is None
+        assert data['matchFinished'] is False
+        assert data['phase'] == 'lobby'
 
         # GET 房间信息
         resp = await http.get(f'/api/rooms/{room_id}')
         assert resp.status_code == 200
-        assert resp.json()['roomId'] == room_id
+        detail = resp.json()
+        assert detail['roomId'] == room_id
+        assert detail['matchId'] is None
+        assert detail['matchFinished'] is False
+        assert detail['phase'] == 'lobby'
 
         # 未知房间 → 404
         resp = await http.get('/api/rooms/ZZZZZZ')
@@ -234,6 +242,66 @@ async def test_room_count_limit(server, fresh_rooms, temp_storage):
         resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ROOM_LIMIT_REACHED'
+
+
+@pytest.mark.asyncio
+async def test_dead_task_playing_room_is_stuck_until_swept(server, fresh_rooms, temp_storage):
+    """僵尸对局房（playing + 任务已死）：close / start 双双 409，sweep 后解冻。
+
+    这正是 2026-09-20 事故里后端那一半：房间卡在 playing，玩家无法关闭房间
+    （ROOM_PLAYING）、也无法重开（ROOM_CLOSED），并长期占用房间槽位。
+    """
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        joined = (await http.post(f'/api/rooms/{room_id}/join',
+                                  json={'nickname': '甲'})).json()
+        seat_action = {'seat': joined['seat'], 'rejoinCode': joined['rejoinCode']}
+
+        room = rooms.get(room_id)
+        assert room is not None
+        # 造僵尸：status=playing 但没有任何驱动任务能推进这场对局
+        room.status = 'playing'
+        room.game_task = None
+
+        # 两条路都堵死（都是 409，但错误码不同）
+        resp = await http.request('DELETE', f'/api/rooms/{room_id}', json=seat_action)
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'ROOM_PLAYING'
+        resp = await http.post(f'/api/rooms/{room_id}/start')
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'ROOM_CLOSED'
+        # 房间也不会被 TTL 回收（playing 豁免）——只能靠看门狗那条通道
+        assert rooms.sweep_expired() == []
+
+        # 看门狗口径（REST 线程池：allow_cancel=False）→ 僵尸被强制收尾
+        assert rooms.sweep_stalled() == [room_id]
+        assert room.status == 'finished'
+
+        # close 恢复可用（此前永久 409 ROOM_PLAYING）
+        resp = await http.request('DELETE', f'/api/rooms/{room_id}', json=seat_action)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()['closed'] is True
+        assert rooms.get(room_id) is None
+
+
+@pytest.mark.asyncio
+async def test_create_room_reclaims_overdue_zombie_rooms(server, fresh_rooms, temp_storage):
+    """建房时顺带回收「过期 + 僵尸」房：否则槽位被占满，玩家看到「房间已满」而实际没有活房间。"""
+    import time as _time
+
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        # 灌满 4 个房间，全部打成「过期僵尸」：playing 豁免 TTL，没有任务能推进
+        for _ in range(4):
+            room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+            room = rooms.get(room_id)
+            room.status = 'playing'
+            room.game_task = None
+            room.deadline = _time.monotonic() - 1
+
+        # 第 5 个建房：先拍掉僵尸房、再按 TTL 回收释放槽位 → 成功而不是 ROOM_LIMIT_REACHED
+        resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()['roomId']) == 6
 
 
 @pytest.mark.asyncio
@@ -698,6 +766,13 @@ async def test_room_lifecycle_persists_match(server, fresh_rooms, temp_storage):
         await wait_until(lambda: room.status == 'finished', timeout=30)
         assert room.manager.match_finished
         assert room.match_id is not None
+
+        # 场次身份（契约 C）：整场结束后 REST 必须能自证「已结束 + 是哪一场」
+        detail = await http.get(f'/api/rooms/{room_id}')
+        assert detail.status_code == 200
+        assert detail.json()['matchFinished'] is True
+        assert detail.json()['phase'] == 'finished'
+        assert detail.json()['matchId'] == room.match_id
 
         # 战绩落库：房间对局列表
         resp = await http.get(f'/api/rooms/{room_id}/matches')

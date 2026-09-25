@@ -1,7 +1,8 @@
 """莲花广麻 · 联网麻将后端 — FastAPI 入口"""
 
 # 日志最先配置：storage 等模块导入时即可输出（见 app/logging_config.py）
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import os
 import time
 import uuid
@@ -25,8 +26,13 @@ from app.api.account import router as account_router
 from app.api.auth import router as auth_router
 from app.api.tts import router as tts_router
 from app.api.local_tts import router as local_tts_router
-from app.api.llm_relay import router as llm_relay_router
+from app.api.llm_relay import (
+    close_relay_client,
+    load_relay_upstreams,
+    router as llm_relay_router,
+)
 from app.auth.wakudemo import WakuDemoOAuthConfig
+from app.game.room import start_room_watchdog
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
 from app.tts.service import get_tts_service
@@ -48,9 +54,22 @@ async def lifespan(app: FastAPI):
         f"route={'->'.join(tts.config.provider_names)}")
     logger.info(
         f"单机 TTS 网关 available={local_tts.available} providers={providers}")
+    # 无 CORS 的供应商（千问 Token Plan / Coding Plan 等）走自家透传通道：
+    # 上游白名单在服务端，客户端只能传 id。
+    logger.info(
+        f"单机 LLM 透传网关 upstreams={','.join(load_relay_upstreams()) or 'none'}")
+    # 常驻看门狗：收尾僵尸/卡死对局（对局中的房间对 TTL 豁免，只能靠它兜底）。
+    # ROOM_WATCHDOG_INTERVAL<=0 时返回 None = 关闭。
+    watchdog = start_room_watchdog()
     yield
+    # 先停看门狗再关下游服务：它正在广播收尾消息 / 落库，不能与停机交错。
+    if watchdog is not None:
+        watchdog.cancel()
+        with suppress(asyncio.CancelledError):
+            await watchdog
     await tts.close()
     await local_tts.close()
+    await close_relay_client()
 
 
 app = FastAPI(title="莲花广麻 Backend", version="0.2.0",

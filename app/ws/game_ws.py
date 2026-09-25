@@ -16,7 +16,12 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
-from app.game.room import RoomError, build_snapshot, room_registry
+from app.game.room import (
+    RoomError,
+    build_snapshot,
+    match_id_of,
+    room_registry,
+)
 
 router = APIRouter()
 
@@ -77,6 +82,9 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         'seat': seat,
         'rejoin': True,
         'roomId': room.room_id,
+        # 本人参与的那场的唯一可靠来源：REST 的 matchId 会被下一场覆盖，
+        # 且开局早期可能仍为 None（_persist_match_start 异步赋值）。
+        'matchId': match_id_of(room),
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
         'nickname': state.nickname,

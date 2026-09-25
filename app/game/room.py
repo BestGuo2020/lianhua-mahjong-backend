@@ -50,6 +50,15 @@ class RoomError(Exception):
 # 可用环境变量覆盖（秒）。
 ROOM_LIFETIME = float(os.environ.get('ROOM_LIFETIME', str(60 * 60)))
 
+# ─── 对局硬上限与常驻看门狗（防僵尸房间占槽）────────────────
+# 对局中的房间对 TTL 永久豁免（见 is_expired），而 _drive 在极端情况下可能既推不动
+# 也不会结束（例：任务提前死掉但 status 仍是 playing）。这类房间既不能 start
+# （ALREADY_STARTED）也不能 close（ROOM_PLAYING），并长期占用 MAX_ROOMS 槽位。
+# ROOM_MATCH_MAX：单场对局的绝对硬上限（默认 90 分钟），超过即判定卡死。
+# ROOM_WATCHDOG_INTERVAL：看门狗扫描间隔；<=0 = 整机关闭（免重启的紧急开关）。
+ROOM_MATCH_MAX = float(os.environ.get('ROOM_MATCH_MAX', str(90 * 60)))
+ROOM_WATCHDOG_INTERVAL = float(os.environ.get('ROOM_WATCHDOG_INTERVAL', '30'))
+
 # ─── 落库韧性 ─────────────────────────────────────────────
 # 落库失败不中断对局驱动：失败项入队，等下次落库机会按序补写；终局时带退避
 # 多次尝试，仍失败仅告警（数据留在内存，不抛异常中止整场）。
@@ -205,6 +214,66 @@ class WSEvents:
         await self.room._wait_for_opening()
 
 
+# ─── 场次身份（唯一真源）─────────────────────────────────
+# 前端要区分「我参与的那场」与「房间里正进行的新一场」：REST 的 matchId 会被下一场
+# 覆盖，只有 WS rejoin_ok 携带的 matchId 能锚定本人那场。血流房间没有 manager /
+# match_id（靠 match_finished + status），因此三个 helper 全部按 getattr 兜底，
+# 经典与血流共用同一口径。
+
+def match_id_of(room) -> Optional[str]:
+    """房间当前（或最近一场）场次 id；血流/未落库房间为 None。"""
+    return getattr(room, 'match_id', None)
+
+
+def match_finished_of(room) -> bool:
+    """整场是否已结束：经典取 manager.match_finished（权威），血流取房间标记。"""
+    mgr = getattr(room, 'manager', None)
+    if mgr is not None:
+        return bool(getattr(mgr, 'match_finished', False))
+    return bool(getattr(room, 'match_finished', False))
+
+
+def match_phase_of(room) -> str:
+    """场次阶段：经典取 manager.phase，无 manager（lobby / 血流）回退房间 status。"""
+    mgr = getattr(room, 'manager', None)
+    if mgr is not None:
+        return mgr.phase
+    return getattr(room, 'status', 'lobby')
+
+
+# ─── 僵尸 / 卡死判定（经典与血流共用，故不做成方法）───────
+# 血流的驱动任务叫 _drive_task、经典的叫 game_task，判定按属性名鸭子类型探测，
+# 测试也可以传只有 done() 的假任务。
+
+def match_is_driving(room) -> bool:
+    """是否还有活着的对局驱动任务：有 ⇒ 对局理论上仍能被推进。"""
+    for name in ('game_task', '_drive_task'):
+        task = getattr(room, name, None)
+        if task is not None and not task.done():
+            return True
+    return False
+
+
+def is_match_stalled(room, now: Optional[float] = None) -> bool:
+    """对局是否已「无人推进」或「卡死超时」——看门狗的收尾判据。
+
+    两个判据必需同时存在：
+    - 判据一（任务已死）：没有任何任务能再推进 ⇒ 僵尸，早些收尾就能早释放槽位；
+    - 判据二（超过 ROOM_MATCH_MAX）：任务「活着」也可能永不结束——_drive 在
+      非结算分支会 `await asyncio.sleep(0)` 忙等自旋（见 _drive 的 else 分支），
+      任务状态正常但整场推不动，只能靠绝对上限兜底。
+    """
+    if getattr(room, 'status', None) != 'playing':
+        return False
+    if not match_is_driving(room):
+        return True
+    started_at = getattr(room, 'match_started_at', None)
+    if started_at is None:
+        return False   # 未记录开局时刻（非 start() 路径造的测试房间）⇒ 不按上限判
+    now = now if now is not None else time.monotonic()
+    return now - started_at >= ROOM_MATCH_MAX
+
+
 def build_snapshot(room: 'RoomSession', seat: int) -> dict:
     """构造全量 state_snapshot：对请求座位隐藏其他玩家手牌（防作弊）。"""
     mgr = room.manager
@@ -223,14 +292,18 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
             # 前端只对大模型座位抑制牌名/吃碰杠/胡牌原始音效；普通 AI 与真人不变。
             data['isLlm'] = isinstance(mgr.controllers[p.seat], LLMPlayer)
             players.append(data)
+    phase = match_phase_of(room)
+    if mgr is not None and not (
+            phase != 'settled' or room._settlement_snapshot_released
+            or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1'):
+        phase = 'revealing'   # 结算快照未放行：按座位降级为 revealing
     return {
         'kind': 'state_snapshot',
         'roomId': room.room_id,
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
-        'phase': (mgr.phase if mgr.phase != 'settled' or room._settlement_snapshot_released
-                  or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1' else 'revealing')
-        if mgr else room.status,
+        'matchId': match_id_of(room),
+        'phase': phase,
         'round': mgr.round if mgr else 1,
         'dealer': mgr.dealer if mgr else 0,
         'honba': mgr.honba if mgr else 0,
@@ -254,7 +327,7 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         if mgr and (mgr.phase != 'settled' or room._settlement_snapshot_released
                     or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1') else None,
         'announcement': mgr.announcement if mgr else None,
-        'matchFinished': bool(mgr.match_finished) if mgr else False,
+        'matchFinished': match_finished_of(room),
         'lastDiscard': mgr.last_discard if mgr else None,
         'winPresentation': mgr.win_presentation if mgr else None,
         'winningPlayerIndex': mgr.winning_player_index if mgr else -1,
@@ -301,6 +374,10 @@ class RoomSession:
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
+        # 本场开局时刻（看门狗的 ROOM_MATCH_MAX 判据）；未开局为 None。
+        self.match_started_at: Optional[float] = None
+        # 强制收尾幂等闸：一次对局只允许被判死收尾一次（见 force_finish）。
+        self._forced_finishing = False
         # 每座位引用的服务端提供商 id（开局携带 {seat: providerId}，key 全在服务端）；
         # 空 → 使用服务端默认提供商。仅会话内存，不落库/日志/响应。
         self._llm_seat_providers: dict[int, str] = {}
@@ -825,6 +902,9 @@ class RoomSession:
             rule_set=self.rules,
         )
         self.status = 'playing'
+        # 新一场：硬上限计时重新起算，并清掉上一场的强制收尾闸（否则再被判死时不收尾）。
+        self.match_started_at = time.monotonic()
+        self._forced_finishing = False
         self.game_task = asyncio.create_task(self._drive())
         logger.bind(room_id=self.room_id).info("开局已触发，游戏任务启动")
 
@@ -1431,6 +1511,63 @@ class RoomSession:
             logger.bind(room_id=self.room_id).exception("对局驱动异常，整场终止")
             raise
 
+    def _final_scores(self) -> list:
+        """终局分数列表（无 manager 时为空：强制收尾可能发生在任何阶段）。"""
+        if self.manager is None:
+            return []
+        return [{'seat': p.seat, 'name': p.name, 'score': p.score} for p in self.manager.players]
+
+    # ── 强制收尾（看门狗）───────────────────────────────
+
+    def force_finish(self, reason: str = 'stalled', *, cancel_task: bool = True) -> bool:
+        """强制收尾当前场次，返回是否真的收尾了（幂等，非对局中返回 False）。
+
+        **纯同步、绝不 await**：与 _drive 的收尾路径存在竞态——_drive 可能在任意
+        await 点被取消，此刻再 await 什么就可能互相等待或重复收尾。所以这里只做
+        状态切换 + 广播；落库与房间回收交给 finalize_forced()（由调用方 await）。
+
+        cancel_task：asyncio.Task.cancel() **不是线程安全的**。只有事件循环里的
+        看门狗可以传 True；REST 线程池触发的清扫只处理「任务已死」类，一律 False。
+        """
+        if self._forced_finishing or self.status != 'playing':
+            return False
+        self._forced_finishing = True
+        self.status = 'finished'
+        # 令 manager 的口径与房间一致：正常终局由 _drive→next_round 成对设置
+        # match_finished 与 phase='finished'，强制收尾绕过了那条路径，不补这两步会让
+        # REST 的 matchFinished / phase 与 status='finished' 互相矛盾（房间已结束却仍
+        # 报着对局中的阶段，例如 'thinking'）。
+        if self.manager is not None:
+            self.manager.match_finished = True
+            self.manager.phase = 'finished'
+        # _drive 的 `except asyncio.CancelledError: raise` 不会误把取消当异常置 error。
+        if cancel_task and self.game_task is not None and not self.game_task.done():
+            self.game_task.cancel()
+        # 对局已判死：在途 TTS 不再播（正常路径由 _drain_tts_tasks 收口）。
+        for task in list(self._tts_tasks):
+            task.cancel()
+        self._tts_tasks.clear()
+        final_scores = self._final_scores()
+        # 与 _drive 正常终局同一字段形状；forced 让前端/日志能区分强制与打完。
+        self.conn.broadcast({
+            'kind': 'match_finished',
+            'roomId': self.room_id,
+            'mode': self.mode,
+            'rulesetId': self.ruleset_id,
+            'finalScores': final_scores,
+            'forced': True,
+        })
+        logger.bind(room_id=self.room_id).warning(
+            f"对局被强制收尾 reason={reason} 场次={self.match_id}")
+        return True
+
+    async def finalize_forced(self) -> None:
+        """强制收尾后的善后：落库收口 + 按限时口径回收房间（不新写 DB 路径）。"""
+        await self._persist_match_end(self._final_scores())
+        # 与 _drive 同一口径：收尾时已超过房间限时 → 释放房间（close 内广播 room_closed）
+        if self.is_past_deadline():
+            room_registry.remove(self.room_id)
+
     def close(self) -> None:
         """关闭房间：通知在位客户端后取消游戏任务，落库 closed 状态。
 
@@ -1506,6 +1643,36 @@ class RoomRegistry:
         self._last_sweep = now
         self.sweep_expired(now)
 
+    def peek(self, room_id: str) -> Optional[RoomSession]:
+        """按房间码取会话，**不触发任何惰性清扫**。
+
+        看门狗收尾用：get() 会顺带 sweep_expired，而收尾正需要「读一下房间」这个
+        动作不产生「读一下就杀房间」的副作用。
+        """
+        return self._rooms.get(room_id)
+
+    def sweep_stalled(self, now: Optional[float] = None, *,
+                      allow_cancel: bool = False) -> list[str]:
+        """强制收尾僵尸/卡死对局，返回被收尾的房间码列表。
+
+        allow_cancel=False（REST 线程池等非事件循环线程）时只处理「任务已死」的
+        僵尸房间——它们没有任何任务要取消，pure 同步收尾是安全的；而卡死类
+        （任务仍活着）必须由事件循环里的看门狗带着 allow_cancel=True 处理，
+        因为 asyncio.Task.cancel() 不是线程安全的。
+
+        **不接进 _maybe_sweep**：那会让 rooms.get() 产生「读一下就杀房间」的副作用，
+        也会让只做查询的测试变得 flaky。看门狗与 create_room 显式调用本方法。
+        """
+        finished: list[str] = []
+        for rid, room in list(self._rooms.items()):
+            if not is_match_stalled(room, now):
+                continue
+            if not allow_cancel and match_is_driving(room):
+                continue
+            if room.force_finish('stalled', cancel_task=allow_cancel):
+                finished.append(rid)
+        return finished
+
     def sweep_expired(self, now: Optional[float] = None) -> list[str]:
         """回收所有过期的空房间，返回被回收的房间码列表（供测试直接触发）。"""
         now = now if now is not None else time.monotonic()
@@ -1527,3 +1694,37 @@ class RoomRegistry:
 
 # 共享房间注册表（Phase 6 起由 REST 层创建，WS 层读取；测试通过它注入/清理房间）
 room_registry = RoomRegistry()
+
+
+# ─── 常驻看门狗 ──────────────────────────────────────────
+# 僵尸房间既不能 start（ALREADY_STARTED）也不能 close（ROOM_PLAYING），并长期
+# 占着 MAX_ROOMS 槽位，所以必须有事件循环里的常驻兜底，而不是只靠惰性清扫。
+
+async def _room_watchdog_loop(registry: RoomRegistry) -> None:
+    """定期收尾僵尸/卡死对局。单次清扫失败只记日志，绝不退出循环。"""
+    logger.info(
+        f"房间看门狗启动 interval={ROOM_WATCHDOG_INTERVAL}s match_max={ROOM_MATCH_MAX}s")
+    while True:
+        await asyncio.sleep(ROOM_WATCHDOG_INTERVAL)
+        try:
+            finished = registry.sweep_stalled(allow_cancel=True)
+            for room_id in finished:
+                room = registry.peek(room_id)
+                if room is not None:
+                    await room.finalize_forced()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 落库/回收失败不能带走整个看门狗：下个周期继续兜底。
+            logger.exception("房间看门狗清扫异常（已跳过，继续运行）")
+
+
+def start_room_watchdog(registry: Optional[RoomRegistry] = None) -> Optional[asyncio.Task]:
+    """启动常驻看门狗任务；ROOM_WATCHDOG_INTERVAL<=0 → 返回 None（关闭）。
+
+    必须在事件循环里调用（uvicorn lifespan），任务随之绑定该循环。
+    """
+    if ROOM_WATCHDOG_INTERVAL <= 0:
+        logger.info("房间看门狗未启动（ROOM_WATCHDOG_INTERVAL<=0）")
+        return None
+    return asyncio.create_task(_room_watchdog_loop(registry or room_registry))

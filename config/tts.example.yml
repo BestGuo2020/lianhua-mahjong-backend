@@ -65,13 +65,15 @@ providers:
       relay_gpt:
         speaker: ICL_uranus_zh_female_tiexinnvyou_tob
       minimax:
-        speaker: ICL_uranus_zh_female_qinglenggaoya_tob
+        speaker: ICL_uranus_zh_female_keainvsheng_tob
       claude:
         speaker: ICL_uranus_zh_female_chengshujiejie_tob
       glm:
         speaker: zh_female_vv_uranus_bigtts
       doubao:
         speaker: zh_female_tianmeitaozi_uranus_bigtts
+      grok:
+        speaker: ICL_uranus_zh_female_keainvsheng_tob
     styles:
       激进:
         speech_rate: 15

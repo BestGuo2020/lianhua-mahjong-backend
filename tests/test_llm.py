@@ -1595,6 +1595,7 @@ class TestPerSeatAssembly:
         assert emitted[1] == {
             'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': expected_text, 'priority': 'important',
             'purpose': 'round-reaction', 'speechSource': 'model-message',
+            'hasAudio': False,
         }
         snapshot = build_snapshot(room, 0)
         assert [player['isLlm'] for player in snapshot['players']] == [False, True, False, False]

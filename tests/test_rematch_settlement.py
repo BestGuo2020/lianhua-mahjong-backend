@@ -84,3 +84,26 @@ async def test_classic_win_snapshot_precedes_server_round_speech(monkeypatch):
     kinds = [message['kind'] for message in messages]
     assert kinds.index('round_speech_done') < kinds.index('hand_result')
     assert room._round_speech_pending is False
+
+
+@pytest.mark.asyncio
+async def test_server_round_audio_does_not_wait_for_guessed_playback(monkeypatch):
+    room = RoomSession('AUDIO-PACE', mode='east', capacity=1)
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    room._presentation_audio_modes[0] = 'legacy-dynamic'
+
+    async def ensure_audio(*args):
+        return SimpleNamespace(
+            audio_url='/api/tts/audio/' + 'a' * 64 + '.mp3',
+            cached=True, size_bytes=64_000)
+
+    monkeypatch.setattr(room_module, 'get_tts_service',
+                        lambda: SimpleNamespace(available=True, ensure_audio=ensure_audio))
+    controller = SimpleNamespace(config=SimpleNamespace(style='steady'), provider_id='mock')
+    targets = room._model_speech_targets('round-reaction')
+    await asyncio.wait_for(
+        room._emit_llm_round_reaction(1, 'Round complete', controller, targets), 0.5)
+    messages = [queue.get_nowait(), queue.get_nowait()]
+    assert [item['kind'] for item in messages] == ['llm_message', 'llm_audio']
+    assert messages[0]['hasAudio'] is True

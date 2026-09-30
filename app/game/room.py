@@ -103,7 +103,6 @@ _LLM_DRAW_LINES = {
 }
 
 _ROUND_REACTION_TEXT_SECONDS = 1.5
-_ROUND_REACTION_MAX_SECONDS = 8.0
 _SpeechTarget = tuple[int, object]
 
 _GANG_SPEECH_ACTIONS = frozenset({'gang', 'added-kong', 'concealed-kong', 'wind-kong'})
@@ -1179,6 +1178,7 @@ class RoomSession:
         entry = {
             'id': message_id, 'seat': seat, 'text': text, 'priority': 'important',
             'purpose': 'round-reaction', 'speechSource': 'model-message',
+            'hasAudio': audio is not None,
         }
         self._llm_messages.append(entry)
         self._broadcast_model_speech(
@@ -1200,11 +1200,10 @@ class RoomSession:
             return
         if speech_targets is not None and not active_targets:
             return
-        duration = _ROUND_REACTION_TEXT_SECONDS if audio is None else min(
-            _ROUND_REACTION_MAX_SECONDS,
-            max(1.0, audio.size_bytes * 8 / 64_000 + 0.35),
-        )
-        await asyncio.sleep(duration)
+        # 有音频时由各客户端自己的播放队列串行，并在实际播完后放行结算。
+        # 服务端不再按文件大小猜播放时长，否则慢设备会在台词中途弹面板。
+        if audio is None:
+            await asyncio.sleep(_ROUND_REACTION_TEXT_SECONDS)
 
     async def _announce_llm_round_reactions(self, result: dict) -> None:
         """赢家先说，其余 LLM AI 顺时针依次说；荒庄按座位顺序，真人永不入队。"""

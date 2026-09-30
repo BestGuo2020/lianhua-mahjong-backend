@@ -7,14 +7,19 @@
 - 经典房间（RoomSession）：join 跳过预留座、SEAT_OCCUPIED/INVALID_SEAT 校验、取消预留即放行真人；
 - 血流房间（BloodFlowRoomSession）：同契约 + 预留进 llm_seats（其余空位仍走默认提供商）；
 - REST：写/清预留端点（房主身份校验）+ 房间信息下发 reservedSeats + 真人被拒的
-  SEATS_RESERVED（不是笼统的「房间已满」）+ 开局装配（预留座 LLM、其余空位默认提供商）。
+  SEATS_RESERVED（不是笼统的「房间已满」）+ 开局装配（预留座 LLM、其余空位默认提供商）；
+- 状态闸：对局中（playing）拒绝 ROOM_CLOSED，**终局（finished）允许改/清预留**
+  ——前端房间面板在整场结束后放开模型编辑入口，接口必须放行（2026-09-30 前端口径）。
 """
 
 import httpx
 import pytest
 
+import app.game.room as room_module
+from app.game.llm_player import LLMPlayer
 from app.game.room import RoomError, room_registry as rooms
 from app.llm.config import LlmProvider
+from tests.test_api import wait_until
 
 PROVIDERS = {
     'ds': LlmProvider('ds', 'DeepSeek', 'https://api.deepseek.com/v1', 'sk-ds',
@@ -224,3 +229,91 @@ async def test_reserve_endpoint_works_for_blood_flow_room(
         http.cookies.set('lgm_wakudemo_session', 'b-2')
         second = (await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})).json()
         assert second['seat'] == 2, '血流房间同契约：真人跳过预留座'
+
+
+class OfflineLlmPlayer(LLMPlayer):
+    """全程不触网的 LLMPlayer：_decide 恒回退启发式（真类的既有 fallback 路径）。
+
+    终局用例要真实打完整场到 finished；测试注册表里的 provider 是假 key，
+    真 LLMPlayer 会逐决策发起注定失败的 HTTP 请求。装配（config/provider_id/
+    isinstance）与真类完全一致，仅决策走 AIPlayer 启发式，够把整场打完。
+    """
+
+    async def _decide(self, built, ctx):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_reserve_endpoint_allows_changes_after_match_finished(
+        server, fresh_rooms, providers, temp_storage, monkeypatch):
+    """终局（finished）允许改/清预留：前端在整场结束后放开空位模型编辑入口，接口不得拒绝。
+
+    状态闸在共享 REST 端点（rooms.py reserve_llm_seat）：lobby/finished 放行、
+    playing 拒绝 ROOM_CLOSED，经典/血流房间同一口径。本用例用经典房间真实打完
+    一整场，并断言终局改的预留对下一场生效（重开按房间级预留兜底装配）。
+    """
+    monkeypatch.setattr(room_module, 'LLMPlayer', OfflineLlmPlayer)
+    async with httpx.AsyncClient(base_url=server['http'], trust_env=False) as http:
+        http.cookies.set('lgm_wakudemo_session', 'f-1')
+        room_id = (await http.post('/api/rooms',
+                                   json={'capacity': 4, 'llmEnabled': True})).json()['roomId']
+        host = (await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '房主'})).json()
+        assert host['seat'] == 0
+        room = rooms.get(room_id)
+        room.pace = {}   # 跳过真人节奏：本用例需要当场把整场打完
+        ready = await http.post(f'/api/rooms/{room_id}/ready',
+                                json={'seat': 0, 'rejoinCode': host['rejoinCode'], 'ready': True})
+        assert ready.status_code == 200
+        started = await http.post(f'/api/rooms/{room_id}/start', json={})
+        assert started.status_code == 200, started.text
+        assert room.status == 'playing'
+        # 对局中：前端编辑入口关闭，接口同口径拒绝（状态闸先于座位校验）
+        playing = await http.post(f'/api/rooms/{room_id}/llm-seats', json={
+            'seat': 0, 'rejoinCode': host['rejoinCode'], 'reserveSeat': 1, 'providerId': 'kimi'})
+        assert playing.status_code == 409
+        assert playing.json()['detail']['code'] == 'ROOM_CLOSED'
+        # 打完整场 → 终局（空位由 OfflineLlmPlayer 补位，房主座位断线 AI 托管）
+        # 120s 上限与 test_blood_flow_room 全机器人整场同口径：冷启动/负载高时 60s 不够。
+        await wait_until(lambda: room.status == 'finished', timeout=120)
+        info = (await http.get(f'/api/rooms/{room_id}')).json()
+        assert info['status'] == 'finished' and info['matchFinished'] is True
+        # 终局写预留 → 接受（前端「终局可调整提供商」入口不能被拒）
+        resp = await http.post(f'/api/rooms/{room_id}/llm-seats', json={
+            'seat': 0, 'rejoinCode': host['rejoinCode'], 'reserveSeat': 1,
+            'providerId': 'kimi', 'style': '高冷'})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()['reservedSeats'] == RESERVED_1
+        assert (await http.get(f'/api/rooms/{room_id}')).json()['reservedSeats'] == RESERVED_1
+        # 终局清预留 → 接受，且与大厅同契约：真人立刻能占回该座（finished 房可加入）
+        cleared = await http.post(f'/api/rooms/{room_id}/llm-seats', json={
+            'seat': 0, 'rejoinCode': host['rejoinCode'], 'reserveSeat': 1})
+        assert cleared.status_code == 200
+        assert cleared.json()['reservedSeats'] == []
+        http.cookies.set('lgm_wakudemo_session', 'f-2')
+        second = (await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})).json()
+        assert second['seat'] == 1, '终局清预留后真人应能占回该座'
+        # 非房主在终局同样不能改预留（身份校验不随终局放松）
+        forbid = await http.post(f'/api/rooms/{room_id}/llm-seats', json={
+            'seat': 1, 'rejoinCode': second['rejoinCode'], 'reserveSeat': 2, 'providerId': 'ds'})
+        assert forbid.status_code == 403
+        assert forbid.json()['detail']['code'] == 'NOT_CREATOR'
+        # 房主再写预留 → 重开一局：不带 llmSeats 入参也要按房间级预留装配（终局改动生效）
+        again = await http.post(f'/api/rooms/{room_id}/llm-seats', json={
+            'seat': 0, 'rejoinCode': host['rejoinCode'], 'reserveSeat': 2,
+            'providerId': 'kimi', 'style': '高冷'})
+        assert again.status_code == 200
+        assert again.json()['reservedSeats'] == [{'seat': 2, 'providerId': 'kimi', 'style': '高冷'}]
+        for seat, code in ((0, host['rejoinCode']), (1, second['rejoinCode'])):
+            ready = await http.post(f'/api/rooms/{room_id}/ready',
+                                    json={'seat': seat, 'rejoinCode': code, 'ready': True})
+            assert ready.status_code == 200
+        rematch = await http.post(f'/api/rooms/{room_id}/start', json={})
+        assert rematch.status_code == 200, rematch.text
+        controllers = room.manager.controllers
+        assert [type(item).__name__ for item in controllers[:2]] == [
+            'RemotePlayer', 'RemotePlayer']
+        assert isinstance(controllers[2], LLMPlayer)
+        assert controllers[2].config.api_key == 'sk-kimi'   # 终局改的预留给下一场装配
+        assert controllers[2].config.style == '高冷'
+        assert isinstance(controllers[3], LLMPlayer)
+        assert controllers[3].config.api_key == 'sk-ds'     # 未预留空位仍走默认提供商

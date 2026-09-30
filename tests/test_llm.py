@@ -1673,10 +1673,15 @@ class TestPerSeatAssembly:
         assert anime['players'][1]['hand'] == ['m1']
 
         room._settlement_snapshot_released = True
+        room._round_speech_pending = True
+        room._presentation_audio_modes[0] = 'legacy-dynamic'
         released = build_snapshot(room, 0)
         assert released['phase'] == 'settled'
         assert released['result']['winnerIndex'] == 1
+        assert released['roundSpeechPending'] is True
         assert released['players'][1]['hand'] == ['m1']
+        room._presentation_audio_modes[0] = 'anime-fixed-tts-v1'
+        assert build_snapshot(room, 0)['roundSpeechPending'] is False
 
     def test_presentation_audio_mode_is_connection_scoped_and_keeps_early_continue(self):
         from app.game.room import RoomSession

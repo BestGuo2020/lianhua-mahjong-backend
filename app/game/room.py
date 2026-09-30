@@ -326,6 +326,9 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'result': room._result_with_presentation_key()
         if mgr and (mgr.phase != 'settled' or room._settlement_snapshot_released
                     or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1') else None,
+        'roundSpeechPending': bool(mgr and mgr.phase == 'settled'
+                                   and room._round_speech_pending
+                                   and room._presentation_audio_mode(seat) != 'anime-fixed-tts-v1'),
         'announcement': mgr.announcement if mgr else None,
         'matchFinished': match_finished_of(room),
         'lastDiscard': mgr.last_discard if mgr else None,
@@ -403,8 +406,9 @@ class RoomSession:
         self._presentation_audio_modes: dict[int, str] = {}
         # 房间权威牌桌主题：房主大厅阶段可改，开局后锁定；广播给全房。
         self.table_theme: str = 'jade'
-        # settled 快照只在所有 LLM AI 依次发表完赛后感言后向客户端放行。
+        # 胡牌演出立即下发；局末 LLM 发言完成前由客户端暂缓打开结算面板。
         self._settlement_snapshot_released = False
+        self._round_speech_pending = False
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
@@ -680,8 +684,7 @@ class RoomSession:
         """向所有在位连接广播 per-seat 快照（本人手牌可见，他座隐藏）。"""
         if self.manager is not None:
             if self.manager.phase == 'settled' and not self._settlement_snapshot_released:
-                for seat in self._anime_fixed_connected_seats():
-                    self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
+                # 等 _drive 建立局末发言闸门后统一下发，避免二次元客户端收到重复结算快照。
                 return
             if self.manager.phase != 'settled':
                 self._settlement_snapshot_released = False
@@ -857,7 +860,16 @@ class RoomSession:
         default_provider：未指定座位时的默认提供商 id；均为会话内存状态。
         """
         if self.game_task is not None and not self.game_task.done():
-            raise RoomError('ALREADY_STARTED')
+            if self.status != 'finished':
+                raise RoomError('ALREADY_STARTED')
+            # 客户端已看到终局，但落库和旧任务收尾仍在途；重开须等它真正退出。
+            try:
+                await asyncio.wait_for(asyncio.shield(self.game_task), timeout=30)
+            except asyncio.TimeoutError as exc:
+                raise RoomError('MATCH_FINISHING') from exc
+            except asyncio.CancelledError:
+                if not self.game_task.cancelled():
+                    raise
         if self.status not in ('lobby', 'finished'):
             raise RoomError('ROOM_CLOSED')
         for seat, state in enumerate(self.seats):
@@ -870,6 +882,7 @@ class RoomSession:
             # 单机浏览器 provider/Key 与这里完全无关。
             raise RoomError('LLM_NOT_ENABLED')
         await self._cancel_tts_tasks()
+        self._round_speech_pending = False
         self._tts_match_generation += 1
         # 预留座位先行、开局入参覆盖：房主换机器/刷新/换客户端都不丢预留，
         # 而入参是房主此刻的最新意图（刚清掉预留时以入参为准）。
@@ -1148,8 +1161,9 @@ class RoomSession:
         if service.available:
             self._tts_match_stats['requests'] += 1
             try:
-                audio = await service.ensure_audio(
-                    text, controller.config.style, controller.provider_id)
+                audio = await asyncio.wait_for(
+                    service.ensure_audio(text, controller.config.style, controller.provider_id),
+                    timeout=4.0)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1457,7 +1471,13 @@ class RoomSession:
             await self.manager.start_game(self.mode)
             while not self.manager.match_finished:
                 if self.manager.phase == 'settled':
-                    # anime fixed 客户端先收到权威结算并运行本地四家队列；legacy 继续等旧感言。
+                    # 先下发完整结算事实，客户端立即播胡牌演出；发言队列与演出并行，
+                    # 只把结算面板挡到发言完成（对齐单机的视觉和语音顺序）。
+                    presentation_key = self._settlement_presentation_key()
+                    self._round_speech_pending = self._has_legacy_audio_audience() and any(
+                        isinstance(controller, LLMPlayer) for controller in self.manager.controllers)
+                    speech_pending = self._round_speech_pending
+                    self._settlement_snapshot_released = True
                     self.broadcast_snapshot()
                     try:
                         await self._announce_llm_round_reactions(self.manager.result or {})
@@ -1465,8 +1485,13 @@ class RoomSession:
                         raise
                     except Exception:
                         logger.exception('赛后 AI 感言队列失败，直接放行结算')
-                    self._settlement_snapshot_released = True
-                    self.broadcast_snapshot()
+                    finally:
+                        self._round_speech_pending = False
+                        if speech_pending and presentation_key:
+                            self.conn.broadcast({
+                                'kind': 'round_speech_done',
+                                'presentationKey': presentation_key,
+                            })
                     self.conn.broadcast({
                         'kind': 'hand_result',
                         'result': self._result_with_presentation_key(),

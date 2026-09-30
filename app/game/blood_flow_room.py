@@ -342,8 +342,19 @@ class BloodFlowRoomSession:
         finished 房间允许再开一场（对齐经典 room.py）：整场状态复位，旧一场已被
         新一场替换；托管（auto_seats）按座位保留。
         """
+        if self._drive_task is not None and not self._drive_task.done():
+            if self.status != 'finished':
+                raise RoomError('ALREADY_STARTED')
+            # 终局快照可能先于旧驱动任务退出；不能让两场共用同一个房间状态。
+            try:
+                await asyncio.wait_for(asyncio.shield(self._drive_task), timeout=30)
+            except asyncio.TimeoutError as exc:
+                raise RoomError('MATCH_FINISHING') from exc
+            except asyncio.CancelledError:
+                if not self._drive_task.cancelled():
+                    raise
         if self.match_started and self.status != 'finished':
-            return
+            raise RoomError('ALREADY_STARTED')
         if not all(state.ready for state in self.seats if state is not None):
             raise RoomError('NOT_ALL_READY')
         self._resolve_llm_seats(llm_seats or [], default_provider)

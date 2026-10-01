@@ -313,3 +313,92 @@ def test_find_claims_priority_hu_first():
     assert [c['playerIndex'] for c in claimants] == [3, 2]
     assert claimants[0]['canHu'] is True
     assert claimants[1]['canGang'] is True and claimants[1]['canHu'] is False
+
+
+# ── 听任意只能自摸（2026-10 规则）──────────────────────────────
+# 听任意 = 听口覆盖全部 34 种牌（典型形态：单吊精牌）。此时点炮胡（含地胡）
+# 与抢杠胡均不成立，只有自摸（含杠上开花）可胡。
+
+ANY_WAIT_JOKERS = ['m5']
+ANY_WAIT_HAND = [
+    'm1', 'm2', 'm3', 's1', 's2', 's3', 'p1', 'p2', 'p3',
+    'east', 'east', 'east', 'm5',   # 4 面子 + 单吊精牌 m5 → 补任意牌都能与精成对
+]
+PLAIN_TENPAI_HAND = [
+    'm1', 'm2', 'm3', 's1', 's2', 's3', 'p1', 'p2', 'p3',
+    'east', 'east', 'east', 's7',   # 单骑 s7：普通听口，点炮/抢杠照旧
+]
+
+
+def _any_wait_rules() -> LotusLegacyRuleSet:
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = list(ANY_WAIT_JOKERS)
+    return rules
+
+
+def test_any_wait_covers_every_tile():
+    rules = _any_wait_rules()
+    assert rules.is_any_wait(ANY_WAIT_HAND, 0)
+    assert len(rules.waiting_tiles(ANY_WAIT_HAND, 0)) == 34
+    assert not rules.is_any_wait(PLAIN_TENPAI_HAND, 0)
+    # 单骑 s7：听口 = s7 + 精牌面 m5（摸到精也能与 s7 成对），远未覆盖 34 种。
+    assert set(rules.waiting_tiles(PLAIN_TENPAI_HAND, 0)) == {'s7', 'm5'}
+
+
+def test_any_wait_blocks_discard_hu_but_keeps_self_draw():
+    """听任意时 find_claims 不再给出 canHu（地胡依附 canHu 一并失效）；自摸判定不受影响。"""
+    rules = _any_wait_rules()
+    # 自摸仍成立：补任意牌都成胡
+    assert rules.is_winning_hand([*ANY_WAIT_HAND, 's7'], 0)
+    assert rules.is_winning_hand([*ANY_WAIT_HAND, 'white'], 0)
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.phase = 'checking'
+    manager.players[0].hand = []
+    manager.players[1].hand = ['p9', 'p9', 'p9']
+    manager.players[2].hand = ['p8', 'p8', 'p8']
+    manager.players[3].hand = list(ANY_WAIT_HAND)
+    # s7 补进 3 号手牌成胡，但听任意 → 不提供点炮响应（无碰/杠/吃可响应时整列为空）
+    assert manager.find_claims(0, 's7') == []
+    # 对照：换成普通单骑听 s7 → 点炮胡照常提供
+    manager.players[3].hand = list(PLAIN_TENPAI_HAND)
+    claimants = manager.find_claims(0, 's7')
+    assert [c['playerIndex'] for c in claimants] == [3]
+    assert claimants[0]['canHu'] is True
+
+
+def test_any_wait_keeps_peng_gang_on_discard():
+    """听任意封的是胡，不封碰/杠/吃：精牌按自身牌面仍可参与副露响应。"""
+    rules = _any_wait_rules()
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.phase = 'checking'
+    manager.players[0].hand = []
+    manager.players[1].hand = ['s8', 's8', 's8']   # 与 p9 无碰/杠/吃关联
+    manager.players[2].hand = ['p8', 'p8', 'p8']
+    # 3 号：3 顺 + p9 刻 + 单吊精 m5 → 仍是听任意，同时手里有三张 p9。
+    manager.players[3].hand = [
+        'm1', 'm2', 'm3', 's1', 's2', 's3', 'p1', 'p2', 'p3',
+        'p9', 'p9', 'p9', 'm5',
+    ]
+    assert rules.is_any_wait(manager.players[3].hand, 0)
+    claimants = manager.find_claims(0, 'p9')
+    assert [c['playerIndex'] for c in claimants] == [3]
+    assert claimants[0]['canPeng'] is True
+    assert claimants[0]['canGang'] is True
+    assert claimants[0]['canHu'] is False   # p9 补进也成胡，但听任意被封锁
+
+
+def test_any_wait_blocks_rob_kong():
+    """听任意不可抢杠胡（只能自摸口径含抢杠）；普通听口抢杠照旧。"""
+    rules = _any_wait_rules()
+    assert rules.can_rob_kong(ANY_WAIT_HAND, 's7', 0) is False
+    assert rules.can_rob_kong(ANY_WAIT_HAND, 'm5', 0) is False
+    assert rules.can_rob_kong(PLAIN_TENPAI_HAND, 's7', 0) is True
+    assert rules.can_rob_kong(PLAIN_TENPAI_HAND, 'p4', 0) is False

@@ -10,7 +10,7 @@ from app.core.lotus_rules import (
     waiting_tiles,
 )
 from app.core.lotus_wall import build_lotus_wall, compute_jokers
-from app.core.tiles import create_wall
+from app.core.tiles import TILE_TYPES, create_wall
 from app.models.game import GamePlayer, Meld, TileType
 from app.rules.base import ClaimCapabilities
 from app.rules.fans import FanContext
@@ -104,6 +104,15 @@ class LotusLegacyRuleSet:
     def waiting_tiles(self, tiles: list[TileType], exposed_meld_count: int = 0) -> list[TileType]:
         return waiting_tiles(tiles, exposed_meld_count, self.round_state.jokers)
 
+    def is_any_wait(self, tiles: list[TileType], exposed_meld_count: int = 0) -> bool:
+        """听任意：听口覆盖全部 34 种牌（典型形态是单吊精牌）。
+
+        产品规则（2026-10 确认）：听任意只能自摸——点炮胡（含地胡）与抢杠胡
+        均不成立，只有摸牌成胡（杠上开花属自摸，保留）。与前端
+        lotusRules.isAnyWait 同口径：听牌面板显示「听任意」时即不提供吃胡。
+        """
+        return len(self.waiting_tiles(tiles, exposed_meld_count)) == len(TILE_TYPES)
+
     def matching_count(self, tiles: list[TileType], tile: TileType) -> int:
         return matching_count(tiles, tile)
 
@@ -117,8 +126,12 @@ class LotusLegacyRuleSet:
     def can_rob_kong(self, tiles: list[TileType], tile: TileType,
                      exposed_meld_count: int = 0) -> bool:
         ordinary = [tile] if tile in self.round_state.jokers or tile == 'white' else []
-        return is_winning_hand(
-            [*tiles, tile], exposed_meld_count, self.round_state.jokers, ordinary)
+        if not is_winning_hand(
+                [*tiles, tile], exposed_meld_count, self.round_state.jokers, ordinary):
+            return False
+        # 听任意只能自摸：抢杠胡一并不提供（manager.find_robbers 与
+        # remote_player 的抢杠意图校验都走这里，单点封锁）。
+        return not self.is_any_wait(tiles, exposed_meld_count)
 
     def wind_kong(self, hand: list[TileType]) -> bool:
         return all(wind in hand for wind in ('east', 'south', 'west', 'north'))

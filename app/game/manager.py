@@ -820,6 +820,10 @@ class GameManager:
             )
             can_hu = self.rules.code == 'lotus-legacy' and self.rules.is_winning_hand(
                 [*player.hand, tile], structural_meld_count(player), ordinary_jokers=ordinary_jokers)
+            if can_hu and self.rules.is_any_wait(player.hand, structural_meld_count(player)):
+                # 听任意（听口覆盖全部 34 种，典型是单吊精）只能自摸：不提供点炮胡，
+                # 地胡依附 can_hu 一并失效（2026-10 规则，前端 lotusRules 同口径）。
+                can_hu = False
             options = self.rules.chi_options(player.hand, tile) \
                 if self.rules.code == 'lotus-legacy' and self.seat_distance(from_, player_index) == 1 else []
             if can_hu or capabilities.can_peng or capabilities.can_gang or options:

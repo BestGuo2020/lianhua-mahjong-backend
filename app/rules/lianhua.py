@@ -30,17 +30,16 @@ def _build_fan_engine() -> FanEngine:
             code='self_draw', label='自摸',
             predicate=lambda ctx: not ctx.robbed_kong,
         ),
-        PredicateFan(
-            code='dealer', label='庄家', multiplier=2,
-            predicate=lambda ctx: ctx.dealer,
-        ),
+        # 2026-09 用户定案（对齐《江西莲花广麻》文档）：取消庄家倍率；
+        # 四红中固定 ×1（摸到即胡，不计自摸/无癞子/杠开），红中改为逐张加算底分。
         PredicateFan(
             code='no_joker', label='无癞子', multiplier=2,
             predicate=lambda ctx: ctx.no_joker,
         ),
         PredicateFan(
-            code='four_red', label='四红中', multiplier=4,
+            code='four_red', label='四红中', multiplier=1,
             predicate=lambda ctx: ctx.four_red,
+            suppresses=frozenset({'self_draw', 'no_joker', 'kong_bloom'}),
         ),
         PredicateFan(
             code='kong_bloom', label='杠上开花', multiplier=2,
@@ -51,6 +50,12 @@ def _build_fan_engine() -> FanEngine:
             predicate=lambda ctx: ctx.horse_hits > 0,
             points=lambda ctx: ctx.horse_hits * BASE_SCORE,
             equivalent_multiplier=lambda ctx: ctx.horse_hits,
+        ),
+        PredicateFan(
+            code='red_bonus', label='',
+            predicate=lambda ctx: ctx.red_count > 0,
+            points=lambda ctx: ctx.red_count * BASE_SCORE,
+            equivalent_multiplier=lambda ctx: ctx.red_count,
         ),
     ], base_score=BASE_SCORE)
 
@@ -118,12 +123,14 @@ class LianhuaGuangmaRuleSet:
 
     def evaluate_fans(self, context: FanContext) -> FanEvaluation:
         evaluation = self.fan_engine.evaluate(context)
-        # 马的展示文字带命中张数；番型定义本身保持无状态。
-        if context.horse_hits <= 0:
+        # 马与红中的展示文字带命中张数；番型定义本身保持无状态。
+        if context.horse_hits <= 0 and context.red_count <= 0:
             return evaluation
         hits = tuple(
             replace(hit, label=f'中马 {context.horse_hits} 张')
-            if hit.code == 'horse' else hit
+            if hit.code == 'horse'
+            else replace(hit, label=f'红中 {context.red_count} 张')
+            if hit.code == 'red_bonus' else hit
             for hit in evaluation.hits
         )
         return replace(evaluation, hits=hits)

@@ -45,32 +45,51 @@ def test_fan_engine_applies_one_way_override():
     assert result.points == 400
 
 
-def test_lianhua_rule_set_preserves_full_legacy_score_shape():
+def test_lianhua_four_red_is_flat_base_plus_additives():
+    """四红中固定 ×1：压掉自摸/无癞子/杠开，红中与中马逐张加底分（庄家番已删除）。"""
     context = FanContext(
         dealer=True,
         no_joker=True,
         four_red=True,
         kong_bloom=True,
         horse_hits=2,
-        robbed_kong=True,
+        red_count=4,
     )
     expected = {
-        'multiplier': 32,
-        'totalMultiplier': 34,
+        'multiplier': 1,
+        'totalMultiplier': 7,
         'horsePoints': 200,
-        'points': 3400,
+        'redPoints': 400,
+        'points': 700,
         'details': [
-            {'label': '抢杠胡', 'multiplier': 1},
-            {'label': '庄家', 'multiplier': 2},
-            {'label': '无癞子', 'multiplier': 2},
-            {'label': '四红中', 'multiplier': 4},
-            {'label': '杠上开花', 'multiplier': 2},
+            {'label': '四红中', 'multiplier': 1},
             {'label': '中马 2 张', 'points': 200},
+            {'label': '红中 4 张', 'points': 400},
         ],
     }
 
     assert get_default_rule_set().score_hand(context) == expected
     assert score_hand(
         dealer=True, no_joker=True, four_red=True, kong_bloom=True,
-        horse_hits=2, robbed_kong=True,
+        horse_hits=2, red_count=4,
     ) == expected
+
+
+def test_lianhua_normal_win_ignores_dealer_and_adds_red_bonus():
+    """普通自摸：庄家倍率已取消，无癞子 ×2，红中/中马按张数加底分。"""
+    context = FanContext(dealer=True, no_joker=True, horse_hits=3, red_count=2)
+    expected = {
+        'multiplier': 2,
+        'totalMultiplier': 7,
+        'horsePoints': 300,
+        'redPoints': 200,
+        'points': 700,
+        'details': [
+            {'label': '自摸', 'multiplier': 1},
+            {'label': '无癞子', 'multiplier': 2},
+            {'label': '中马 3 张', 'points': 300},
+            {'label': '红中 2 张', 'points': 200},
+        ],
+    }
+
+    assert get_default_rule_set().score_hand(context) == expected

@@ -108,13 +108,14 @@ class TestHorseAndScore:
         assert wall == ['m9', 'p1']  # 原地消耗牌头
         assert result['hits'] == 2  # m1、m5 是庄家(1/5/9)中马
 
-    def test_multipliers_multiply_then_horses_add(self):
-        """倍数累乘后，中马按张数乘底分加算"""
-        score = score_hand(dealer=True, no_joker=True, four_red=True, horse_hits=2)
-        assert score['multiplier'] == 16
-        assert score['totalMultiplier'] == 18
+    def test_four_red_flat_then_horses_and_reds_add(self):
+        """四红中固定 ×1，中马与红中按张数乘底分加算（庄家倍率已取消）"""
+        score = score_hand(dealer=True, no_joker=True, four_red=True, horse_hits=2, red_count=4)
+        assert score['multiplier'] == 1
+        assert score['totalMultiplier'] == 7
         assert score['horsePoints'] == 200
-        assert score['points'] == 1800
+        assert score['redPoints'] == 400
+        assert score['points'] == 700
 
     def test_kong_bloom_doubles_and_records_detail(self):
         """杠上开花翻倍并写入计分明细"""
@@ -123,12 +124,15 @@ class TestHorseAndScore:
         assert score['points'] == 200
         assert {'label': '杠上开花', 'multiplier': 2} in score['details']
 
-    def test_points_strictly_base_times_multiplier_plus_horses(self):
-        """总分严格按底分乘已知倍数再加中马底分"""
-        score = score_hand(dealer=True, no_joker=True, horse_hits=3)
-        assert score['multiplier'] == 4
+    def test_points_strictly_base_times_multiplier_plus_horses_and_reds(self):
+        """总分 = 底分 × 倍数 + 中马底分 + 红中底分（庄家倍率已取消）"""
+        score = score_hand(dealer=True, no_joker=True, horse_hits=3, red_count=2)
+        assert score['multiplier'] == 2
         assert score['totalMultiplier'] == 7
+        assert score['redPoints'] == 200
         assert score['points'] == 700
+        assert {'label': '庄家', 'multiplier': 2} not in score['details']
+        assert {'label': '红中 2 张', 'points': 200} in score['details']
 
 
 class TestKongAndWinScore:
@@ -174,14 +178,14 @@ class TestKongAndWinScore:
         assert apply_win_score(players, 1, 180, 3) == 180
         assert [p.score for p in players] == [1000, 1180, 1000, 820]
 
-    def test_non_dealer_win_dealer_pays_double(self):
-        """闲家胡牌时庄家支付双倍，其他闲家正常支付"""
+    def test_non_dealer_win_dealer_multiplier_removed(self):
+        """庄家倍率已取消：闲家胡牌时三家同额支付"""
         players = make_players()
-        assert apply_win_score(players, 1, 100, None, 0) == 400
-        assert [p.score for p in players] == [800, 1400, 900, 900]
+        assert apply_win_score(players, 1, 100, None, 0) == 300
+        assert [p.score for p in players] == [900, 1300, 900, 900]
 
-    def test_dealer_win_each_other_pays_doubled_points(self):
-        """庄家胡牌时每位闲家均支付已翻倍的胡牌分"""
+    def test_dealer_win_each_other_pays_same_points(self):
+        """庄家胡牌时每位闲家同额支付胡牌分（无庄家翻倍）"""
         players = make_players()
         assert apply_win_score(players, 0, 200, None, 0) == 600
         assert [p.score for p in players] == [1600, 800, 800, 800]

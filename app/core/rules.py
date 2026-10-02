@@ -246,11 +246,13 @@ def score_hand(
     kong_bloom: bool = False,
     horse_hits: int = 0,
     robbed_kong: bool = False,
+    red_count: int = 0,
 ) -> dict:
     """计算胡牌番数与分数。
 
-    底分 × 已知倍数 + 中马数 × 底分；中马按张数加底分。
-    返回 {multiplier, totalMultiplier, horsePoints, points, details}。
+    底分 × 倍数 + 中马数 × 底分 + 红中数 × 底分；中马与红中按张数加底分。
+    庄家倍率已取消（dealer 参数仅为兼容保留，广麻番表不再消费）。
+    返回 {multiplier, totalMultiplier, horsePoints, redPoints, points, details}。
     """
     # 延迟导入避免默认规则集复用本模块结构判定函数时形成循环导入。
     from app.rules.fans import FanContext
@@ -263,4 +265,5 @@ def score_hand(
         kong_bloom=kong_bloom,
         horse_hits=horse_hits,
         robbed_kong=robbed_kong,
+        red_count=red_count,
     ))

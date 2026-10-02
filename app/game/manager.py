@@ -1194,12 +1194,13 @@ class GameManager:
         # 买马从牌头摸走：头部物理消耗，推进牌头计数（对齐前端从牌头摸）。
         self._head_drawn += len(horses)
         score = self.rules.score_hand(FanContext(
-            dealer=winner_index == self.dealer,
             no_joker=not any(self.rules.is_joker_tile(tile) for tile in winner.hand),
             four_red=bool(options.get('fourRed')),
             kong_bloom=bool(options.get('kongBloom')),
             horse_hits=hits,
             robbed_kong=bool(options.get('robbedKong')),
+            # 红中逐张加算：redCount 在摸到红中亮出时已累加（四红中时为 4）。
+            red_count=winner.redCount,
         ))
         settlement = self.settlements.calculate_win(
             len(self.players), winner_index, score['points'],

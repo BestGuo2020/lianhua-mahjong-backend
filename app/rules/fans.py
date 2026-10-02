@@ -16,6 +16,8 @@ class FanContext:
     kong_bloom: bool = False
     horse_hits: int = 0
     robbed_kong: bool = False
+    # 赢家已亮出的红中张数：每张按一份底分加算（莲花广麻 2026-09 定案）。
+    red_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -76,10 +78,13 @@ class FanEvaluation:
                 details.append({'label': hit.label, 'points': hit.points})
             else:
                 details.append({'label': hit.label, 'multiplier': hit.multiplier})
+        # red_bonus 是莲花广麻的红中逐张加成分；单独拆出以保持 horsePoints 只含中马分。
+        red_points = sum(hit.points for hit in self.hits if hit.code == 'red_bonus')
         return {
             'multiplier': self.multiplier,
             'totalMultiplier': self.total_multiplier,
-            'horsePoints': self.additive_points,
+            'horsePoints': self.additive_points - red_points,
+            'redPoints': red_points,
             'points': self.points,
             'details': details,
         }

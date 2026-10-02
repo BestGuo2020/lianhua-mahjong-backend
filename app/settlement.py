@@ -117,13 +117,12 @@ class SettlementService:
         payer_index: Optional[int] = None,
         dealer_index: Optional[int] = None,
     ) -> SettlementResult:
+        # 广麻已取消庄家倍率（2026-09 用户定案）：所有付分者同额支付；
+        # dealer_index 参数仅为兼容调用方保留。
         payers = [payer_index] if _is_integer(payer_index) else [
             i for i in range(player_count) if i != winner_index
         ]
-        amounts = [
-            points * 2 if (winner_index != dealer_index and payer == dealer_index) else points
-            for payer in payers
-        ]
+        amounts = [points for _ in payers]
         total_won = sum(amounts)
         deltas = (
             {'playerIndex': winner_index, 'amount': total_won},

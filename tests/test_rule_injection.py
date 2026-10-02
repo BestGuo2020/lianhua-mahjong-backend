@@ -87,7 +87,8 @@ def test_manager_uses_injected_fan_engine_and_kong_base_score():
 
     assert kong_deltas[0] == {'playerIndex': 0, 'amount': 75}
     assert manager.result['points'] == 300
-    assert manager.result['totalWon'] == 1200
+    # 庄家倍率已取消（2026-09 定案）：三家同额各付 300，不再由庄家双付。
+    assert manager.result['totalWon'] == 900
 
 
 def test_room_propagates_rule_instance_to_human_and_ai_controllers():

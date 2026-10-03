@@ -34,6 +34,10 @@ def test_pair_diff_scoring_matches_ts_engine():
         result = evaluate_win(win_input_from_dict(case['input']), BLOOD_FLOW_CONFIG)
         expected = case['expected']
         checked += 1
+        if expected is None:
+            if result is not None:
+                mismatches.append({**case, 'reason': 'python accepted a forbidden win'})
+            continue
         if result is None:
             mismatches.append({**case, 'reason': 'python evaluated to not-winning', 'got': None})
             continue

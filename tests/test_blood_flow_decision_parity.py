@@ -89,8 +89,8 @@ def test_terminal_candidates_explain_zero_future_income():
         'immediate': view['ownScore']['paymentPerPayer'] * 3,
         'future': 0, 'total': view['ownScore']['paymentPerPayer'] * 3,
         'horizonOwnDraws': BLOOD_FLOW_LLM_AI.chain_horizon,
-        'model': 'legacy', 'scope': 'fixed-hand-gross',
-        'excludes': ['opponent-payments', 'future-hand-improvements'],
+        'model': 'self-draw-v1', 'scope': 'fixed-hand-gross',
+        'excludes': ['opponent-payments', 'future-hand-improvements', 'discard-wins'],
     }
     assert 'declinedReason' not in win['features']['ev']['win']
 
@@ -102,8 +102,8 @@ def test_reform_income_matches_the_frontend_recorded_view():
     win = next(c for c in built['candidates'] if c['action']['kind'] == 'win')
     reform = next(c for c in built['candidates']
                   if c['action'] == {'kind': 'discard', 'index': 1})
-    assert win['features']['ev']['income']['total'] == 420
-    assert reform['features']['ev']['income']['total'] == 2654
+    assert win['features']['ev']['income']['total'] == 65
+    assert reform['features']['ev']['income']['total'] == 240
     assert reform['features']['ukeire'] == 102
     assert decide_blood_flow_action_ev(view, BLOOD_FLOW_AI) == {
         'kind': 'discard', 'index': 4}

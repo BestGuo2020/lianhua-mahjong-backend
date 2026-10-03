@@ -142,6 +142,10 @@ def build_blood_flow_candidates(view: dict, request_id: str,
     ev_by_key: {'win': {...}, 'discard:3': {'reform': {...}}, 'pass': {...}, ...} 由
     blood_flow_ev_context 派生，注入 features['ev']。
     """
+    income_model = config.chain_forecast
+    if ev_by_key:
+        from app.core.blood_flow.ai import blood_flow_ev_context
+        income_model = blood_flow_ev_context(view, config)['incomeModel']
     actions = candidate_actions(view, config)
     seat = view['seat']
     hand = view['players'][seat]['hand']
@@ -211,8 +215,9 @@ def build_blood_flow_candidates(view: dict, request_id: str,
                 ev['income'] = {
                     'immediate': immediate, 'future': future, 'total': immediate + future,
                     'horizonOwnDraws': config.chain_horizon,
-                    'model': config.chain_forecast, 'scope': 'fixed-hand-gross',
-                    'excludes': ['opponent-payments', 'future-hand-improvements'],
+                    'model': income_model, 'scope': 'fixed-hand-gross',
+                    'excludes': ['opponent-payments', 'future-hand-improvements',
+                                 *(['discard-wins'] if income_model == 'self-draw-v1' else [])],
                     **({k: ev['reform'][k] for k in ('anyWait', 'waitCount')}
                        if ev.get('reform') else {}),
                 }
@@ -337,7 +342,7 @@ def blood_flow_prompt_rules() -> str:
             '一色三步高/四步高、一色三节高/四节高、清龙；没有任何计分番种时算鸡胡（0.5番、支付减半）。'
             '番型倍率按番值**相加**（清一色8 + 门清1 = 9），'
             '自然成立硬胡×2；真实倍率、封顶和收益以 currentWin 为准。可点炮、'
-            '多响和抢补杠，胡后继续；首次胡锁手，之后只能处理新摸牌，已胡仍付款；牌墙耗尽才结算。'
+            '多响和抢补杠，胡后继续；首次胡锁手，之后只能处理新摸牌，已胡仍付款；牌墙耗尽才结算。精吊任意听（自摸听口覆盖全部34种牌）只能自摸，吃胡（含地胡）与抢杠均禁止，杠上开花保留；首次胡锁手后仍按此限制。任意听的连锁收益只计算剩余本家摸牌机会，不包含吃胡收入。'
             '候选 features.ev 为本地期望收益估算（自摸按 2 倍×3 家、锁手连锁、'
             '首胡门槛、改张/单吊任意听、抢杠两值），仅作依据；早局低番胡会锁手，'
             '可结合潜力考虑改张或过。点炮赔付=底分10×番型倍率×事件倍率（点炮×1、'

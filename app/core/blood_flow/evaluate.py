@@ -1,6 +1,9 @@
 """血流胡牌评估 —— 对应 patterns/evaluate.ts。"""
 
+from functools import lru_cache
+
 from app.core.tiles import TILE_TYPES
+from app.core.lotus_rules import is_winning_hand
 
 from .catalog import match_patterns
 from .config import BLOOD_FLOW_CONFIG, BloodFlowConfig
@@ -35,8 +38,19 @@ def win_input_from_dict(data: dict) -> WinEvaluationInput:
     )
 
 
+@lru_cache(maxsize=20_000)
+def _self_draw_only(concealed: tuple[str, ...], exposed: int, jokers: tuple[str, ...]) -> bool:
+    # 与听口覆盖34种的判定等价，普通窄听找到第一个不能胡的牌即可停止。
+    return all(is_winning_hand([*concealed, tile], exposed, list(jokers))
+               for tile in TILE_TYPES)
+
+
 def evaluate_win(inp: WinEvaluationInput, config: BloodFlowConfig = BLOOD_FLOW_CONFIG) -> WinEvaluation | None:
     if validate_win_input(inp) is None:
+        return None
+    # 任意听禁止吃胡（含地胡）与抢杠，保留自摸和杠开。
+    if inp.source in ('discard', 'robbed-kong') and _self_draw_only(
+            tuple(sorted(inp.concealed)), len(inp.melds), tuple(sorted(inp.jokers))):
         return None
     best: WinEvaluation | None = None
 

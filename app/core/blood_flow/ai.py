@@ -549,12 +549,15 @@ def forecast_self_draw_income(hand: list[str], melds: list[dict], jokers: list[s
 
 def _chain_ev_legacy(hand: list[str], melds: list[dict], jokers: list[str],
                      visible: list[str], wall_count: int, model: str,
-                     config: BloodFlowAiConfig) -> float:
+                     config: BloodFlowAiConfig, offset: int = 4) -> float:
     if not hand:
         return 0.0
     waits = waiting_tiles_cached(hand, len(melds), jokers)
     if not waits:
         return 0.0
+    if is_any_tile_wait(waits):
+        return forecast_self_draw_income(
+            hand, melds, jokers, visible, wall_count, config.chain_horizon, offset)
     chain_factor = min(1.0, config.chain_horizon / max(1, wall_count / 4))
     total = 0.0
     for tile in waits:
@@ -581,7 +584,7 @@ def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
     if config.chain_forecast == 'self-draw-v1':
         return forecast_self_draw_income(
             hand, melds, jokers, visible, wall_count, config.chain_horizon, offset)
-    return _chain_ev_legacy(hand, melds, jokers, visible, wall_count, model, config)
+    return _chain_ev_legacy(hand, melds, jokers, visible, wall_count, model, config, offset)
 
 
 
@@ -895,9 +898,6 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
     player_count = max(1, len(view.get('players') or []))
     draw_offset = ((seat - source_seat + player_count) % player_count) or player_count
 
-    def chain(tiles: list[str], offset: int = draw_offset) -> float:
-        return chain_ev_est(tiles, melds, jokers, visible, wall_count,
-                            config.seven_pairs_model, config, offset)
     own_actions = view.get('ownActions') or []
     win_offered = any(a['kind'] == 'win' for a in own_actions)
     score = view.get('ownScore')
@@ -905,6 +905,21 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
     immediate_total = (score or {}).get('paymentPerPayer', 0) * payers
     locked_hand = [t for i, t in enumerate(hand) if i != drawn_index] \
         if (window and window.get('kind') == 'turn' and drawn_index >= 0) else list(hand)
+    reform_hands = [[t for i, t in enumerate(hand) if i != action['index']]
+                    for action in own_actions
+                    if action['kind'] == 'discard' and action['index'] != drawn_index] \
+        if not locked and window and window['kind'] == 'turn' and source.get('kind') == 'draw' \
+        and drawn_index >= 0 and win_offered else []
+    income_model = 'self-draw-v1' if config.chain_forecast == 'legacy' and any(
+        is_any_tile_wait(waiting_tiles_cached(tiles, len(melds), jokers))
+        for tiles in [locked_hand, *reform_hands]) else config.chain_forecast
+
+    def chain(tiles: list[str], offset: int = draw_offset) -> float:
+        if income_model == 'self-draw-v1':
+            return forecast_self_draw_income(tiles, melds, jokers, visible, wall_count,
+                                             config.chain_horizon, offset)
+        return chain_ev_est(tiles, melds, jokers, visible, wall_count,
+                            config.seven_pairs_model, config, offset)
     chain_after_win = chain(locked_hand) if win_offered else 0.0
     win_ev = immediate_total + chain_after_win
     floor_waived = _is_last_opportunity_ron(view, config)
@@ -949,7 +964,7 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
         }
 
     return {
-        'locked': locked, 'wallCount': wall_count, 'drawnIndex': drawn_index,
+        'locked': locked, 'incomeModel': income_model, 'wallCount': wall_count, 'drawnIndex': drawn_index,
         'hand': hand, 'melds': melds, 'jokers': jokers, 'winOffered': win_offered,
         'immediateTotal': immediate_total, 'chainAfterWin': chain_after_win, 'winEv': win_ev,
         'floor': floor, 'floorWaived': floor_waived, 'floorStage': floor_stage, 'potentialTotal': potential_total,

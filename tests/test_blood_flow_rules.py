@@ -72,21 +72,22 @@ def evaluate(case: dict):
     return evaluate_win(win_input_from_dict(case), BLOOD_FLOW_CONFIG)
 
 
-def test_external_joker_tile_keeps_only_its_own_identity():
+def test_external_joker_identity_does_not_bypass_any_wait_rule():
     # 点炮胡来的精牌只按本张使用（外来精不保留万能身份）；
-    # 手中精牌仍可替任意：红中替东风与真东风成对 → 软胡成立。
+    # 手中精仍能替东风与真东风成对，但这副暗手属于任意听，吃胡被规则禁止。
     case = {
         'concealed': ['red', 'red', 'red', 'm1', 'm2', 'm3', 'p4', 'p5', 'p6', 's7', 's8', 's9', 'east'],
         'melds': [], 'winningTile': 'red', 'source': 'discard', 'jokers': ['red'], 'opening': None,
     }
-    result = evaluate(case)
-    assert result is not None
-    assert result.score.hard_win is False
-    # 外来红中不能替东风，因此不存在"红中红中红中 + 东风东风"全自然分解之外的更高番硬胡。
-    # 标准四面子一将型无副露 → 计门清平胡（2 番）：倍率 = (1 + (2-1)) × 点炮 1 = 2 → 20 点。
-    # 同口径锚点：共享夹具 external-joker-only-one-ordinary（同为无副露标准型，20 点）。
-    assert result.score.pattern_multiplier == 2
-    assert result.score.payment_per_payer == 20
+    # 结构分解仍保持外来精牌按本张使用；任意听规则在胡牌入口禁止吃胡。
+    from app.core.blood_flow.decompose import visit_decompositions
+    assert evaluate(case) is None
+    decompositions = []
+    visit_decompositions(win_input_from_dict(case), decompositions.append)
+    assert decompositions
+    assert all(d.assignments[-1].represented == 'red' for d in decompositions)
+    assert any(any(a.physical == 'red' and a.represented == 'east'
+                   for a in d.assignments[:-1]) for d in decompositions)
 
 
 def test_winning_joker_stays_wild_on_self_draw():

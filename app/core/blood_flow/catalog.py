@@ -76,6 +76,9 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
         result.append('all-honors')
     if all(t in ('s2', 's3', 's4', 's6', 's8', 'green') for t in tiles):
         result.append('all-green')
+    # 断幺九只看成牌牌面，标准型与七对（含豪华七对）都可叠加。
+    if all(not is_honor(t) and not is_terminal(t) for t in tiles):
+        result.append('all-simples')
     if hand.shape == 'sevenPairs':
         return result
     melds = [g for g in hand.groups if g.kind != 'pair']
@@ -114,9 +117,6 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
         if all(count >= (3 if i in (0, 8) else 1) for i, count in enumerate(counts)):
             result.append('nine-gates')
     # —— 2026-09-12 第二版番种表新增 ——
-    # 断幺九：全部为 2~8 数牌。
-    if all(not is_honor(t) and not is_terminal(t) for t in tiles):
-        result.append('all-simples')
     # 全带幺：每副面子与将牌都含幺九或字牌（允许 123 / 789 这类含幺的顺子）。
     if all(any(is_honor(t) or is_terminal(t) for t in g.tiles) for g in hand.groups):
         result.append('all-with-terminals')

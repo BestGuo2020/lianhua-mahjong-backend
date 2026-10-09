@@ -187,3 +187,39 @@ def test_short_kong_hand_is_not_a_win():
                  'tiles': ['east', 'south', 'west', 'north'], 'windKong': True}
     assert _evaluate(['m4', 'm5', 'm6', 'east'], 'east',
                      melds=[wind_meld, _kong('gang', 'm1')]) is None
+
+def test_seven_pairs_all_simples_payments():
+    hand = ['m2', 'm2', 'm4', 'm4', 'p3', 'p3', 'p5', 'p5', 's2', 's2', 's6', 's6', 's8']
+    for source, payment in [('discard', 140), ('self-draw', 280)]:
+        win = _evaluate(hand, 's8', source)
+        assert win.decomposition.shape == 'sevenPairs'
+        assert sorted(item.id for item in win.score.items) == ['all-simples', 'concealed-hand', 'sevenPairs']
+        assert win.score.pattern_multiplier == 7
+        assert win.score.payment_per_payer == payment
+
+
+def test_luxury_seven_pairs_all_simples_payments():
+    win = _evaluate(['m2', 'm2', 'm2', 'm2', 'p3', 'p3', 'p5', 'p5', 's2', 's2', 's6', 's6', 's8'], 's8')
+    assert sorted(item.id for item in win.score.items) == ['all-simples', 'concealed-hand', 'luxury-seven-pairs']
+    assert win.score.pattern_multiplier == 9
+    assert win.score.payment_per_payer == 180
+
+
+def test_seven_pairs_all_simples_uses_represented_joker_tiles():
+    for luxury in [False, True]:
+        hand = ['m2' if luxury else 'm4', 'east', 'm2', 'm2', 'p3', 'p3', 'p5', 'p5', 's2', 's2', 's6', 's6', 's8']
+        win = _evaluate(hand, 's8', jokers=['east'])
+        assert win.decomposition.shape == 'sevenPairs'
+        assert 'all-simples' in [item.id for item in win.score.items]
+        assert ('luxury-seven-pairs' if luxury else 'sevenPairs') in [item.id for item in win.score.items]
+        assert not win.score.hard_win
+        assert win.score.pattern_multiplier == (9 if luxury else 7)
+        assert win.score.payment_per_payer == (90 if luxury else 70)
+
+
+def test_seven_pairs_with_terminals_or_honors_excludes_all_simples():
+    for tile in ['m1', 'p9', 'east']:
+        win = _evaluate([tile, tile, 'm4', 'm4', 'p3', 'p3', 'p5', 'p5', 's2', 's2', 's6', 's6', 's8'], 's8')
+        assert win.decomposition.shape == 'sevenPairs'
+        assert 'all-simples' not in [item.id for item in win.score.items]
+        assert win.score.pattern_multiplier == 5

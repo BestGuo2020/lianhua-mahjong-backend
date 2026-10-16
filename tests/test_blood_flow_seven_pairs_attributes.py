@@ -31,6 +31,10 @@ CASES = [
 def test_seven_pairs_attributes_and_payments(name, hand, jokers, patterns, multiplier, natural, source):
     win = evaluate_win(win_input_from_dict(dict(concealed=hand[:-1], winningTile=hand[-1],
                                                melds=[], jokers=jokers, source=source, opening=None)))
+    # 六对加一张精牌听任意，清幺九也不能突破只能自摸的限制。
+    if name == 'joker-luxury-pure-terminals' and source == 'discard':
+        assert win is None
+        return
     assert win is not None
     assert win.decomposition.shape == 'sevenPairs'
     assert sorted(item.id for item in win.score.items) == sorted(['concealed-hand', *patterns])

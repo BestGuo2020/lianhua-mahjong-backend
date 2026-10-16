@@ -40,8 +40,8 @@ def win_input_from_dict(data: dict) -> WinEvaluationInput:
 
 @lru_cache(maxsize=20_000)
 def _self_draw_only(concealed: tuple[str, ...], exposed: int, jokers: tuple[str, ...]) -> bool:
-    # 与听口覆盖34种的判定等价，普通窄听找到第一个不能胡的牌即可停止。
-    return all(is_winning_hand([*concealed, tile], exposed, list(jokers))
+    # 手中已持有四张的牌面无需再等第五张；普通窄听找到一个不能胡的真实牌面即可停止。
+    return all(concealed.count(tile) >= 4 or is_winning_hand([*concealed, tile], exposed, list(jokers))
                for tile in TILE_TYPES)
 
 

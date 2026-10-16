@@ -172,7 +172,7 @@ def own_hand_facts(hand: Sequence[str], melds: Sequence[dict], jokers: Sequence[
     ``directions`` 为 ``[{'weight': …, 'progress': …, 'label': …}]``（由 pattern_potentials
     派生，与 TS 调用点同形）。听口判定用 ``waiting_tiles_cached``（只判听口，不跑向听搜索）。
     """
-    from app.core.blood_flow.ai import waiting_tiles_cached
+    from app.core.blood_flow.ai import waiting_tiles_cached, is_any_tile_wait
     from app.core.tiles import TILE_TYPES
 
     resolved = config if config is not None else BLOOD_FLOW_DEFENSE
@@ -197,7 +197,7 @@ def own_hand_facts(hand: Sequence[str], melds: Sequence[dict], jokers: Sequence[
         if not waits:
             continue
         can_tenpai = True
-        if len(waits) >= len(TILE_TYPES):
+        if is_any_tile_wait(waits, after):
             any_wait_reachable = True
         effective = sum(remaining(wait) for wait in waits)
         if effective > best_wait_remaining:

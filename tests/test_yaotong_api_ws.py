@@ -205,6 +205,36 @@ async def test_yaotong_two_clients_play_full_match(server, fresh_rooms, mode):
 
 
 @pytest.mark.asyncio
+async def test_yaotong_auto_seat_plays_to_match_end(server, fresh_rooms):
+    room = await create_room(server['http'], matchLength=4)
+    joined = await join_room(server['http'], room['roomId'], '甲')
+    await ready_room(
+        server['http'], room['roomId'], joined['seat'], joined['rejoinCode'])
+    session = rooms.get(room['roomId'])
+    session.ai_delay = 0
+    session.match_length = 1
+
+    async with websockets.connect(
+        ws_url(server['ws'], room['roomId'], joined['rejoinCode']),
+    ) as ws:
+        assert (await recv_json(ws))['kind'] == 'rejoin_ok'
+        await recv_json(ws)
+        await start_room(server['http'], room['roomId'])
+        final = None
+        while final is None:
+            message = await recv_json(ws, timeout=30)
+            if message.get('opening'):
+                await ws.send(json.dumps({
+                    'kind': 'opening_done', 'round': message.get('round'),
+                }))
+                await ws.send(json.dumps({'kind': 'auto', 'enabled': True}))
+            if message.get('matchFinished'):
+                final = message
+    assert final['roundResult']['finished'] is True
+    assert sum(final['roundResult']['deltas']) == 0
+
+
+@pytest.mark.asyncio
 async def test_ws_yaotong_opening_and_original_action(server, fresh_rooms):
     room = await create_room(server['http'], matchLength=4)
     joined = await join_room(server['http'], room['roomId'], '甲')

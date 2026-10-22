@@ -350,6 +350,8 @@ class RoomSession:
         self.room_id = room_id
         self.mode = mode
         self.ruleset_id = ruleset_id
+        # 经典/血流由 mode 推导；幺筒由建房参数显式指定（4/8/16）。
+        self.match_length = 4 if mode == 'east' else 8
         # 用户请求的 LLM 开关；实际生效值 effective_llm_enabled 还需服务端能力可用（§9.3）
         self.llm_enabled = llm_enabled
         # capacity = 真人座位上限（2/3/4）；麻将桌固定 4 人，空位由 AI 补足
@@ -1408,7 +1410,7 @@ class RoomSession:
 
         def write():
             self.match_id = self.storage.create_match(
-                self.room_id, self.mode, self.ruleset_id)
+                self.room_id, self.mode, self.ruleset_id, self.match_length)
             self.storage.update_room_status(self.room_id, 'playing')
             # 记录参赛者身份（战绩真源；room_seats 离房即删，不能作为战绩依据）
             self.storage.upsert_match_players(self.match_id, players)
@@ -1632,11 +1634,19 @@ class RoomRegistry:
         self._maybe_sweep()
         if room_id in self._rooms:
             raise RoomError('ROOM_EXISTS')
-        if kwargs.get('ruleset_id') == 'lotus-blood-flow':
+        match_length = kwargs.pop('match_length', None)
+        ruleset_id = kwargs.get('ruleset_id')
+        if ruleset_id == 'lotus-blood-flow':
             from app.game.blood_flow_room import BloodFlowRoomSession
             room = BloodFlowRoomSession(room_id, **kwargs)
+        elif ruleset_id == 'yaotong':
+            from app.game.yaotong_room import YaotongRoomSession
+            room = YaotongRoomSession(
+                room_id, match_length=match_length or 4, **kwargs)
         else:
             room = RoomSession(room_id, **kwargs)
+        if match_length is not None:
+            room.match_length = match_length
         self._rooms[room_id] = room
         return room
 

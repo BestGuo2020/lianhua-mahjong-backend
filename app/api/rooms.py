@@ -109,6 +109,8 @@ def _room_response(room: RoomSession) -> dict:
         'roomId': room.room_id,
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
+        'matchLength': getattr(
+            room, 'match_length', 4 if room.mode == 'east' else 8),
         'capacity': room.capacity,
         'status': room.status,
         # 场次身份：客户端据此判断「房间里正进行的是不是我等的那一场」。
@@ -142,7 +144,9 @@ class CreateRoomRequest(BaseModel):
     mode: Literal['east', 'hanchan'] = 'east'
     capacity: int = Field(default=4, ge=2, le=4)
     playerId: Optional[str] = Field(default=None, max_length=64)  # 已废弃：联机身份由登录会话推导
-    rulesetId: Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow'] = 'lotus-classic'
+    rulesetId: Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong'] = 'lotus-classic'
+    # 幺筒场次：4/8/16 庄。经典/血流仍由 mode 推导（east=4、hanchan=8）。
+    matchLength: Literal[4, 8, 16] = 4
     # 空座 AI 补位是否使用大模型（服务端未配置时静默降级为 False）
     llmEnabled: bool = False
 
@@ -211,19 +215,32 @@ def create_room(body: CreateRoomRequest,
     room_registry.sweep_expired()
     if room_registry.count() >= MAX_ROOMS:
         raise HTTPException(status_code=409, detail={'code': 'ROOM_LIMIT_REACHED'})
+    if body.rulesetId == 'yaotong':
+        if body.capacity != 4:
+            raise HTTPException(status_code=409, detail={'code': 'INVALID_CAPACITY'})
+        if body.llmEnabled:
+            # MVP 只做真人 + 服务端 AI 补位；LLM 座位后置。
+            raise HTTPException(status_code=409, detail={'code': 'LLM_NOT_ENABLED'})
+        match_length = body.matchLength
+    else:
+        match_length = 4 if body.mode == 'east' else 8
     room_id = _new_room_id()
     try:
         # 真人联机房间注入视觉节奏（AI 出牌/碰杠有可读延迟，对齐前端 PACE_MS）；
         # 测试直接构造 RoomSession 不经此路径，保持默认 0 加速
         room = room_registry.create(
-        room_id, mode=body.mode, capacity=body.capacity, storage=storage,
-            pace=PLAY_PACE, ruleset_id=body.rulesetId, llm_enabled=body.llmEnabled)
+            room_id, mode=body.mode, capacity=body.capacity, storage=storage,
+            pace=PLAY_PACE, ruleset_id=body.rulesetId,
+            llm_enabled=body.llmEnabled, match_length=match_length)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
-    storage.create_room(room_id, body.mode, body.capacity, body.rulesetId)
+    storage.create_room(
+        room_id, body.mode, body.capacity, body.rulesetId, match_length)
     storage.update_room_status(room_id, 'lobby')
-    logger.bind(room_id=room_id).info(f"创建房间 mode={body.mode} capacity={body.capacity}")
+    logger.bind(room_id=room_id).info(
+        f"创建房间 mode={body.mode} capacity={body.capacity} "
+        f"ruleset={body.rulesetId} matchLength={match_length}")
     return _room_response(room)
 
 
@@ -352,6 +369,8 @@ async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> d
         }
         for item in (body.llmSeats if body else [])
     ]
+    if entries and room.ruleset_id == 'yaotong':
+        raise HTTPException(status_code=409, detail={'code': 'LLM_NOT_ENABLED'})
     if entries:
         providers = load_llm_providers()
         seats = [entry['seat'] for entry in entries]

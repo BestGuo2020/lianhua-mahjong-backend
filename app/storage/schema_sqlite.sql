@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   id          TEXT PRIMARY KEY,
   mode        TEXT NOT NULL CHECK (mode IN ('east','hanchan')),
   ruleset_id  TEXT NOT NULL DEFAULT 'lotus-classic',
+  match_length INTEGER NOT NULL DEFAULT 4,
   capacity    INTEGER NOT NULL DEFAULT 4,
   status      TEXT NOT NULL DEFAULT 'lobby',
   created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS matches (
   room_id      TEXT NOT NULL REFERENCES rooms(id),
   mode         TEXT NOT NULL,
   ruleset_id   TEXT NOT NULL DEFAULT 'lotus-classic',
+  match_length INTEGER NOT NULL DEFAULT 4,
   start_at     DATETIME NOT NULL DEFAULT (datetime('now')),
   end_at       DATETIME,
   final_scores TEXT

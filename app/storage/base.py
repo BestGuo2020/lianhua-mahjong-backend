@@ -45,6 +45,7 @@ def map_match(row, rounds: Sequence) -> dict:
         'roomId': row['room_id'],
         'mode': row['mode'],
         'rulesetId': _row_value(row, 'ruleset_id', 'lotus-classic'),
+        'matchLength': _row_value(row, 'match_length', 4),
         'startAt': row['start_at'],
         'endAt': row['end_at'],
         'finalScores': _decode_json(row['final_scores']),
@@ -61,6 +62,7 @@ def map_match_summary(row) -> dict:
         'id': row['id'],
         'mode': row['mode'],
         'rulesetId': _row_value(row, 'ruleset_id', 'lotus-classic'),
+        'matchLength': _row_value(row, 'match_length', 4),
         'startAt': row['start_at'],
         'endAt': row['end_at'],
         'finalScores': _decode_json(row['final_scores']),
@@ -154,12 +156,14 @@ class BaseStorage(ABC):
     # ── 房间 ─────────────────────────────────────────────
 
     def create_room(self, room_id: str, mode: str, capacity: int,
-                    ruleset_id: str = 'lotus-classic') -> None:
+                    ruleset_id: str = 'lotus-classic',
+                    match_length: int = 4) -> None:
         with self._conn() as conn:
             self._execute(
                 conn,
-                'INSERT INTO rooms (id, mode, capacity, ruleset_id) VALUES (:p, :p, :p, :p)',
-                (room_id, mode, capacity, ruleset_id),
+                'INSERT INTO rooms (id, mode, capacity, ruleset_id, match_length) '
+                'VALUES (:p, :p, :p, :p, :p)',
+                (room_id, mode, capacity, ruleset_id, match_length),
             )
 
     def update_room_status(self, room_id: str, status: str) -> None:
@@ -175,13 +179,15 @@ class BaseStorage(ABC):
     # ── 对局 ─────────────────────────────────────────────
 
     def create_match(self, room_id: str, mode: str,
-                     ruleset_id: str = 'lotus-classic') -> str:
+                     ruleset_id: str = 'lotus-classic',
+                     match_length: int = 4) -> str:
         match_id = _new_id()
         with self._conn() as conn:
             self._execute(
                 conn,
-                'INSERT INTO matches (id, room_id, mode, ruleset_id) VALUES (:p, :p, :p, :p)',
-                (match_id, room_id, mode, ruleset_id),
+                'INSERT INTO matches (id, room_id, mode, ruleset_id, match_length) '
+                'VALUES (:p, :p, :p, :p, :p)',
+                (match_id, room_id, mode, ruleset_id, match_length),
             )
         return match_id
 

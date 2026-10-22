@@ -114,6 +114,7 @@ class BloodFlowRoomSession:
                  pace: int = 0, llm_enabled: bool = False, llm_request_fn=None):
         self.room_id = room_id
         self.mode = mode
+        self.match_length = 4 if mode == 'east' else 8
         self.capacity = capacity
         self.player_count = capacity
         self.ruleset_id = ruleset_id

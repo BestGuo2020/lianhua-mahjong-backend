@@ -1,0 +1,769 @@
+{
+  "steps": 41,
+  "trace": [
+    {
+      "step": 0,
+      "seat": 0,
+      "command": {
+        "type": "original",
+        "index": null,
+        "declare": true,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 1,
+      "seat": 1,
+      "command": {
+        "type": "original",
+        "index": null,
+        "declare": true,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 2,
+      "seat": 2,
+      "command": {
+        "type": "original",
+        "index": null,
+        "declare": true,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 3,
+      "seat": 3,
+      "command": {
+        "type": "original",
+        "index": null,
+        "declare": true,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 4,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 5,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 6,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 7,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 8,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 9,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 10,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 11,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 12,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 13,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 14,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 15,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 16,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 17,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 18,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 19,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 20,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 21,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 22,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 23,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 24,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 25,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 26,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 27,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 28,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 29,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 30,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 31,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 32,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 33,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 34,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 35,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 36,
+      "seat": 0,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 37,
+      "seat": 1,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 38,
+      "seat": 2,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 39,
+      "seat": 3,
+      "command": {
+        "type": "discard",
+        "index": 13,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    },
+    {
+      "step": 40,
+      "seat": 0,
+      "command": {
+        "type": "hu",
+        "index": null,
+        "declare": null,
+        "action": null,
+        "plan": null,
+        "tile": null
+      },
+      "ok": true
+    }
+  ],
+  "final": {
+    "phase": "settled",
+    "serial": 79,
+    "steps": 41,
+    "scores": [
+      631,
+      -221,
+      -189,
+      -221
+    ],
+    "handCounts": [
+      14,
+      13,
+      13,
+      13
+    ],
+    "riverCounts": [
+      9,
+      9,
+      9,
+      9
+    ],
+    "melds": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "result": {
+      "kind": "win",
+      "winners": [
+        0
+      ],
+      "source": null,
+      "winKind": "self",
+      "tile": 9,
+      "reason": "胡牌结算",
+      "indicator": 9,
+      "chicken": 10,
+      "deltas": [
+        631,
+        -221,
+        -189,
+        -221
+      ],
+      "nextDealer": 0,
+      "finished": false,
+      "transfers": [
+        [
+          1,
+          0,
+          "胡牌分",
+          165,
+          1,
+          165,
+          "三龙七＋原报"
+        ],
+        [
+          1,
+          0,
+          "杀报加分",
+          40,
+          1,
+          40,
+          "杀原报"
+        ],
+        [
+          2,
+          0,
+          "胡牌分",
+          165,
+          1,
+          165,
+          "三龙七＋原报"
+        ],
+        [
+          2,
+          0,
+          "杀报加分",
+          40,
+          1,
+          40,
+          "杀原报"
+        ],
+        [
+          3,
+          0,
+          "胡牌分",
+          165,
+          1,
+          165,
+          "三龙七＋原报"
+        ],
+        [
+          3,
+          0,
+          "杀报加分",
+          40,
+          1,
+          40,
+          "杀原报"
+        ],
+        [
+          1,
+          0,
+          "鸡分",
+          12,
+          1,
+          12,
+          "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+        ],
+        [
+          2,
+          0,
+          "鸡分",
+          12,
+          1,
+          12,
+          "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+        ],
+        [
+          3,
+          0,
+          "鸡分",
+          12,
+          1,
+          12,
+          "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+        ],
+        [
+          0,
+          1,
+          "鸡分",
+          4,
+          1,
+          4,
+          "一万·冲鸡 4分"
+        ],
+        [
+          2,
+          1,
+          "鸡分",
+          4,
+          1,
+          4,
+          "一万·冲鸡 4分"
+        ],
+        [
+          3,
+          1,
+          "鸡分",
+          4,
+          1,
+          4,
+          "一万·冲鸡 4分"
+        ],
+        [
+          0,
+          2,
+          "鸡分",
+          12,
+          1,
+          12,
+          "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+        ],
+        [
+          1,
+          2,
+          "鸡分",
+          12,
+          1,
+          12,
+          "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+        ],
+        [
+          3,
+          2,
+          "鸡分",
+          12,
+          1,
+          12,
+          "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+        ],
+        [
+          0,
+          3,
+          "鸡分",
+          4,
+          1,
+          4,
+          "一万·冲鸡 4分"
+        ],
+        [
+          1,
+          3,
+          "鸡分",
+          4,
+          1,
+          4,
+          "一万·冲鸡 4分"
+        ],
+        [
+          2,
+          3,
+          "鸡分",
+          4,
+          1,
+          4,
+          "一万·冲鸡 4分"
+        ]
+      ],
+      "values": {
+        "0": {
+          "h": 165,
+          "patterns": [
+            [
+              "三龙七",
+              120
+            ],
+            [
+              "原报",
+              40
+            ]
+          ],
+          "naturalYaos": 0,
+          "winningYaoNatural": false,
+          "wildcards": 1
+        }
+      }
+    }
+  }
+}

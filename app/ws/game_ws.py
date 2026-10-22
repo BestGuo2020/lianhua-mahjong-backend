@@ -93,12 +93,14 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         'matchId': match_id_of(room),
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
+        'matchLength': getattr(
+            room, 'match_length', 4 if room.mode == 'east' else 8),
         'nickname': state.nickname,
         'characterId': state.character_id,
         'theme': room.table_theme,
         'rejoinCode': state.rejoin_code,
     })
-    if room.ruleset_id == 'lotus-blood-flow':
+    if room.ruleset_id in ('lotus-blood-flow', 'yaotong'):
         await room.conn.send_to_seat(seat, room.snapshot_for(seat))
     else:
         await room.conn.send_to_seat(seat, build_snapshot(room, seat))

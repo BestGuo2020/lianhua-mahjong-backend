@@ -48,9 +48,13 @@ class SQLiteStorage(BaseStorage):
         room_columns = {row['name'] for row in conn.execute('PRAGMA table_info(rooms)').fetchall()}
         if 'ruleset_id' not in room_columns:
             conn.execute("ALTER TABLE rooms ADD COLUMN ruleset_id TEXT NOT NULL DEFAULT 'lotus-classic'")
+        if 'match_length' not in room_columns:
+            conn.execute('ALTER TABLE rooms ADD COLUMN match_length INTEGER NOT NULL DEFAULT 4')
         match_columns = {row['name'] for row in conn.execute('PRAGMA table_info(matches)').fetchall()}
         if 'ruleset_id' not in match_columns:
             conn.execute("ALTER TABLE matches ADD COLUMN ruleset_id TEXT NOT NULL DEFAULT 'lotus-classic'")
+        if 'match_length' not in match_columns:
+            conn.execute('ALTER TABLE matches ADD COLUMN match_length INTEGER NOT NULL DEFAULT 4')
 
 
 # 原有名称保持兼容；新代码可使用更明确的 SQLiteStorage。

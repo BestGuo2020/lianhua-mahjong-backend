@@ -68,3 +68,12 @@ class PostgresStorage(BaseStorage):
                 conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN ruleset_id TEXT NOT NULL DEFAULT 'lotus-classic'"
                 )
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = %s AND column_name = 'match_length'",
+                (table,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    f'ALTER TABLE {table} ADD COLUMN match_length INTEGER NOT NULL DEFAULT 4'
+                )

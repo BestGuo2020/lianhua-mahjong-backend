@@ -1,0 +1,1491 @@
+{
+  "steps": 41,
+  "trace": [
+    {
+      "step": 0,
+      "phase": "original",
+      "current": 0,
+      "wallCount": 56,
+      "serial": 1,
+      "hands": [
+        13,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 1,
+      "phase": "original",
+      "current": 0,
+      "wallCount": 56,
+      "serial": 1,
+      "hands": [
+        13,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 2,
+      "phase": "original",
+      "current": 0,
+      "wallCount": 56,
+      "serial": 1,
+      "hands": [
+        13,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 3,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 55,
+      "serial": 2,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 4,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 54,
+      "serial": 4,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 5,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 53,
+      "serial": 6,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 6,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 52,
+      "serial": 8,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 7,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 51,
+      "serial": 10,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 8,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 50,
+      "serial": 12,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 9,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 49,
+      "serial": 14,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 10,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 48,
+      "serial": 16,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 11,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 47,
+      "serial": 18,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 12,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 46,
+      "serial": 20,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 13,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 45,
+      "serial": 22,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 14,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 44,
+      "serial": 24,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 15,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 43,
+      "serial": 26,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 16,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 42,
+      "serial": 28,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 17,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 41,
+      "serial": 30,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 18,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 40,
+      "serial": 32,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 19,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 39,
+      "serial": 34,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 20,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 38,
+      "serial": 36,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 21,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 37,
+      "serial": 38,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 22,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 36,
+      "serial": 40,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 23,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 35,
+      "serial": 42,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 24,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 34,
+      "serial": 44,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 25,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 33,
+      "serial": 46,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 26,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 32,
+      "serial": 48,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 27,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 31,
+      "serial": 50,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 28,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 30,
+      "serial": 52,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 29,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 29,
+      "serial": 54,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 30,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 28,
+      "serial": 56,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 31,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 27,
+      "serial": 58,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 32,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 26,
+      "serial": 60,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 33,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 25,
+      "serial": 62,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 34,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 24,
+      "serial": 64,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 35,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 23,
+      "serial": 66,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 36,
+      "phase": "discard",
+      "current": 1,
+      "wallCount": 22,
+      "serial": 68,
+      "hands": [
+        13,
+        14,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 37,
+      "phase": "discard",
+      "current": 2,
+      "wallCount": 21,
+      "serial": 70,
+      "hands": [
+        13,
+        13,
+        14,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 38,
+      "phase": "discard",
+      "current": 3,
+      "wallCount": 20,
+      "serial": 72,
+      "hands": [
+        13,
+        13,
+        13,
+        14
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 39,
+      "phase": "discard",
+      "current": 0,
+      "wallCount": 19,
+      "serial": 74,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "step": 40,
+      "phase": "settled",
+      "current": 0,
+      "wallCount": 18,
+      "serial": 75,
+      "hands": [
+        14,
+        13,
+        13,
+        13
+      ],
+      "scores": [
+        391,
+        -141,
+        -109,
+        -141
+      ]
+    }
+  ],
+  "final": {
+    "players": [
+      {
+        "name": "你",
+        "hand": [
+          14,
+          14,
+          14,
+          14,
+          18,
+          18,
+          18,
+          18,
+          22,
+          22,
+          22,
+          22,
+          26,
+          9
+        ],
+        "melds": [],
+        "river": [
+          {
+            "tile": 0,
+            "chicken": 4,
+            "stage": "normal",
+            "id": 3,
+            "firstChicken": true,
+            "followChicken": false,
+            "pre": true
+          },
+          {
+            "tile": 1,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 11,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 2,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 19,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 3,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 27,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 4,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 35,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 5,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 43,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 6,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 51,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 7,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 59,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 8,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 67,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          }
+        ],
+        "score": 391,
+        "declaration": "none",
+        "draws": 10,
+        "discards": 9,
+        "drawn": 9,
+        "afterKong": false,
+        "burned": false,
+        "passedHu": null,
+        "passedShape": null,
+        "chickenPeng": [],
+        "chickenDiscard": []
+      },
+      {
+        "name": "听风",
+        "hand": [
+          15,
+          15,
+          15,
+          15,
+          19,
+          19,
+          19,
+          19,
+          23,
+          23,
+          23,
+          23,
+          26
+        ],
+        "melds": [],
+        "river": [
+          {
+            "tile": 0,
+            "chicken": 4,
+            "stage": "normal",
+            "id": 5,
+            "firstChicken": false,
+            "followChicken": true,
+            "pre": true
+          },
+          {
+            "tile": 1,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 13,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 2,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 21,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 3,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 29,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 4,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 37,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 5,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 45,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 6,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 53,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 7,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 61,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 8,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 69,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          }
+        ],
+        "score": -141,
+        "declaration": "none",
+        "draws": 9,
+        "discards": 9,
+        "drawn": null,
+        "afterKong": false,
+        "burned": false,
+        "passedHu": null,
+        "passedShape": null,
+        "chickenPeng": [],
+        "chickenDiscard": []
+      },
+      {
+        "name": "观山",
+        "hand": [
+          16,
+          16,
+          16,
+          16,
+          20,
+          20,
+          20,
+          20,
+          24,
+          24,
+          24,
+          24,
+          26
+        ],
+        "melds": [],
+        "river": [
+          {
+            "tile": 0,
+            "chicken": 4,
+            "stage": "normal",
+            "id": 7,
+            "firstChicken": false,
+            "followChicken": true,
+            "pre": true
+          },
+          {
+            "tile": 1,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 15,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 2,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 23,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 3,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 31,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 4,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 39,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 5,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 47,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 6,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 55,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 7,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 63,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 8,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 71,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          }
+        ],
+        "score": -109,
+        "declaration": "none",
+        "draws": 9,
+        "discards": 9,
+        "drawn": null,
+        "afterKong": false,
+        "burned": false,
+        "passedHu": null,
+        "passedShape": null,
+        "chickenPeng": [],
+        "chickenDiscard": []
+      },
+      {
+        "name": "望月",
+        "hand": [
+          17,
+          17,
+          17,
+          17,
+          21,
+          21,
+          21,
+          21,
+          25,
+          25,
+          25,
+          25,
+          26
+        ],
+        "melds": [],
+        "river": [
+          {
+            "tile": 0,
+            "chicken": 4,
+            "stage": "normal",
+            "id": 9,
+            "firstChicken": false,
+            "followChicken": true,
+            "pre": true
+          },
+          {
+            "tile": 1,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 17,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 2,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 25,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 3,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 33,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 4,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 41,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 5,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 49,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 6,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 57,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 7,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 65,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          },
+          {
+            "tile": 8,
+            "chicken": 0,
+            "stage": "normal",
+            "id": 73,
+            "firstChicken": false,
+            "followChicken": false,
+            "pre": false
+          }
+        ],
+        "score": -141,
+        "declaration": "none",
+        "draws": 9,
+        "discards": 9,
+        "drawn": null,
+        "afterKong": false,
+        "burned": false,
+        "passedHu": null,
+        "passedShape": null,
+        "chickenPeng": [],
+        "chickenDiscard": []
+      }
+    ],
+    "wall": [
+      9,
+      9,
+      10,
+      10,
+      10,
+      10,
+      11,
+      11,
+      11,
+      11,
+      12,
+      12,
+      12,
+      12,
+      13,
+      13,
+      13,
+      13
+    ],
+    "wallCount": 18,
+    "dice": [
+      1,
+      2
+    ],
+    "wallSide": 2,
+    "reservedStacks": 1,
+    "dealer": 0,
+    "current": 0,
+    "phase": "settled",
+    "originalDecisions": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "pending": null,
+    "result": {
+      "kind": "win",
+      "winners": [
+        0
+      ],
+      "source": null,
+      "winKind": "self",
+      "tile": 9,
+      "offender": null,
+      "reason": "胡牌结算",
+      "indicator": 9,
+      "chicken": 10,
+      "ready": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "deltas": [
+        391,
+        -141,
+        -109,
+        -141
+      ],
+      "nextDealer": 0,
+      "finished": false,
+      "transfers": [
+        {
+          "from": 1,
+          "to": 0,
+          "account": "胡牌分",
+          "base": 125,
+          "multiplier": 1,
+          "amount": 125,
+          "reason": "三龙七"
+        },
+        {
+          "from": 2,
+          "to": 0,
+          "account": "胡牌分",
+          "base": 125,
+          "multiplier": 1,
+          "amount": 125,
+          "reason": "三龙七"
+        },
+        {
+          "from": 3,
+          "to": 0,
+          "account": "胡牌分",
+          "base": 125,
+          "multiplier": 1,
+          "amount": 125,
+          "reason": "三龙七"
+        },
+        {
+          "from": 1,
+          "to": 0,
+          "account": "鸡分",
+          "base": 12,
+          "multiplier": 1,
+          "amount": 12,
+          "reason": "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+        },
+        {
+          "from": 2,
+          "to": 0,
+          "account": "鸡分",
+          "base": 12,
+          "multiplier": 1,
+          "amount": 12,
+          "reason": "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+        },
+        {
+          "from": 3,
+          "to": 0,
+          "account": "鸡分",
+          "base": 12,
+          "multiplier": 1,
+          "amount": 12,
+          "reason": "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+        },
+        {
+          "from": 0,
+          "to": 1,
+          "account": "鸡分",
+          "base": 4,
+          "multiplier": 1,
+          "amount": 4,
+          "reason": "一万·冲鸡 4分"
+        },
+        {
+          "from": 2,
+          "to": 1,
+          "account": "鸡分",
+          "base": 4,
+          "multiplier": 1,
+          "amount": 4,
+          "reason": "一万·冲鸡 4分"
+        },
+        {
+          "from": 3,
+          "to": 1,
+          "account": "鸡分",
+          "base": 4,
+          "multiplier": 1,
+          "amount": 4,
+          "reason": "一万·冲鸡 4分"
+        },
+        {
+          "from": 0,
+          "to": 2,
+          "account": "鸡分",
+          "base": 12,
+          "multiplier": 1,
+          "amount": 12,
+          "reason": "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "account": "鸡分",
+          "base": 12,
+          "multiplier": 1,
+          "amount": 12,
+          "reason": "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+        },
+        {
+          "from": 3,
+          "to": 2,
+          "account": "鸡分",
+          "base": 12,
+          "multiplier": 1,
+          "amount": 12,
+          "reason": "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+        },
+        {
+          "from": 0,
+          "to": 3,
+          "account": "鸡分",
+          "base": 4,
+          "multiplier": 1,
+          "amount": 4,
+          "reason": "一万·冲鸡 4分"
+        },
+        {
+          "from": 1,
+          "to": 3,
+          "account": "鸡分",
+          "base": 4,
+          "multiplier": 1,
+          "amount": 4,
+          "reason": "一万·冲鸡 4分"
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "account": "鸡分",
+          "base": 4,
+          "multiplier": 1,
+          "amount": 4,
+          "reason": "一万·冲鸡 4分"
+        }
+      ],
+      "values": {
+        "0": {
+          "h": 125,
+          "patterns": [
+            [
+              "三龙七",
+              120
+            ]
+          ],
+          "naturalYaos": 0,
+          "winningYaoNatural": false,
+          "wildcards": 1,
+          "resolvedHand": [
+            14,
+            14,
+            14,
+            14,
+            18,
+            18,
+            18,
+            18,
+            22,
+            22,
+            22,
+            22,
+            26,
+            26
+          ]
+        }
+      }
+    },
+    "firstFixedDiscard": [
+      0
+    ],
+    "firstFixedPeng": false,
+    "firstYaoDiscard": false,
+    "seenChickenDiscards": [
+      0
+    ],
+    "waitRemainingMs": [
+      15000,
+      15000,
+      15000,
+      15000
+    ],
+    "serial": 75,
+    "matchLength": 4,
+    "dealerRound": 1,
+    "handNumber": 1,
+    "repeats": 0
+  }
+}

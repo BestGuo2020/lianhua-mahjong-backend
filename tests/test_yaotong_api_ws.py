@@ -73,6 +73,7 @@ async def test_create_yaotong_room_exposes_match_length(server, fresh_rooms):
     room = await create_room(server['http'], matchLength=16)
     assert room['rulesetId'] == 'yaotong'
     assert room['matchLength'] == 16
+    assert room['yaotongMode'] == 'easy'
     assert room['capacity'] == 4
     assert len(room['seats']) == 4
 
@@ -88,8 +89,16 @@ async def test_create_yaotong_room_exposes_match_length(server, fresh_rooms):
         assert response.status_code == 200
         detail = response.json()
     assert detail['matchLength'] == 16
+    assert detail['yaotongMode'] == 'easy'
     assert detail['seats'][0]['ready'] is True
     assert detail['seats'][0]['nickname'] == '甲'
+
+
+@pytest.mark.asyncio
+async def test_yaotong_create_accepts_expert_mode(server, fresh_rooms):
+    room = await create_room(server['http'], matchLength=8, yaotongMode='hard')
+    assert room['yaotongMode'] == 'hard'
+    assert room['matchLength'] == 8
 
 
 @pytest.mark.asyncio
@@ -159,9 +168,11 @@ async def auto_client(ws, timeout=60.0) -> dict:
             return message
 
 
+@pytest.mark.parametrize('mode', ['easy', 'hard'])
 @pytest.mark.asyncio
-async def test_yaotong_two_clients_play_full_match(server, fresh_rooms):
-    room = await create_room(server['http'], matchLength=4)
+async def test_yaotong_two_clients_play_full_match(server, fresh_rooms, mode):
+    room = await create_room(
+        server['http'], matchLength=4, yaotongMode=mode)
     first = await join_room(server['http'], room['roomId'], '甲')
     second = await join_room(
         server['http'], room['roomId'], '乙',
@@ -172,6 +183,7 @@ async def test_yaotong_two_clients_play_full_match(server, fresh_rooms):
         server['http'], room['roomId'], second['seat'], second['rejoinCode'])
     # 测试去掉 AI 的展示停顿，整场更快。
     session = rooms.get(room['roomId'])
+    assert session.yaotong_mode == mode
     session.ai_delay = 0
 
     async with websockets.connect(

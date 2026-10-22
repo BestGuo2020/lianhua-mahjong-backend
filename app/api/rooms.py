@@ -111,6 +111,8 @@ def _room_response(room: RoomSession) -> dict:
         'rulesetId': room.ruleset_id,
         'matchLength': getattr(
             room, 'match_length', 4 if room.mode == 'east' else 8),
+        **({'yaotongMode': room.yaotong_mode}
+           if hasattr(room, 'yaotong_mode') else {}),
         'capacity': room.capacity,
         'status': room.status,
         # 场次身份：客户端据此判断「房间里正进行的是不是我等的那一场」。
@@ -147,6 +149,8 @@ class CreateRoomRequest(BaseModel):
     rulesetId: Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong'] = 'lotus-classic'
     # 幺筒场次：4/8/16 庄。经典/血流仍由 mode 推导（east=4、hanchan=8）。
     matchLength: Literal[4, 8, 16] = 4
+    # 幺筒模式：easy=新手模式（服务端同步拦截违规输入）/ hard=老手模式。
+    yaotongMode: Literal['easy', 'hard'] = 'easy'
     # 空座 AI 补位是否使用大模型（服务端未配置时静默降级为 False）
     llmEnabled: bool = False
 
@@ -231,7 +235,8 @@ def create_room(body: CreateRoomRequest,
         room = room_registry.create(
             room_id, mode=body.mode, capacity=body.capacity, storage=storage,
             pace=PLAY_PACE, ruleset_id=body.rulesetId,
-            llm_enabled=body.llmEnabled, match_length=match_length)
+            llm_enabled=body.llmEnabled, match_length=match_length,
+            yaotong_mode=body.yaotongMode)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
@@ -303,6 +308,8 @@ def join_room(room_id: str, body: JoinRequest,
         'rejoinCode': state.rejoin_code,
         'playerId': state.player_id,
         'rejoin': is_rejoin,
+        **({'yaotongMode': room.yaotong_mode}
+           if hasattr(room, 'yaotong_mode') else {}),
     }
 
 

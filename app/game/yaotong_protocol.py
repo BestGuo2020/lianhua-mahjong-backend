@@ -308,6 +308,11 @@ def snapshot_for(room, seat: int) -> dict:
         'round': state.hand_number if state is not None else 0,
         'dealer': state.dealer if state is not None else 0,
         'matchLength': room.match_length,
+        'yaotongMode': getattr(room, 'yaotong_mode', 'easy'),
+        'decisionDeadlineAt': (
+            int(room._decision_deadline * 1000)
+            if getattr(room, '_decision_deadline', None) else 0
+        ),
         'matchFinished': bool(
             getattr(room, 'match_finished', False)
             or (result is not None and result.finished)

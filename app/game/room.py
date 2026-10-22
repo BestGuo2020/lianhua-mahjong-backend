@@ -1635,6 +1635,7 @@ class RoomRegistry:
         if room_id in self._rooms:
             raise RoomError('ROOM_EXISTS')
         match_length = kwargs.pop('match_length', None)
+        yaotong_mode = kwargs.pop('yaotong_mode', 'easy')
         ruleset_id = kwargs.get('ruleset_id')
         if ruleset_id == 'lotus-blood-flow':
             from app.game.blood_flow_room import BloodFlowRoomSession
@@ -1642,7 +1643,8 @@ class RoomRegistry:
         elif ruleset_id == 'yaotong':
             from app.game.yaotong_room import YaotongRoomSession
             room = YaotongRoomSession(
-                room_id, match_length=match_length or 4, **kwargs)
+                room_id, match_length=match_length or 4,
+                yaotong_mode=yaotong_mode, **kwargs)
         else:
             room = RoomSession(room_id, **kwargs)
         if match_length is not None:

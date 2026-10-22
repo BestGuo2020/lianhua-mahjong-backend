@@ -95,6 +95,8 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         'rulesetId': room.ruleset_id,
         'matchLength': getattr(
             room, 'match_length', 4 if room.mode == 'east' else 8),
+        **({'yaotongMode': room.yaotong_mode}
+           if hasattr(room, 'yaotong_mode') else {}),
         'nickname': state.nickname,
         'characterId': state.character_id,
         'theme': room.table_theme,

@@ -22,6 +22,7 @@ from app.core.yaotong.engine import (
     create_game,
 )
 from app.core.yaotong.hands import waits
+from app.core.yaotong.mode import action_protection, protection_reason
 from app.core.yaotong.types import Command, GameState
 from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
 from app.game.yaotong_protocol import command_from_action, snapshot_for
@@ -59,6 +60,7 @@ class YaotongRoomSession:
         pace=None,
         llm_enabled: bool = False,
         match_length: int = 4,
+        yaotong_mode: str = 'easy',
     ):
         self.room_id = room_id
         self.mode = mode
@@ -66,6 +68,7 @@ class YaotongRoomSession:
         self.player_count = 4
         self.ruleset_id = ruleset_id
         self.match_length = match_length
+        self.yaotong_mode = yaotong_mode if yaotong_mode in ('easy', 'hard') else 'easy'
         self.storage = storage
         self.llm_enabled = False
         self.status = 'lobby'
@@ -99,8 +102,11 @@ class YaotongRoomSession:
         self.turn_timeout = 20.0
         self.opening_timeout = 60.0
         self.continue_timeout = 20.0
-        # 真人房间注入 PACE 时有可读的 AI 停顿；测试/无头房间默认 0。
-        self.ai_delay = 0.35 if pace else 0.0
+        # 真人房间注入 PACE 时按单机 AI_DELAYS/YAOTONG_AI_DISCARD_MS 停顿；
+        # 测试/无头房间默认 0（仍可用 ai_delay 覆盖）。
+        self.ai_delay = 1.0 if pace else 0.0
+        self.hard_timeout = 15.0
+        self._decision_deadline: Optional[float] = None
         self.game_factory = create_game
 
     # ── 限时 ─────────────────────────────────────────────
@@ -351,6 +357,8 @@ class YaotongRoomSession:
                 return
             # 没有合法原报资格时不需要等真人确认（对齐本地自动跳过）。
             if not waits(state.players[seat]):
+                if self.ai_delay:
+                    await asyncio.sleep(0.5 * self.ai_delay)
                 if act(state, seat, Command(type='original', declare=False)):
                     self.broadcast_snapshot()
                 return
@@ -379,9 +387,33 @@ class YaotongRoomSession:
             return
         await asyncio.sleep(0.01)
 
+    def _ai_think_seconds(self, state: GameState) -> float:
+        """单机 AI 节奏：原报 500ms、出牌 1000ms、响应 500ms（抢杠 0）。"""
+        if not self.ai_delay:
+            return 0.0
+        if state.phase == 'original':
+            base = 0.5
+        elif state.phase == 'discard':
+            base = 1.0
+        elif state.phase == 'response':
+            pending = state.pending
+            base = 0.0 if pending is not None and pending.kind == 'rob' else 0.5
+        else:
+            base = 0.45
+        return base * self.ai_delay
+
     async def _human_or_ai(self, seat: int) -> None:
         if self._human_seat(seat):
-            if await self._wait_for_action(seat, self.turn_timeout):
+            timeout = (
+                self.hard_timeout if self.yaotong_mode == 'hard'
+                else self.turn_timeout
+            )
+            self._decision_deadline = time.time() + timeout
+            try:
+                acted = await self._wait_for_action(seat, timeout)
+            finally:
+                self._decision_deadline = None
+            if acted:
                 return
         await self._act_ai(seat)
 
@@ -410,6 +442,12 @@ class YaotongRoomSession:
         state = self.state
         if state is None:
             return
+        delay = self._ai_think_seconds(state)
+        if delay:
+            await asyncio.sleep(delay)
+        state = self.state
+        if state is None:
+            return
         command = choose_action(state, seat)
         if command is None:
             command = self._fallback_command(state, seat)
@@ -424,8 +462,6 @@ class YaotongRoomSession:
             self.force_finish('AI_ACTION_FAILED')
             return
         self.broadcast_snapshot()
-        if self.ai_delay:
-            await asyncio.sleep(self.ai_delay)
 
     @staticmethod
     def _fallback_command(state: GameState, seat: int) -> Optional[Command]:
@@ -520,6 +556,12 @@ class YaotongRoomSession:
             command = command_from_action(message.get('action'))
         except ValueError:
             return False, 'INVALID_ACTION'
+        if self.yaotong_mode == 'easy':
+            # 新手模式服务端执行同一套输入拦截；客户端按钮已隐藏，这里防绕过。
+            reason = protection_reason(
+                action_protection(self.state, seat), command)
+            if reason:
+                return False, 'PROTECTED_ACTION'
         if not act(self.state, seat, command):
             return False, 'INVALID_ACTION'
         self._action_epoch += 1

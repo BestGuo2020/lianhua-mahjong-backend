@@ -9,6 +9,8 @@ import pytest
 import websockets
 import websockets.asyncio.client  # noqa: F401
 
+from app.game.room import room_registry as rooms
+
 COOKIE_A = {'lgm_wakudemo_session': 'yt-api-a'}
 
 
@@ -106,6 +108,88 @@ async def test_yaotong_create_rejects_llm_and_non_four_seats(server, fresh_rooms
         }, cookies=COOKIE_A)
         assert capacity_response.status_code == 409
         assert capacity_response.json()['detail']['code'] == 'INVALID_CAPACITY'
+
+
+async def auto_client(ws, timeout=60.0) -> dict:
+    """自动打完整场：原报/出牌/响应/继续；返回终局快照。"""
+    continued: set[int] = set()
+    opened: set[int] = set()
+    while True:
+        message = await recv_json(ws, timeout=timeout)
+        kind = message.get('kind')
+        if kind == 'error':
+            # 自动客户端与服务器自动跳过原报/抢窗口存在竞态：旧动作被拒是预期。
+            if message.get('code') in ('INVALID_ACTION', 'STALE_ACTION'):
+                continue
+            raise AssertionError(f"联机错误 {message.get('code')}")
+        if kind != 'yt_snapshot':
+            continue
+        view = message.get('view') or {}
+        seat = message.get('seat')
+        round_no = message.get('round')
+        if message.get('opening') and round_no not in opened:
+            opened.add(round_no)
+            await ws.send(json.dumps({'kind': 'opening_done', 'round': round_no}))
+        if view.get('phase') == 'original' and view.get('ownOriginalPending'):
+            await ws.send(json.dumps({
+                'kind': 'action',
+                'action': {'type': 'original', 'declare': False},
+            }))
+        elif view.get('phase') == 'discard' and view.get('current') == seat:
+            own = next(
+                (player for player in view.get('players', [])
+                 if player.get('seat') == seat), None)
+            hand = (own or {}).get('hand') or []
+            await ws.send(json.dumps({
+                'kind': 'action',
+                'action': {'type': 'discard', 'index': len(hand) - 1},
+            }))
+        elif view.get('phase') == 'response' and view.get('ownOptions'):
+            options = view['ownOptions']
+            action = 'hu' if options.get('hu') else 'pass'
+            await ws.send(json.dumps({
+                'kind': 'action',
+                'action': {'type': 'respond', 'action': action},
+            }))
+        if message.get('roundResult') and not message.get('matchFinished') \
+                and round_no not in continued:
+            continued.add(round_no)
+            await ws.send(json.dumps({'kind': 'continue', 'round': round_no}))
+        if message.get('matchFinished'):
+            return message
+
+
+@pytest.mark.asyncio
+async def test_yaotong_two_clients_play_full_match(server, fresh_rooms):
+    room = await create_room(server['http'], matchLength=4)
+    first = await join_room(server['http'], room['roomId'], '甲')
+    second = await join_room(
+        server['http'], room['roomId'], '乙',
+        cookie={'lgm_wakudemo_session': 'yt-api-b'})
+    await ready_room(
+        server['http'], room['roomId'], first['seat'], first['rejoinCode'])
+    await ready_room(
+        server['http'], room['roomId'], second['seat'], second['rejoinCode'])
+    # 测试去掉 AI 的展示停顿，整场更快。
+    session = rooms.get(room['roomId'])
+    session.ai_delay = 0
+
+    async with websockets.connect(
+        ws_url(server['ws'], room['roomId'], first['rejoinCode']),
+    ) as ws_a, websockets.connect(
+        ws_url(server['ws'], room['roomId'], second['rejoinCode']),
+    ) as ws_b:
+        assert (await recv_json(ws_a))['kind'] == 'rejoin_ok'
+        await recv_json(ws_a)  # lobby snapshot
+        assert (await recv_json(ws_b))['kind'] == 'rejoin_ok'
+        await recv_json(ws_b)
+        await start_room(server['http'], room['roomId'])
+        final_a, final_b = await asyncio.gather(
+            auto_client(ws_a), auto_client(ws_b))
+    assert final_a['matchFinished'] is True
+    assert final_b['matchFinished'] is True
+    assert final_a['roundResult']['finished'] is True
+    assert sum(final_a['roundResult']['deltas']) == 0
 
 
 @pytest.mark.asyncio

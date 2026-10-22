@@ -21,6 +21,7 @@ from app.core.yaotong.engine import (
     continue_game,
     create_game,
 )
+from app.core.yaotong.hands import waits
 from app.core.yaotong.types import Command, GameState
 from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
 from app.game.yaotong_protocol import command_from_action, snapshot_for
@@ -347,6 +348,11 @@ class YaotongRoomSession:
             )
             if seat is None:
                 await asyncio.sleep(0.01)
+                return
+            # 没有合法原报资格时不需要等真人确认（对齐本地自动跳过）。
+            if not waits(state.players[seat]):
+                if act(state, seat, Command(type='original', declare=False)):
+                    self.broadcast_snapshot()
                 return
             await self._human_or_ai(seat)
             return

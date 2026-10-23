@@ -105,8 +105,9 @@ class YaotongRoomSession:
         # 真人房间注入 PACE 时按单机 AI_DELAYS/YAOTONG_AI_DISCARD_MS 停顿；
         # 测试/无头房间默认 0（仍可用 ai_delay 覆盖）。
         self.ai_delay = 1.0 if pace else 0.0
-        # 老手“等”由客户端显式开始/结束；未点等时不按 15s 自动代胡，只保留 60s 断线兜底。
-        self.hard_fallback_timeout = 60.0
+        # 老手“等”由客户端显式开始/结束；未点等时不自动代胡。
+        # 这里只留超长兜底防止幽灵会话，真人掉线会立即转 AI。
+        self.hard_fallback_timeout = 3600.0
         self._decision_deadline: Optional[float] = None
         self._holds: dict[int, dict] = {}
         self._hold_tasks: dict[int, asyncio.Task] = {}
@@ -227,9 +228,10 @@ class YaotongRoomSession:
         state = self.seats[seat]
         if state is not None:
             state.controller.connected = False
-        # 暂离/断线结束本次等待；已用额度不返还。
+        # 暂离/断线结束本次等待；已用额度不返还。唤醒驱动，让 AI 立即接管。
         if seat in self._holds:
             self._release_hold(seat)
+        self._wake.set()
 
     def _human_seat(self, seat: int) -> bool:
         state = self.seats[seat]
@@ -447,6 +449,8 @@ class YaotongRoomSession:
         start_epoch = self._action_epoch
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
+            if not self._human_seat(seat):
+                return True
             if self._holds:
                 return False
             if self._action_epoch != start_epoch:

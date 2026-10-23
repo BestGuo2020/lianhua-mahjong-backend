@@ -11,24 +11,45 @@ from typing import Optional
 
 from app.core.yaotong.types import GameState, Seat
 
-_WINDOW_ATTR = '_hu_window'
+_WINDOW_ATTR = '_hu_windows'
+
+
+def hu_window_seats(state: GameState) -> list[Seat]:
+    return list(state.__dict__.get(_WINDOW_ATTR, {}))
 
 
 def retain_hu_window(state: GameState, seat: Seat) -> None:
-    state.__dict__.pop(_WINDOW_ATTR, None)
+    windows = state.__dict__.pop(_WINDOW_ATTR, {})
     snapshot = deepcopy(state)
     snapshot.phase = 'response'
     if snapshot.pending is not None:
-        snapshot.pending.choices.pop(seat, None)
-    state.__dict__[_WINDOW_ATTR] = (seat, snapshot)
+        for waiting in [*windows, seat]:
+            snapshot.pending.choices.pop(waiting, None)
+    # 多人可能同时暂留同一张弃牌；每个座位共享最新响应结果的独立快照。
+    for waiting in [*windows, seat]:
+        windows[waiting] = deepcopy(snapshot)
+    state.__dict__[_WINDOW_ATTR] = windows
 
 
 def hu_window(state: GameState, seat: Seat) -> Optional[GameState]:
-    entry = state.__dict__.get(_WINDOW_ATTR)
-    if entry is None or entry[0] != seat or state.phase == 'settled':
+    if state.phase == 'settled':
         return None
-    return entry[1]
+    return state.__dict__.get(_WINDOW_ATTR, {}).get(seat)
 
 
-def take_hu_window(state: GameState):
-    return state.__dict__.pop(_WINDOW_ATTR, None)
+def take_hu_window(state: GameState, seat: Optional[Seat] = None):
+    windows = state.__dict__.get(_WINDOW_ATTR, {})
+    if not windows:
+        return None
+    if seat is None:
+        seat = next(iter(windows))
+    snapshot = windows.pop(seat, None)
+    if snapshot is not None:
+        for remaining in windows.values():
+            if remaining.pending is not None:
+                remaining.pending.choices[seat] = 'pass'
+    return (seat, snapshot) if snapshot is not None else None
+
+
+def clear_hu_windows(state: GameState) -> None:
+    state.__dict__.pop(_WINDOW_ATTR, None)

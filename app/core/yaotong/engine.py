@@ -16,7 +16,9 @@ from app.core.yaotong.hands import (
     waits,
 )
 from app.core.yaotong.hu_window import (
+    clear_hu_windows,
     hu_window,
+    hu_window_seats,
     retain_hu_window,
     take_hu_window,
 )
@@ -308,8 +310,14 @@ def _pass_self(state: GameState, seat: Seat) -> bool:
     return True
 
 
-def _close_hu_window(state: GameState) -> bool:
-    entry = take_hu_window(state)
+def _close_hu_window(state: GameState, seat: Optional[Seat] = None) -> bool:
+    if seat is None:
+        for waiting in hu_window_seats(state):
+            if not _close_hu_window(state, waiting):
+                clear_hu_windows(state)
+                return False
+        return True
+    entry = take_hu_window(state, seat)
     if entry is None:
         return True
     seat, snapshot = entry
@@ -392,6 +400,14 @@ def _resolve_responses(state: GameState,
     winners = [
         seat for seat, choice in pending.choices.items() if choice == 'hu'
     ]
+    if winners and hu_window_seats(state):
+        # 另一家宣胡不能把尚未主动过胡的真人直接排除在一炮多响之外。
+        for waiting in hu_window_seats(state):
+            if pending.choices.get(waiting) == 'pass':
+                pending.choices.pop(waiting)
+        clear_hu_windows(state)
+        if any(seat not in pending.choices for seat in pending.options):
+            return
     if winners:
         def end() -> None:
             if pending.kind == 'rob':
@@ -421,7 +437,10 @@ def _resolve_responses(state: GameState,
             end()
         return
 
-    if pending.deferred_hu is not None:
+    retained = hu_window_seats(state)
+    if retained:
+        retain_hu_window(state, retained[0])
+    elif pending.deferred_hu is not None:
         retain_hu_window(state, pending.deferred_hu)
 
     if pending.kind == 'rob':
@@ -534,7 +553,7 @@ def act(state: GameState, seat: Seat, command: Command,
         previous = hu_window(state, seat)
         if previous is not None:
             if command.type == 'passHu':
-                _close_hu_window(state)
+                _close_hu_window(state, seat)
                 return True
             old = previous.pending
             if old is None:
@@ -554,7 +573,7 @@ def act(state: GameState, seat: Seat, command: Command,
                 )
             ):
                 return False
-            take_hu_window(state)
+            clear_hu_windows(state)
             _restore_from_snapshot(state, previous)
             return act(state, seat, Command(
                 type='respond', action='hu', plan=command.plan,

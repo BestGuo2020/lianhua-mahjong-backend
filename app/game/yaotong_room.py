@@ -20,9 +20,11 @@ from app.core.yaotong.engine import (
     act,
     continue_game,
     create_game,
+    self_options,
 )
 from app.core.yaotong.hands import waits
 from app.core.yaotong.mode import action_protection, protection_reason
+from app.core.yaotong.tiles import YAO
 from app.core.yaotong.types import Command, GameState
 from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
 from app.game.yaotong_protocol import command_from_action, snapshot_for
@@ -102,6 +104,8 @@ class YaotongRoomSession:
         self.auto_seats: set[int] = set()
         self._wake = asyncio.Event()
         self._action_epoch = 0
+        self._reaction_key = None
+        self._reaction_deadline = 0.0
 
         self.turn_timeout = 20.0
         self.opening_timeout = 60.0
@@ -186,6 +190,10 @@ class YaotongRoomSession:
             rejoin_code is None or state.rejoin_code == rejoin_code
         ):
             self.seats[seat] = None
+            self._action_epoch += 1
+            if seat in self._holds:
+                self._release_hold(seat)
+            self._wake.set()
             self.auto_seats.discard(seat)
             self.conn.unregister(seat)
             if self.creator_seat == seat:
@@ -229,8 +237,11 @@ class YaotongRoomSession:
         if state is not None:
             state.controller.connected = True
             state.connected_at = time.monotonic()
+        self._action_epoch += 1
+        self._wake.set()
 
     def on_disconnect(self, seat: int) -> None:
+        self._action_epoch += 1
         state = self.seats[seat]
         if state is not None:
             state.controller.connected = False
@@ -300,18 +311,23 @@ class YaotongRoomSession:
         self.status = 'playing'
         self.match_started_at = time.monotonic()
         self._forced_finishing = False
-        self._opening = {
-            'dice': list(self.state.dice),
-            'wallSide': self.state.wall_side,
-            'reservedStacks': self.state.reserved_stacks,
-        }
-        self._opening_round = 1
-        self._opening_confirmations = set()
+        self.match_id = secrets.token_hex(8)
+        self._prepare_opening()
         self._continue_confirmations = set()
         self._action_epoch = 0
         self._wake = asyncio.Event()
         self._persist_match_start()
         self._drive_task = asyncio.ensure_future(self._drive())
+
+    def _prepare_opening(self) -> None:
+        self._opening = {
+            'dice': list(self.state.dice),
+            'wallSide': self.state.wall_side,
+            'reservedStacks': self.state.reserved_stacks,
+        }
+        self._opening_round = self.state.hand_number
+        self._opening_confirmations = set()
+        self._reaction_key = None
 
     def _apply_names(self) -> None:
         if self.state is None:
@@ -328,6 +344,7 @@ class YaotongRoomSession:
             self.broadcast_snapshot()
             await self._wait_for_openings()
             self._opening = None
+            self.broadcast_snapshot()
             while not self.match_finished:
                 state = self.state
                 if state is None:
@@ -341,6 +358,9 @@ class YaotongRoomSession:
                     self._continue_confirmations = set()
                     self.state = continue_game(state)
                     self._apply_names()
+                    self._prepare_opening()
+                    self.broadcast_snapshot()
+                    await self._wait_for_openings()
                     self._opening = None
                     self.broadcast_snapshot()
                     continue
@@ -389,10 +409,8 @@ class YaotongRoomSession:
                 return
             # 没有合法原报资格时不需要等真人确认（对齐本地自动跳过）。
             if not waits(state.players[seat]):
-                if self.ai_delay:
-                    await asyncio.sleep(0.5 * self.ai_delay)
-                if act(state, seat, Command(type='original', declare=False)):
-                    self.broadcast_snapshot()
+                await self._act_ai(seat, command=Command(type='original', declare=False),
+                                   delay=0.5 * self.ai_delay)
                 return
             await self._human_or_ai(seat)
             return
@@ -441,6 +459,13 @@ class YaotongRoomSession:
                 while self._holds:
                     await asyncio.sleep(0.2)
                 return
+            automatic = self._human_automatic_command(seat)
+            if automatic is not None:
+                delay = (self._reaction_remaining()
+                         if automatic.type == 'respond'
+                         else self._ai_think_seconds(self.state, seat))
+                await self._act_ai(seat, command=automatic, delay=delay)
+                return
             timeout = (
                 self.hard_fallback_timeout
                 if self.yaotong_mode == 'hard' else self.turn_timeout
@@ -485,19 +510,61 @@ class YaotongRoomSession:
                 return True
         return False
 
-    async def _act_ai(self, seat: int) -> None:
+    def _reaction_remaining(self) -> float:
+        """从实际弃牌/补杠事件起计时，多位玩家共享同一个观察窗口。"""
+        state = self.state
+        if state is None:
+            return 0.0
+        event = next((event for event in reversed(state.events)
+                      if event.kind in ('discard', 'kong-intent')), None)
+        key = (id(state), event.id if event else id(state.pending))
+        if self._reaction_key != key:
+            self._reaction_key = key
+            extended = (state.pending is not None and state.pending.kind in ('rob', 'hot')) \
+                or (event is not None and (event.tile == YAO or event.after_kong
+                                          or event.kind == 'kong-intent'))
+            self._reaction_deadline = time.monotonic() + (2.0 if extended else 1.0) * self.ai_delay
+        return max(0.0, self._reaction_deadline - time.monotonic())
+
+    def _human_automatic_command(self, seat: int) -> Optional[Command]:
+        state = self.state
+        if state is None:
+            return None
+        player = state.players[seat]
+        if state.phase == 'discard' and state.current == seat \
+                and player.declaration != 'none' and player.drawn is not None:
+            options = self_options(state, seat)
+            protection = action_protection(state, seat)
+            index = len(player.hand) - 1
+            if (not options.hu or options.restricted_hu) \
+                    and not protection_reason(protection, Command(type='discard', index=index)):
+                return Command(type='discard', index=index)
+        pending = state.pending
+        if self.yaotong_mode == 'hard' and state.phase == 'response' and pending is not None:
+            options = pending.options.get(seat)
+            if options and options.hu and not options.peng and not options.kong \
+                    and seat not in pending.choices:
+                return Command(type='respond', action='pass', defer_hu=(
+                    pending.kind != 'rob' and 'hu' not in pending.choices.values()))
+        return None
+
+    async def _act_ai(self, seat: int, *, command: Optional[Command] = None,
+                      delay: Optional[float] = None) -> None:
         state = self.state
         if state is None:
             return
-        delay = self._ai_think_seconds(state, seat)
+        epoch = self._action_epoch
+        was_human = self._human_seat(seat)
+        if delay is None:
+            delay = self._ai_think_seconds(state, seat)
         if delay:
             await asyncio.sleep(delay)
-        if self._holds:
+        # sleep 期间可能重连、取消托管、真人抢先操作或换局。旧任务只需丢弃。
+        if (self.closed or self._holds or self.state is not state
+                or self._action_epoch != epoch or self._human_seat(seat) != was_human
+                or state.phase == 'settled'):
             return
-        state = self.state
-        if state is None:
-            return
-        command = choose_action(state, seat)
+        command = command or choose_action(state, seat)
         if command is None:
             command = self._fallback_command(state, seat)
         ok = act(state, seat, command) if command is not None else False
@@ -511,6 +578,8 @@ class YaotongRoomSession:
             self.force_finish('AI_ACTION_FAILED')
             return
         self._note_kong_pause()
+        self._action_epoch += 1
+        self._reaction_remaining()
         self.broadcast_snapshot()
 
     def _note_kong_pause(self) -> None:
@@ -552,12 +621,14 @@ class YaotongRoomSession:
             'started_at': time.monotonic(),
             'remaining': budget,
         }
+        self._action_epoch += 1
         self._hold_tasks[seat] = asyncio.create_task(self._expire_hold(seat))
         self._wake.set()
         self.broadcast_snapshot()
         return True, ''
 
     def _release_hold(self, seat: int, *, expired: bool = False) -> None:
+        self._action_epoch += 1
         entry = self._holds.pop(seat, None)
         task = self._hold_tasks.pop(seat, None)
         if task is not None and not task.done() and not expired:
@@ -656,18 +727,26 @@ class YaotongRoomSession:
                 self.auto_seats.add(seat)
             else:
                 self.auto_seats.discard(seat)
+            self._action_epoch += 1
+            if seat in self._holds:
+                self._release_hold(seat)
             self._wake.set()
             self.broadcast_snapshot()
             return True, ''
         if message.get('kind') == 'opening_done':
             if self.seats[seat] is None:
                 return False, 'NOT_HUMAN_SEAT'
+            if self.state is None or message.get('round') != self.state.hand_number:
+                return False, 'STALE_ACTION'
             self._opening_confirmations.add(seat)
             self._wake.set()
             return True, ''
         if message.get('kind') == 'continue':
             if self.seats[seat] is None:
                 return False, 'NOT_HUMAN_SEAT'
+            if self.state is None or self.state.result is None or self.state.result.finished \
+                    or message.get('round') != self.state.hand_number:
+                return False, 'STALE_ACTION'
             self._continue_confirmations.add(seat)
             self._wake.set()
             self.broadcast_snapshot()
@@ -683,6 +762,8 @@ class YaotongRoomSession:
         if message.get('kind') != 'action':
             return False, 'INVALID_MESSAGE'
         if self.state is None or self.state.phase == 'settled':
+            return False, 'STALE_ACTION'
+        if self._opening is not None:
             return False, 'STALE_ACTION'
         if self._holds and seat not in self._holds:
             return False, 'TABLE_HELD'
@@ -704,6 +785,11 @@ class YaotongRoomSession:
             return False, 'INVALID_ACTION'
         self._note_kong_pause()
         self._action_epoch += 1
+        if (self.state.pending is not None and self.state.phase == 'response'
+                and (command.type == 'declareHu' or command.action == 'hu')):
+            # 延长胡口恢复后，其他真人仍可对同一张牌确认一炮多响。
+            self._reaction_key = None
+        self._reaction_remaining()
         self._wake.set()
         self.broadcast_snapshot()
         return True, ''

@@ -102,6 +102,9 @@ async def test_room_endpoints_require_login(client, fake_auth):
         r = await http.post('/api/rooms/ABC123/join', json={'nickname': '匿名'})
         assert r.status_code == 401
 
+        r = await http.post('/api/rooms/ABC123/start', json={})
+        assert r.status_code == 401
+
         r = await http.get('/api/me/stats')
         assert r.status_code == 401
 
@@ -113,6 +116,30 @@ async def test_room_endpoints_require_login(client, fake_auth):
 
 
 # ─── 身份绑定 ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_start_requires_current_creator(client, fake_auth, fresh_rooms, monkeypatch):
+    from unittest.mock import AsyncMock
+    room = room_registry.create('YT-AUTH', ruleset_id='yaotong')
+    room.join_or_rejoin('房主', player_id='wakudemo-owner')
+    room.join_or_rejoin('成员', player_id='wakudemo-member')
+    start = AsyncMock()
+    monkeypatch.setattr(room, 'start', start)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client),
+                                 base_url='http://test', cookies=COOKIE) as http:
+        for uid in ('outsider', 'member'):
+            fake_auth['account']['id'] = uid
+            response = await http.post('/api/rooms/YT-AUTH/start', json={'playerId': 'owner'})
+            assert response.status_code == 403
+            assert response.json()['detail']['code'] == 'NOT_CREATOR'
+        start.assert_not_awaited()
+        fake_auth['account']['id'] = 'owner'
+        assert (await http.post('/api/rooms/YT-AUTH/start', json={})).status_code == 200
+        start.assert_awaited_once()
+        room.release_seat(0)
+        assert (await http.post('/api/rooms/YT-AUTH/start', json={})).status_code == 403
+        fake_auth['account']['id'] = 'member'
+        assert (await http.post('/api/rooms/YT-AUTH/start', json={})).status_code == 200
 
 @pytest.mark.asyncio
 async def test_join_binds_identity_to_wakudemo_uid_ignoring_client_player_id(

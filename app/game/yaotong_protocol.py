@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from app.core.yaotong.engine import self_options
+from app.core.yaotong.hu_window import hu_window
 from app.core.yaotong.tiles import from_tile_type, to_tile_type
 from app.core.yaotong.types import (
     ActionOptions,
@@ -114,7 +115,7 @@ def discard_view(discard: Discard) -> dict:
 
 
 def player_view(player: Player, seat: int, self_seat: int,
-                room_seat=None) -> dict:
+                room_seat=None, *, reveal: bool = False) -> dict:
     is_self = seat == self_seat
     return {
         'seat': seat,
@@ -126,17 +127,18 @@ def player_view(player: Player, seat: int, self_seat: int,
         'playerKind': 'human' if room_seat is not None else 'bot',
         'isLlm': False,
         'score': player.score,
-        'hand': [to_tile_type(tile) for tile in player.hand] if is_self else [],
+        'hand': [to_tile_type(tile) for tile in player.hand] if is_self or reveal else [],
         'concealedTileCount': len(player.hand),
         'melds': [meld_view(meld) for meld in player.melds],
         'river': [discard_view(discard) for discard in player.river],
         'declaration': player.declaration,
         'draws': player.draws,
         'discards': player.discards,
-        'drawn': _tile(player.drawn) if is_self else None,
+        'drawn': _tile(player.drawn) if is_self or reveal else None,
         'afterKong': player.after_kong,
         'burned': player.burned,
-        'passedHu': _tile(player.passed_hu) if is_self else None,
+        'passedHu': player.passed_hu if is_self else None,
+        'passedShape': player.passed_shape if is_self else None,
         'chickenPeng': [to_tile_type(tile) for tile in player.chicken_peng]
         if is_self else [],
         'chickenDiscard': [to_tile_type(tile) for tile in player.chicken_discard]
@@ -242,8 +244,8 @@ def _self_options(state: GameState, seat: int) -> Optional[dict]:
     return None
 
 
-def snapshot_view(room, seat: int) -> dict:
-    state = room.state
+def snapshot_view(room, seat: int, state: Optional[GameState] = None) -> dict:
+    state = state if state is not None else room.state
     if state is None:
         return {
             'seat': seat,
@@ -255,7 +257,7 @@ def snapshot_view(room, seat: int) -> dict:
             'wallCount': 0,
         }
     players = [
-        player_view(player, index, seat, room.seats[index])
+        player_view(player, index, seat, room.seats[index], reveal=state.result is not None)
         for index, player in enumerate(state.players)
     ]
     wait_remaining = list(state.wait_remaining_ms)
@@ -304,6 +306,7 @@ def snapshot_for(room, seat: int) -> dict:
     state = room.state
     result = state.result if state is not None else None
     continuation = room.continuation()
+    retained = hu_window(state, seat) if state is not None else None
     return {
         'kind': 'yt_snapshot',
         'roomId': room.room_id,
@@ -327,4 +330,6 @@ def snapshot_for(room, seat: int) -> dict:
         'roundResult': settlement_view(result) if result is not None else None,
         **({'continuation': continuation} if continuation else {}),
         'view': snapshot_view(room, seat),
+        # 只给本人裁剪后的胡口，不暴露其他家的手牌或私有候选。
+        'huWindow': snapshot_view(room, seat, retained) if retained is not None else None,
     }

@@ -20,6 +20,16 @@ import pytest
 from app.game.room import room_registry as rooms
 
 
+async def start_as_creator(http, room_id, **kwargs):
+    """生命周期测试显式使用当前房主登录身份，不能沿用最后入座者的 Cookie。"""
+    room = rooms.peek(room_id)
+    creator = room.seats[room.creator_seat]
+    assert creator.player_id.startswith('wakudemo-')
+    return await http.post(f'/api/rooms/{room_id}/start',
+                           cookies={'lgm_wakudemo_session': creator.player_id.removeprefix('wakudemo-')},
+                           **kwargs)
+
+
 @pytest.fixture()
 def temp_storage(tmp_path, monkeypatch):
     """临时 SQLite 库，替换 api 层全局 storage（写盘隔离）。"""
@@ -267,7 +277,7 @@ async def test_dead_task_playing_room_is_stuck_until_swept(server, fresh_rooms, 
         resp = await http.request('DELETE', f'/api/rooms/{room_id}', json=seat_action)
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ROOM_PLAYING'
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ROOM_CLOSED'
         # 房间也不会被 TTL 回收（playing 豁免）——只能靠看门狗那条通道
@@ -608,7 +618,7 @@ async def test_close_room_rejected_while_playing(server, fresh_rooms, temp_stora
                             json={'seat': join['seat'], 'rejoinCode': join['rejoinCode']})
         room = rooms.get(room_id)
         room.pace = {}
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 200
         assert room.status == 'playing'
 
@@ -628,7 +638,7 @@ async def test_start_without_ready_rejected(server, fresh_rooms, temp_storage):
         join_a = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '甲'})).json()
         # 未 ready → start 拒绝
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'NOT_ALL_READY'
 
@@ -637,11 +647,11 @@ async def test_start_without_ready_rejected(server, fresh_rooms, temp_storage):
                                json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
         assert resp.status_code == 200
         assert resp.json()['ready'] is True
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 200, resp.text
 
         # 重复 start → ALREADY_STARTED
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ALREADY_STARTED'
 
@@ -681,7 +691,7 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
                                          json={'nickname': '乙'})).json()
         await http.post(f'/api/rooms/{disabled_id}/ready',
                         json={'seat': 0, 'rejoinCode': disabled_join['rejoinCode']})
-        resp = await http.post(f'/api/rooms/{disabled_id}/start', json={
+        resp = await start_as_creator(http, disabled_id, json={
             'llmSeats': [{'seat': 1, 'providerId': 'ds'}]})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'LLM_NOT_ENABLED'
@@ -696,19 +706,19 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
                         json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
 
         # 重复座位 → 409
-        resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
+        resp = await start_as_creator(http, room_id, json={'llmSeats': [
             {'seat': 1, 'providerId': 'ds'}, {'seat': 1, 'providerId': 'kimi'}]})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
 
         # 未知 providerId → 409
-        resp = await http.post(f'/api/rooms/{room_id}/start',
+        resp = await start_as_creator(http, room_id,
                                json={'llmSeats': [{'seat': 1, 'providerId': 'ghost'}]})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
 
         # 合法：每个已配置模型都可按座位覆盖四种策略；座位 2 未指定 → 服务端默认。
-        resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
+        resp = await start_as_creator(http, room_id, json={'llmSeats': [
             {'seat': 1, 'providerId': 'ds', 'style': '激进'},
             {'seat': 3, 'providerId': 'kimi', 'style': '高冷'}]})
         assert resp.status_code == 200, resp.text
@@ -759,7 +769,7 @@ async def test_room_lifecycle_persists_match(server, fresh_rooms, temp_storage):
         assert room is not None and room.status == 'lobby'
         # REST 创建默认注入 PLAY_PACE（真人节奏）；本测试只验证落库链路，跳过节奏加速
         room.pace = {}
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 200, resp.text
 
         assert room.status == 'playing'
@@ -832,7 +842,7 @@ async def test_db_outage_does_not_abort_match(server, fresh_rooms, temp_storage,
         room = rooms.get(room_id)
         assert room is not None and room.status == 'lobby'
         room.pace = {}
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 200, resp.text
 
         # 首局落库失败仍应打完对局，而不是进入 error 中断
@@ -870,7 +880,7 @@ async def test_room_can_restart_after_match(server, fresh_rooms, temp_storage):
                                        json={'seat': j['seat'], 'rejoinCode': j['rejoinCode'],
                                              'ready': True})
                 assert resp.status_code == 200
-            resp = await http.post(f'/api/rooms/{room_id}/start')
+            resp = await start_as_creator(http, room_id)
             assert resp.status_code == 200, resp.text
             assert room.status == 'playing'
             await wait_until(lambda: room.game_task is not None and room.game_task.done(), timeout=30)
@@ -908,7 +918,7 @@ async def test_non_creator_can_rejoin_finished_room(server, fresh_rooms, temp_st
         room = rooms.get(room_id)
         assert room is not None
         room.pace = {}
-        await http.post(f'/api/rooms/{room_id}/start')
+        await start_as_creator(http, room_id)
         await wait_until(lambda: room.status == 'finished', timeout=30)
 
         # 非房主（乙）离房
@@ -967,7 +977,7 @@ async def test_all_exit_mid_match_releases_room(server, fresh_rooms, temp_storag
         room = rooms.get(room_id)
         assert room is not None
         room.pace = {}
-        await http.post(f'/api/rooms/{room_id}/start')
+        await start_as_creator(http, room_id)
         assert room.status == 'playing'
 
         # 全员退出（房主先退 → AI 代打房间保留；最后一人退 → 立即释放）
@@ -996,11 +1006,11 @@ async def test_expired_room_released_after_match(server, fresh_rooms, temp_stora
         room = rooms.get(room_id)
         assert room is not None
         room.pace = {}
-        # 模拟：对局已持续超过限时（deadline 拨到过去）
-        room.deadline = time.monotonic() - 1
-        resp = await http.post(f'/api/rooms/{room_id}/start')
+        resp = await start_as_creator(http, room_id)
         assert resp.status_code == 200, resp.text
         assert room.status == 'playing'
+        # 开局后再模拟对局超时，避免把仍在大厅的过期房间按 TTL 正常回收。
+        room.deadline = time.monotonic() - 1
 
         # 对局结束后房间自动释放（不等待房主手动解散）
         await wait_until(lambda: rooms.get(room_id) is None, timeout=30)
@@ -1020,7 +1030,7 @@ async def test_stats_by_player_id(server, fresh_rooms, temp_storage):
                             json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
         room = rooms.get(room_id)
         room.pace = {}
-        await http.post(f'/api/rooms/{room_id}/start')
+        await start_as_creator(http, room_id)
         await wait_until(lambda: room.status == 'finished', timeout=30)
 
         resp = await http.get('/api/players/by-id/wakudemo-guest-A/stats')
@@ -1061,7 +1071,7 @@ async def test_stats_survive_leaving_room(server, fresh_rooms, temp_storage):
                             json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
         room = rooms.get(room_id)
         room.pace = {}
-        await http.post(f'/api/rooms/{room_id}/start')
+        await start_as_creator(http, room_id)
         await wait_until(lambda: room.status == 'finished', timeout=30)
         # 对局结束后全部离房 → room_seats 行被删。
         # 先离非房主（乙），再离最后一人（甲）→ 房间即从注册表移除，

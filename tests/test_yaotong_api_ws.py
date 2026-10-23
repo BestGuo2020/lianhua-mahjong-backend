@@ -1,6 +1,7 @@
 """幺筒 REST/WS 接线：建房、加入、准备、开局快照与 WS 握手。"""
 
 import asyncio
+from contextlib import AsyncExitStack
 import json
 from urllib.parse import quote
 
@@ -10,6 +11,7 @@ import websockets
 import websockets.asyncio.client  # noqa: F401
 
 from app.game.room import room_registry as rooms
+from app.core.yaotong.ai import choose_action
 
 COOKIE_A = {'lgm_wakudemo_session': 'yt-api-a'}
 
@@ -119,7 +121,7 @@ async def test_yaotong_create_rejects_llm_and_non_four_seats(server, fresh_rooms
         assert capacity_response.json()['detail']['code'] == 'INVALID_CAPACITY'
 
 
-async def auto_client(ws, timeout=60.0) -> dict:
+async def auto_client(ws, room, timeout=60.0) -> dict:
     """自动打完整场：原报/出牌/响应/继续；返回终局快照。"""
     continued: set[int] = set()
     opened: set[int] = set()
@@ -139,27 +141,13 @@ async def auto_client(ws, timeout=60.0) -> dict:
         if message.get('opening') and round_no not in opened:
             opened.add(round_no)
             await ws.send(json.dumps({'kind': 'opening_done', 'round': round_no}))
-        if view.get('phase') == 'original' and view.get('ownOriginalPending'):
-            await ws.send(json.dumps({
-                'kind': 'action',
-                'action': {'type': 'original', 'declare': False},
-            }))
-        elif view.get('phase') == 'discard' and view.get('current') == seat:
-            own = next(
-                (player for player in view.get('players', [])
-                 if player.get('seat') == seat), None)
-            hand = (own or {}).get('hand') or []
-            await ws.send(json.dumps({
-                'kind': 'action',
-                'action': {'type': 'discard', 'index': len(hand) - 1},
-            }))
-        elif view.get('phase') == 'response' and view.get('ownOptions'):
-            options = view['ownOptions']
-            action = 'hu' if options.get('hu') else 'pass'
-            await ws.send(json.dumps({
-                'kind': 'action',
-                'action': {'type': 'respond', 'action': action},
-            }))
+        if not message.get('opening') and room.state is not None:
+            # 四人都只摸切且拒绝报听会反复荒庄连庄，无法验证整场。
+            # AI 策略只读自己的手牌和公开信息，操作仍通过真实客户端 WS 提交。
+            command = choose_action(room.state, seat)
+            if command is not None:
+                action = {key: value for key, value in vars(command).items() if value is not None}
+                await ws.send(json.dumps({'kind': 'action', 'action': action}))
         if message.get('roundResult') and not message.get('matchFinished') \
                 and round_no not in continued:
             continued.add(round_no)
@@ -169,39 +157,38 @@ async def auto_client(ws, timeout=60.0) -> dict:
 
 
 @pytest.mark.parametrize('mode', ['easy', 'hard'])
+@pytest.mark.parametrize('player_count', [2, 4])
 @pytest.mark.asyncio
-async def test_yaotong_two_clients_play_full_match(server, fresh_rooms, mode):
+async def test_yaotong_multiple_clients_play_full_match(server, fresh_rooms, mode, player_count):
     room = await create_room(
         server['http'], matchLength=4, yaotongMode=mode)
-    first = await join_room(server['http'], room['roomId'], '甲')
-    second = await join_room(
-        server['http'], room['roomId'], '乙',
-        cookie={'lgm_wakudemo_session': 'yt-api-b'})
-    await ready_room(
-        server['http'], room['roomId'], first['seat'], first['rejoinCode'])
-    await ready_room(
-        server['http'], room['roomId'], second['seat'], second['rejoinCode'])
+    joined = []
+    for seat in range(player_count):
+        member = await join_room(server['http'], room['roomId'], f'玩家{seat}',
+                                 cookie={'lgm_wakudemo_session': f'yt-api-{chr(97 + seat)}'})
+        joined.append(member)
+        await ready_room(server['http'], room['roomId'], member['seat'], member['rejoinCode'])
     # 测试去掉 AI 的展示停顿，整场更快。
     session = rooms.get(room['roomId'])
     assert session.yaotong_mode == mode
     session.ai_delay = 0
 
-    async with websockets.connect(
-        ws_url(server['ws'], room['roomId'], first['rejoinCode']),
-    ) as ws_a, websockets.connect(
-        ws_url(server['ws'], room['roomId'], second['rejoinCode']),
-    ) as ws_b:
-        assert (await recv_json(ws_a))['kind'] == 'rejoin_ok'
-        await recv_json(ws_a)  # lobby snapshot
-        assert (await recv_json(ws_b))['kind'] == 'rejoin_ok'
-        await recv_json(ws_b)
+    async with AsyncExitStack() as stack:
+        clients = []
+        for member in joined:
+            ws = await stack.enter_async_context(websockets.connect(
+                ws_url(server['ws'], room['roomId'], member['rejoinCode'])))
+            assert (await recv_json(ws))['kind'] == 'rejoin_ok'
+            await recv_json(ws)  # lobby snapshot
+            clients.append(ws)
         await start_room(server['http'], room['roomId'])
-        final_a, final_b = await asyncio.gather(
-            auto_client(ws_a), auto_client(ws_b))
-    assert final_a['matchFinished'] is True
-    assert final_b['matchFinished'] is True
-    assert final_a['roundResult']['finished'] is True
-    assert sum(final_a['roundResult']['deltas']) == 0
+        finals = await asyncio.wait_for(asyncio.gather(*(auto_client(ws, session) for ws in clients)), 60)
+    for final in finals:
+        assert final['matchFinished'] is True
+        assert final['roundResult']['finished'] is True
+        assert sum(final['roundResult']['deltas']) == 0
+        assert final['roundResult'] == finals[0]['roundResult']
+        assert all(player['hand'] for player in final['view']['players'])
 
 
 @pytest.mark.asyncio

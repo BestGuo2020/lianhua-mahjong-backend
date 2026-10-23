@@ -36,8 +36,8 @@ async def prepare_room(room_id: str, capacity: int, nicknames: list,
     """
     room = rooms.create(room_id, mode=mode, capacity=capacity, turn_timeout=turn_timeout)
     codes = {}
-    for nickname in nicknames:
-        seat, _, state = room.join_or_rejoin(nickname)
+    for index, nickname in enumerate(nicknames):
+        seat, _, state = room.join_or_rejoin(nickname, player_id='wakudemo-default' if index == 0 else f'wakudemo-peer-{index}')
         room.ready_seat(seat)
         codes[nickname] = state.rejoin_code
     return room, codes

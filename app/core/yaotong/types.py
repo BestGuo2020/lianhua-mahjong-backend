@@ -62,7 +62,7 @@ class Player:
     drawn: Optional[Tile] = None
     after_kong: bool = False
     burned: bool = False
-    passed_hu: Optional[Tile] = None
+    passed_hu: Optional[int] = None
     passed_shape: Optional[int] = None
     chicken_peng: list[Tile] = field(default_factory=list)
     chicken_discard: list[Tile] = field(default_factory=list)

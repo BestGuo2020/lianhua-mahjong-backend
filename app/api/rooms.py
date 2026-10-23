@@ -360,7 +360,8 @@ def ready_room(room_id: str, body: SeatActionRequest) -> dict:
 
 
 @router.post('/{room_id}/start')
-async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> dict:
+async def start_room(room_id: str, body: Optional[StartRoomRequest] = None,
+                     user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
     """开局：所有已占（真人）座位 ready 后触发，独立 game_task 驱动整场。
 
     async 以便 game_task 创建在事件循环线程（与 WS 处理器一致）。
@@ -368,6 +369,9 @@ async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> d
     未知 id / 重复座位 → 409 INVALID_LLM_SEATS（key 全在服务端，不涉及回显）。
     """
     room = _room_or_404(room_id)
+    creator = room.seats[room.creator_seat] if room.creator_seat is not None else None
+    if creator is None or creator.player_id != user.player_id:
+        raise HTTPException(status_code=403, detail={'code': 'NOT_CREATOR'})
     entries = [
         {
             'seat': item.seat,

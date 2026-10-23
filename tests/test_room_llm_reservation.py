@@ -15,6 +15,8 @@
 import httpx
 import pytest
 
+from tests.test_api import start_as_creator
+
 import app.game.room as room_module
 from app.game.llm_player import LLMPlayer
 from app.game.room import RoomError, room_registry as rooms
@@ -163,7 +165,7 @@ async def test_reserve_endpoint_blocks_humans_and_start_uses_reserved_model(
             ready = await http.post(f'/api/rooms/{room_id}/ready',
                                     json={'seat': seat, 'rejoinCode': code})
             assert ready.status_code == 200
-        started = await http.post(f'/api/rooms/{room_id}/start', json={})
+        started = await start_as_creator(http, room_id, json={})
         assert started.status_code == 200, started.text
         room = rooms.get(room_id)
         controllers = room.manager.controllers
@@ -201,7 +203,7 @@ async def test_clearing_reservation_lets_human_take_that_seat_at_start(
             ready = await http.post(f'/api/rooms/{room_id}/ready',
                                     json={'seat': seat, 'rejoinCode': code})
             assert ready.status_code == 200
-        started = await http.post(f'/api/rooms/{room_id}/start', json={})
+        started = await start_as_creator(http, room_id, json={})
         assert started.status_code == 200, started.text
         room = rooms.get(room_id)
         controllers = room.manager.controllers
@@ -264,7 +266,7 @@ async def test_reserve_endpoint_allows_changes_after_match_finished(
         ready = await http.post(f'/api/rooms/{room_id}/ready',
                                 json={'seat': 0, 'rejoinCode': host['rejoinCode'], 'ready': True})
         assert ready.status_code == 200
-        started = await http.post(f'/api/rooms/{room_id}/start', json={})
+        started = await start_as_creator(http, room_id, json={})
         assert started.status_code == 200, started.text
         assert room.status == 'playing'
         # 对局中：前端编辑入口关闭，接口同口径拒绝（状态闸先于座位校验）
@@ -307,7 +309,7 @@ async def test_reserve_endpoint_allows_changes_after_match_finished(
             ready = await http.post(f'/api/rooms/{room_id}/ready',
                                     json={'seat': seat, 'rejoinCode': code, 'ready': True})
             assert ready.status_code == 200
-        rematch = await http.post(f'/api/rooms/{room_id}/start', json={})
+        rematch = await start_as_creator(http, room_id, json={})
         assert rematch.status_code == 200, rematch.text
         controllers = room.manager.controllers
         assert [type(item).__name__ for item in controllers[:2]] == [

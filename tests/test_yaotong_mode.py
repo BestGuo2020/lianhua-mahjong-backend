@@ -1,13 +1,18 @@
-"""幺筒新手/老手模式：输入拦截、等待额度与 AI 节奏对齐单机。"""
+"""幺筒新手/老手模式：输入拦截、等待额度、杠后节奏与 AI 节奏。"""
 
 import asyncio
+import time
 
 import pytest
 
 from app.core.yaotong.engine import StartOptions, create_game
 from app.core.yaotong.mode import action_protection, protection_reason
-from app.core.yaotong.types import Command, GameState, Pending, Player
-from app.game.yaotong_room import YaotongRoomSession
+from app.core.yaotong.types import Command, GameEvent, GameState, Pending, Player
+from app.game.yaotong_room import (
+    PACE_MS_AFTER_CLAIM_GANG,
+    PACE_MS_AFTER_KONG_SETTLE,
+    YaotongRoomSession,
+)
 
 WALL = [tile for tile in range(27) for _ in range(4)]
 
@@ -43,17 +48,48 @@ def test_ai_think_seconds_match_single_player_constants():
     state = create_game(StartOptions(wall=list(WALL), dice=(1, 2), dealer=0))
 
     state.phase = 'original'
-    assert room._ai_think_seconds(state) == 0.5
+    assert room._ai_think_seconds(state, 0) == 0.5
     state.phase = 'discard'
-    assert room._ai_think_seconds(state) == 1.0
+    assert room._ai_think_seconds(state, 0) == 1.0
     state.phase = 'response'
     state.pending = Pending(kind='discard', tile=1, from_seat=1)
-    assert room._ai_think_seconds(state) == 0.5
+    assert room._ai_think_seconds(state, 0) == 0.5
     state.pending = Pending(kind='rob', tile=1, from_seat=1)
-    assert room._ai_think_seconds(state) == 0.0
+    assert room._ai_think_seconds(state, 0) == 0.0
+
+    state.phase = 'discard'
+    state.players[1].after_kong = True
+    assert room._ai_think_seconds(state, 1) == 2.0
+    assert PACE_MS_AFTER_CLAIM_GANG + 2.0 == 2.55
+    assert PACE_MS_AFTER_KONG_SETTLE + 2.0 == 2.6
+
+    room.state = state
+    state.events.append(GameEvent(id=99, seat=1, text='补杠', kind='kong'))
+    room._note_kong_pause()
+    assert room._post_kong_pause == PACE_MS_AFTER_KONG_SETTLE
+    state.events[-1] = GameEvent(id=100, seat=1, text='明杠', kind='kong')
+    room._note_kong_pause()
+    assert room._post_kong_pause == PACE_MS_AFTER_CLAIM_GANG
 
     room.ai_delay = 0
-    assert room._ai_think_seconds(state) == 0.0
+    assert room._ai_think_seconds(state, 1) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_kong_pause_blocks_drive_before_replacement_discard():
+    room = YaotongRoomSession('YT-KONG-PACE')
+    room.state = create_game(StartOptions(wall=list(WALL), dice=(1, 2), dealer=0))
+    room.state.phase = 'discard'
+    room.state.current = 1
+    room.ai_delay = 1.0
+    room._post_kong_pause = 0.08
+    serial = room.state.serial
+    started = time.monotonic()
+    await room._drive_step()
+    assert time.monotonic() - started >= 0.07
+    assert room.state.serial == serial  # 停顿期间不摸打
+    assert room._post_kong_pause == 0.0
+    room.close()
 
 
 def test_room_remembers_mode():

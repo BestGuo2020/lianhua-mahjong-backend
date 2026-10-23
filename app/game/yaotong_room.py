@@ -28,6 +28,10 @@ from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_regi
 from app.game.yaotong_protocol import command_from_action, snapshot_for
 from app.ws.manager import ConnectionManager
 
+# 对齐前端 src/game/core/local/localGameConfig.ts 的 PACE_MS。
+PACE_MS_AFTER_CLAIM_GANG = 0.55   # 明杠补牌前
+PACE_MS_AFTER_KONG_SETTLE = 0.6   # 补杠结算/补牌前
+
 
 @dataclass
 class _Controller:
@@ -111,6 +115,8 @@ class YaotongRoomSession:
         self._decision_deadline: Optional[float] = None
         self._holds: dict[int, dict] = {}
         self._hold_tasks: dict[int, asyncio.Task] = {}
+        # 明杠补牌前 550ms / 补杠补牌前 600ms；与单机 afterClaimGang/afterKongSettle 对齐。
+        self._post_kong_pause = 0.0
         self.game_factory = create_game
 
     # ── 限时 ─────────────────────────────────────────────
@@ -286,6 +292,7 @@ class YaotongRoomSession:
             raise RoomError('LLM_NOT_ENABLED')
 
         self._release_all_holds()
+        self._post_kong_pause = 0.0
         self.state = self.game_factory(StartOptions(length=self.match_length))
         self._apply_names()
         self.match_started = True
@@ -364,6 +371,13 @@ class YaotongRoomSession:
             except asyncio.TimeoutError:
                 pass
             return
+        if self._post_kong_pause:
+            # 杠后先让天气/播报走完，再进入补摸后的出牌等待。
+            pause = self._post_kong_pause
+            self._post_kong_pause = 0.0
+            if self.ai_delay:
+                await asyncio.sleep(pause * self.ai_delay)
+            return
         if state.phase == 'original':
             seat = next(
                 (index for index, decided in enumerate(state.original_decisions)
@@ -405,14 +419,15 @@ class YaotongRoomSession:
             return
         await asyncio.sleep(0.01)
 
-    def _ai_think_seconds(self, state: GameState) -> float:
+    def _ai_think_seconds(self, state: GameState, seat: int) -> float:
         """单机 AI 节奏：原报 500ms、出牌 1000ms、响应 500ms（抢杠 0）。"""
         if not self.ai_delay:
             return 0.0
         if state.phase == 'original':
             base = 0.5
         elif state.phase == 'discard':
-            base = 1.0
+            # 杠后补摸的那一张等 2s 再打；普通出牌仍 1s。
+            base = 2.0 if getattr(state.players[seat], 'after_kong', False) else 1.0
         elif state.phase == 'response':
             pending = state.pending
             base = 0.0 if pending is not None and pending.kind == 'rob' else 0.5
@@ -474,7 +489,7 @@ class YaotongRoomSession:
         state = self.state
         if state is None:
             return
-        delay = self._ai_think_seconds(state)
+        delay = self._ai_think_seconds(state, seat)
         if delay:
             await asyncio.sleep(delay)
         if self._holds:
@@ -495,7 +510,21 @@ class YaotongRoomSession:
                 '幺筒 AI 动作被引擎拒绝，强制收尾')
             self.force_finish('AI_ACTION_FAILED')
             return
+        self._note_kong_pause()
         self.broadcast_snapshot()
+
+    def _note_kong_pause(self) -> None:
+        """明杠/补杠结算后给天气和播报留出单机同款停顿。"""
+        if self.state is None or not self.state.events:
+            return
+        last = self.state.events[-1]
+        if getattr(last, 'kind', '') != 'kong':
+            return
+        text = getattr(last, 'text', '')
+        if text == '补杠':
+            self._post_kong_pause = PACE_MS_AFTER_KONG_SETTLE
+        elif text == '明杠':
+            self._post_kong_pause = PACE_MS_AFTER_CLAIM_GANG
 
     # ── 老手“等”：每小局每个座位独立累计 15 秒 ─────────────
 
@@ -673,6 +702,7 @@ class YaotongRoomSession:
                 return False, 'PROTECTED_ACTION'
         if not act(self.state, seat, command):
             return False, 'INVALID_ACTION'
+        self._note_kong_pause()
         self._action_epoch += 1
         self._wake.set()
         self.broadcast_snapshot()

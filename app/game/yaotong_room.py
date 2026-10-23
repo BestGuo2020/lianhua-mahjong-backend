@@ -683,8 +683,10 @@ class YaotongRoomSession:
         return True, ''
 
     def _release_hold(self, seat: int, *, expired: bool = False) -> None:
-        self._action_epoch += 1
         entry = self._holds.pop(seat, None)
+        if entry is None:
+            return  # 重复/迟到的释放不重开真人决策窗口，也不打断 AI 的出牌计时。
+        self._action_epoch += 1
         task = self._hold_tasks.pop(seat, None)
         if task is not None and not task.done() and not expired:
             task.cancel()

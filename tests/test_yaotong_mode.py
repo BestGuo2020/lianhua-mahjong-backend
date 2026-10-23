@@ -143,6 +143,51 @@ async def test_hard_hold_expires_at_budget_and_resets_next_hand():
 
 
 @pytest.mark.asyncio
+async def test_repeated_hold_messages_cannot_refresh_budget_or_restart_decisions():
+    room = YaotongRoomSession('YT-HOLD-REPEAT', yaotong_mode='hard')
+    room.join_or_rejoin('甲', player_id='hold-repeat')
+    room.state = create_game(StartOptions(wall=list(WALL), dice=(1, 2), dealer=0))
+    room.state.wait_remaining_ms[0] = 120
+    try:
+        assert room.handle_client_message(0, {'kind': 'hold', 'holding': True})[0]
+        entry = room._holds[0]
+        await asyncio.sleep(0.04)
+        assert room.handle_client_message(0, {'kind': 'hold', 'holding': True})[0]
+        assert room._holds[0] is entry
+        await asyncio.sleep(0.12)
+        assert room.state.wait_remaining_ms[0] == 0
+        assert not room._holds
+        assert room.handle_client_message(0, {'kind': 'hold', 'holding': True}) == (False, 'NO_HOLD_BUDGET')
+        epoch = room._action_epoch
+        for _ in range(3):
+            assert room.handle_client_message(0, {'kind': 'hold', 'holding': False})[0]
+        assert room._action_epoch == epoch
+    finally:
+        room.close()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_and_reconnect_preserve_used_hold_budget():
+    room = YaotongRoomSession('YT-HOLD-RECONNECT', yaotong_mode='hard')
+    room.join_or_rejoin('甲', player_id='hold-reconnect')
+    room.on_connect(0)
+    room.state = create_game(StartOptions(wall=list(WALL), dice=(1, 2), dealer=0))
+    try:
+        assert room.handle_client_message(0, {'kind': 'hold', 'holding': True})[0]
+        await asyncio.sleep(0.05)
+        room.on_disconnect(0)
+        remaining = room.state.wait_remaining_ms[0]
+        assert 0 < remaining < 15000
+        room.on_connect(0)
+        assert room.state.wait_remaining_ms[0] == remaining
+        assert room.snapshot_for(0)['holdSeats'] == []
+        assert room.handle_client_message(0, {'kind': 'hold', 'holding': True})[0]
+        assert room._holds[0]['remaining'] == remaining
+    finally:
+        room.close()
+
+
+@pytest.mark.asyncio
 async def test_hold_pauses_drive_and_action_releases_budget():
     room = YaotongRoomSession('YT-HOLD-PAUSE', yaotong_mode='hard')
     room.join_or_rejoin('甲', player_id='hold-pause')

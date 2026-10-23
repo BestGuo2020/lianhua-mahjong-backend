@@ -327,6 +327,7 @@ def snapshot_for(room, seat: int) -> dict:
             or (result is not None and result.finished)
         ),
         'opening': room.opening,
+        'flowStep': room._transition.step if getattr(room, '_transition', None) else None,
         'roundResult': settlement_view(result) if result is not None else None,
         **({'continuation': continuation} if continuation else {}),
         'view': snapshot_view(room, seat),

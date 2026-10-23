@@ -63,32 +63,31 @@ def test_ai_think_seconds_match_single_player_constants():
     assert PACE_MS_AFTER_CLAIM_GANG + 2.0 == 2.55
     assert PACE_MS_AFTER_KONG_SETTLE + 2.0 == 2.6
 
-    room.state = state
-    state.events.append(GameEvent(id=99, seat=1, text='补杠', kind='kong'))
-    room._note_kong_pause()
-    assert room._post_kong_pause == PACE_MS_AFTER_KONG_SETTLE
-    state.events[-1] = GameEvent(id=100, seat=1, text='明杠', kind='kong')
-    room._note_kong_pause()
-    assert room._post_kong_pause == PACE_MS_AFTER_CLAIM_GANG
-
     room.ai_delay = 0
     assert room._ai_think_seconds(state, 1) == 0.0
 
 
 @pytest.mark.asyncio
-async def test_kong_pause_blocks_drive_before_replacement_discard():
+async def test_kong_transition_blocks_replacement_draw_and_is_sent_to_clients():
     room = YaotongRoomSession('YT-KONG-PACE')
     room.state = create_game(StartOptions(wall=list(WALL), dice=(1, 2), dealer=0))
     room.state.phase = 'discard'
     room.state.current = 1
     room.ai_delay = 1.0
-    room._post_kong_pause = 0.08
+    room.ai_delay = 0.1
+    state = room.state
+    state.phase = 'transition'
+    resumed = []
+    room._flow('after-open-kong', lambda: resumed.append(True))
     serial = room.state.serial
+    assert room.snapshot_for(0)['flowStep'] == 'after-open-kong'
     started = time.monotonic()
-    await room._drive_step()
-    assert time.monotonic() - started >= 0.07
+    while room._transition is not None:
+        await room._drive_step()
+    assert time.monotonic() - started >= 0.05
     assert room.state.serial == serial  # 停顿期间不摸打
-    assert room._post_kong_pause == 0.0
+    assert resumed == [True]
+    assert room._transition is None
     room.close()
 
 

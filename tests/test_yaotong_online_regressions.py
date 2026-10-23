@@ -33,6 +33,28 @@ def human_room(mode='hard'):
     return room
 
 
+@pytest.mark.asyncio
+async def test_connected_auto_player_still_waits_for_opening_and_settlement():
+    room = human_room()
+    room.auto_seats.add(0)
+    room._prepare_opening()
+    opening = asyncio.create_task(room._wait_for_openings())
+    await asyncio.sleep(0)
+    assert not opening.done()
+    assert room.handle_client_message(0, {'kind': 'opening_done', 'round': 1})[0]
+    await asyncio.wait_for(opening, 1)
+    room._opening = None
+    room.state.players[0] = Player(name='P0', hand=tiles('234567m 234s 66p 789s'), draws=2, drawn=26)
+    assert act(room.state, 0, Command(type='hu'))
+    assert room.continuation()['requiredSeats'] == [0]
+    continuation = asyncio.create_task(room._wait_for_continues())
+    await asyncio.sleep(0)
+    assert not continuation.done()
+    assert room.handle_client_message(0, {'kind': 'continue', 'round': 1})[0]
+    await asyncio.wait_for(continuation, 1)
+    room.close()
+
+
 def test_pass_big_self_draw_serializes_score_and_shape_then_rejoins():
     room = human_room()
     room.state.players[0] = Player(name='P0', hand=tiles('22233344455566m'), draws=2, drawn=5)
@@ -212,6 +234,11 @@ async def test_hard_peng_window_still_requires_explicit_human_choice():
 @pytest.mark.parametrize('join_win', [False, True])
 async def test_later_hu_reopens_deferred_seat_once_for_multi_win(join_win):
     room = human_room()
+    room.status = 'lobby'
+    for seat in (1, 2, 3):
+        room.join_or_rejoin(f'P{seat}', player_id=f'p{seat}')
+    room.on_connect(3)
+    room.status = 'playing'
     room.state.current = 1
     room.state.players[1].hand.append(26)
     room.state.players[1].drawn = 26

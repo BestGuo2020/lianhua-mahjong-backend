@@ -10,13 +10,14 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from loguru import logger
 
 from app.core.yaotong.ai import choose_action
 from app.core.yaotong.engine import (
     StartOptions,
+    FlowStep,
     act,
     continue_game,
     create_game,
@@ -51,6 +52,14 @@ class _Seat:
     ready: bool = False
     connected_at: float = 0.0
     controller: _Controller = field(default_factory=_Controller)
+
+
+@dataclass
+class _Transition:
+    state: GameState
+    step: FlowStep
+    resume: Callable[[], None]
+    deadline: float
 
 
 class YaotongRoomSession:
@@ -119,8 +128,7 @@ class YaotongRoomSession:
         self._decision_deadline: Optional[float] = None
         self._holds: dict[int, dict] = {}
         self._hold_tasks: dict[int, asyncio.Task] = {}
-        # 明杠补牌前 550ms / 补杠补牌前 600ms；与单机 afterClaimGang/afterKongSettle 对齐。
-        self._post_kong_pause = 0.0
+        self._transition: Optional[_Transition] = None
         self.game_factory = create_game
 
     # ── 限时 ─────────────────────────────────────────────
@@ -257,6 +265,11 @@ class YaotongRoomSession:
             and seat not in self.auto_seats
         )
 
+    def _connected_human_seats(self) -> list[int]:
+        # 托管只交出操作权，在线玩家仍须看到完整开局与结算演出。
+        return [seat for seat, state in enumerate(self.seats)
+                if state is not None and state.controller.connected]
+
     @property
     def opening(self) -> Optional[dict]:
         return self._opening
@@ -264,9 +277,7 @@ class YaotongRoomSession:
     def continuation(self) -> Optional[dict]:
         if self.state is None or self.state.result is None:
             return None
-        required = [
-            seat for seat in range(4) if self._human_seat(seat)
-        ]
+        required = self._connected_human_seats()
         return {
             'requiredSeats': required,
             'readySeats': [
@@ -303,7 +314,7 @@ class YaotongRoomSession:
             raise RoomError('LLM_NOT_ENABLED')
 
         self._release_all_holds()
-        self._post_kong_pause = 0.0
+        self._transition = None
         self.state = self.game_factory(StartOptions(length=self.match_length))
         self._apply_names()
         self.match_started = True
@@ -391,14 +402,27 @@ class YaotongRoomSession:
             except asyncio.TimeoutError:
                 pass
             return
-        if self._post_kong_pause:
-            # 杠后先让天气/播报走完，再进入补摸后的出牌等待。
-            pause = self._post_kong_pause
-            self._post_kong_pause = 0.0
-            if self.ai_delay:
-                await asyncio.sleep(pause * self.ai_delay)
+        if self._transition is not None:
+            await self._resume_transition()
             return
         if state.phase == 'original':
+            automatic = [seat for seat in range(4) if not state.original_decisions[seat]
+                         and (not self._human_seat(seat) or not waits(state.players[seat]))]
+            if automatic:
+                epoch = self._action_epoch
+                await self._wait_pace(0.5 * self.ai_delay)
+                if self.state is not state or self._holds or self._action_epoch != epoch:
+                    return
+                # 与单机相同：各 AI 在同一个 500ms 原报窗口决策，不逐家追加半秒。
+                for seat in automatic:
+                    if state.phase != 'original':
+                        break
+                    command = (Command(type='original', declare=False) if self._human_seat(seat)
+                               else choose_action(state, seat))
+                    if command is not None and self._apply_command(seat, command):
+                        self._action_epoch += 1
+                        self.broadcast_snapshot()
+                return
             seat = next(
                 (index for index, decided in enumerate(state.original_decisions)
                  if not decided),
@@ -406,11 +430,6 @@ class YaotongRoomSession:
             )
             if seat is None:
                 await asyncio.sleep(0.01)
-                return
-            # 没有合法原报资格时不需要等真人确认（对齐本地自动跳过）。
-            if not waits(state.players[seat]):
-                await self._act_ai(seat, command=Command(type='original', declare=False),
-                                   delay=0.5 * self.ai_delay)
                 return
             await self._human_or_ai(seat)
             return
@@ -422,20 +441,71 @@ class YaotongRoomSession:
             if pending is None:
                 await asyncio.sleep(0.01)
                 return
-            seat = next(
-                (
-                    candidate for candidate in range(4)
-                    if candidate in pending.options
-                    and candidate not in pending.choices
-                ),
-                None,
-            )
+            awaiting = [seat for seat in range(4) if seat in pending.options and seat not in pending.choices]
+            automatic = [seat for seat in awaiting if not self._human_seat(seat)]
+            automatic += [seat for seat in awaiting if self._human_seat(seat)
+                          and self._human_automatic_command(seat) is not None]
+            seat = next(iter(automatic or awaiting), None)
             if seat is None:
                 await asyncio.sleep(0.01)
                 return
             await self._human_or_ai(seat)
             return
         await asyncio.sleep(0.01)
+
+    async def _wait_pace(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        self._wake.clear()
+        try:
+            await asyncio.wait_for(self._wake.wait(), seconds)
+        except asyncio.TimeoutError:
+            pass
+
+    def _flow(self, step: FlowStep, resume: Callable[[], None]) -> None:
+        state = self.state
+        if step == 'after-peng' and not self._human_seat(state.current):
+            resume()
+            return
+        reaction = self._reaction_remaining()
+        delays = {
+            'first-draw': 0.65 * self.ai_delay,
+            'next-draw': max(reaction, 0.45 * self.ai_delay),
+            'before-claim': reaction,
+            'after-peng': 0.35 * self.ai_delay,
+            'after-open-kong': PACE_MS_AFTER_CLAIM_GANG * self.ai_delay,
+            'before-rob': max(reaction, 2.0 * self.ai_delay),
+            'between-robbers': 0.45 * self.ai_delay,
+            'after-added-kong': PACE_MS_AFTER_KONG_SETTLE * self.ai_delay,
+            'rob-win': 0.45 * self.ai_delay,
+        }
+        delay = delays[step]
+        if delay <= 0:
+            resume()
+            return
+        self._transition = _Transition(state, step, resume, time.monotonic() + delay)
+
+    async def _resume_transition(self) -> None:
+        transition = self._transition
+        if transition.state is not self.state:
+            self._transition = None
+            return
+        await self._wait_pace(max(0.0, transition.deadline - time.monotonic()))
+        if (self.closed or self._holds or self._transition is not transition
+                or transition.state is not self.state or time.monotonic() < transition.deadline):
+            return
+        self._transition = None
+        transition.resume()
+        self._action_epoch += 1
+        self._reaction_remaining()
+        self.broadcast_snapshot()
+
+    def _apply_command(self, seat: int, command: Command) -> bool:
+        previous = self._transition
+        accepted = act(self.state, seat, command, self._flow)
+        if self._transition is previous and self.state.phase != 'transition':
+            self._transition = None
+        return accepted
 
     def _ai_think_seconds(self, state: GameState, seat: int) -> float:
         """单机 AI 节奏：原报 500ms、出牌 1000ms、响应 500ms（抢杠 0）。"""
@@ -463,7 +533,7 @@ class YaotongRoomSession:
             if automatic is not None:
                 delay = (self._reaction_remaining()
                          if automatic.type == 'respond'
-                         else self._ai_think_seconds(self.state, seat))
+                         else 0.65 * self.ai_delay)
                 await self._act_ai(seat, command=automatic, delay=delay)
                 return
             timeout = (
@@ -557,8 +627,7 @@ class YaotongRoomSession:
         was_human = self._human_seat(seat)
         if delay is None:
             delay = self._ai_think_seconds(state, seat)
-        if delay:
-            await asyncio.sleep(delay)
+        await self._wait_pace(delay)
         # sleep 期间可能重连、取消托管、真人抢先操作或换局。旧任务只需丢弃。
         if (self.closed or self._holds or self.state is not state
                 or self._action_epoch != epoch or self._human_seat(seat) != was_human
@@ -567,33 +636,19 @@ class YaotongRoomSession:
         command = command or choose_action(state, seat)
         if command is None:
             command = self._fallback_command(state, seat)
-        ok = act(state, seat, command) if command is not None else False
+        ok = self._apply_command(seat, command) if command is not None else False
         if not ok:
             fallback = self._fallback_command(state, seat)
             if fallback is not None:
-                ok = act(state, seat, fallback)
+                ok = self._apply_command(seat, fallback)
         if not ok:
             logger.bind(room_id=self.room_id, seat=seat).error(
                 '幺筒 AI 动作被引擎拒绝，强制收尾')
             self.force_finish('AI_ACTION_FAILED')
             return
-        self._note_kong_pause()
         self._action_epoch += 1
         self._reaction_remaining()
         self.broadcast_snapshot()
-
-    def _note_kong_pause(self) -> None:
-        """明杠/补杠结算后给天气和播报留出单机同款停顿。"""
-        if self.state is None or not self.state.events:
-            return
-        last = self.state.events[-1]
-        if getattr(last, 'kind', '') != 'kong':
-            return
-        text = getattr(last, 'text', '')
-        if text == '补杠':
-            self._post_kong_pause = PACE_MS_AFTER_KONG_SETTLE
-        elif text == '明杠':
-            self._post_kong_pause = PACE_MS_AFTER_CLAIM_GANG
 
     # ── 老手“等”：每小局每个座位独立累计 15 秒 ─────────────
 
@@ -670,12 +725,12 @@ class YaotongRoomSession:
         return None
 
     async def _wait_for_openings(self) -> None:
-        required = [seat for seat in range(4) if self._human_seat(seat)]
+        required = self._connected_human_seats()
         if not required:
             return
         deadline = asyncio.get_running_loop().time() + self.opening_timeout
         while asyncio.get_running_loop().time() < deadline:
-            required = [seat for seat in range(4) if self._human_seat(seat)]
+            required = self._connected_human_seats()
             if not required or all(
                 seat in self._opening_confirmations for seat in required
             ):
@@ -691,12 +746,12 @@ class YaotongRoomSession:
                 pass
 
     async def _wait_for_continues(self) -> None:
-        required = [seat for seat in range(4) if self._human_seat(seat)]
+        required = self._connected_human_seats()
         if not required:
             return
         deadline = asyncio.get_running_loop().time() + self.continue_timeout
         while asyncio.get_running_loop().time() < deadline:
-            required = [seat for seat in range(4) if self._human_seat(seat)]
+            required = self._connected_human_seats()
             if not required or all(
                 seat in self._continue_confirmations for seat in required
             ):
@@ -781,9 +836,8 @@ class YaotongRoomSession:
                 action_protection(self.state, seat), command)
             if reason:
                 return False, 'PROTECTED_ACTION'
-        if not act(self.state, seat, command):
+        if not self._apply_command(seat, command):
             return False, 'INVALID_ACTION'
-        self._note_kong_pause()
         self._action_epoch += 1
         if (self.state.pending is not None and self.state.phase == 'response'
                 and (command.type == 'declareHu' or command.action == 'hu')):
@@ -797,6 +851,7 @@ class YaotongRoomSession:
     # ── 收尾 ────────────────────────────────────────────
 
     def close(self) -> None:
+        self._transition = None
         self.closed = True
         self._release_all_holds()
         self.conn.broadcast({'kind': 'room_closed'})
@@ -817,6 +872,7 @@ class YaotongRoomSession:
                      cancel_task: bool = True) -> bool:
         if self._forced_finishing or self.status != 'playing':
             return False
+        self._transition = None
         self._release_all_holds()
         self._forced_finishing = True
         self.status = 'finished'

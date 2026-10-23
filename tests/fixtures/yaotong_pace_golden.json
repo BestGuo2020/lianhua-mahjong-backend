@@ -1,0 +1,12 @@
+[
+  {"name":"discard","actor":0,"players":{"0":{"hand":"147m 258p 369s 2468s 5m","drawn":4}},"command":{"type":"discard","index":13},"events":[[0,"discard",0],[1000,"draw",1],[2000,"discard",1]]},
+  {"name":"peng","actor":0,"players":{"0":{"hand":"147m 258p 369s 2468s 5m","drawn":4},"1":{"hand":"55m 147m 258p 369s 24s"}},"command":{"type":"discard","index":13},"events":[[0,"discard",0],[1000,"peng",1],[2000,"discard",1]]},
+  {"name":"open-kong","actor":0,"players":{"0":{"hand":"147m 258p 369s 2468s 5m","drawn":4},"1":{"hand":"555m 147m 258p 369s 2s"}},"command":{"type":"discard","index":13},"events":[[0,"discard",0],[1000,"kong",1],[1550,"draw",1],[3550,"discard",1]]},
+  {"name":"added-kong","actor":1,"players":{"1":{"hand":"5m 147m 258p 369s 2s","drawn":4,"peng":4}},"command":{"type":"kong","tile":4},"events":[[0,"kong-intent",1],[2000,"kong",1],[2600,"draw",1],[4600,"discard",1]]},
+  {"name":"concealed-kong","actor":1,"players":{"1":{"hand":"5555m 147m 258p 369s 2s","drawn":4}},"command":{"type":"kong","tile":4},"events":[[0,"kong",1],[0,"draw",1],[2000,"discard",1]]},
+  {"name":"stored-kong","actor":1,"players":{"1":{"hand":"5555m 147m 258p 369s 2s","drawn":19}},"command":{"type":"kong","tile":4},"events":[[0,"kong",1],[0,"draw",1],[2000,"discard",1]]},
+  {"name":"yao-discard","actor":0,"players":{"0":{"hand":"147m 258p 369s 2468s 1p","drawn":9}},"command":{"type":"discard","index":13},"events":[[0,"discard",0],[2000,"draw",1],[3000,"discard",1]]},
+  {"name":"after-kong-discard","actor":0,"players":{"0":{"hand":"147m 258p 369s 2468s 5m","drawn":4,"afterKong":true}},"command":{"type":"discard","index":13},"events":[[0,"discard",0],[2000,"draw",1],[3000,"discard",1]]},
+  {"name":"opening","actor":0,"phase":"original","players":{},"events":[[1150,"draw",0]]},
+  {"name":"locked-human","actor":0,"players":{"0":{"hand":"234567m 234s 66p 78s 1m","drawn":0,"declaration":"ready"}},"events":[[650,"discard",0]]}
+]

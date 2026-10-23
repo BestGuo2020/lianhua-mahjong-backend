@@ -653,12 +653,14 @@ class YaotongRoomSession:
             return False, 'STALE_ACTION'
         if self._holds and seat not in self._holds:
             return False, 'TABLE_HELD'
-        if seat in self._holds:
-            self._release_hold(seat)
         try:
             command = command_from_action(message.get('action'))
         except ValueError:
             return False, 'INVALID_ACTION'
+        if seat in self._holds:
+            if command.type not in ('declareHu', 'passHu'):
+                return False, 'HOLD_ACTION_NOT_ALLOWED'
+            self._release_hold(seat)
         if self.yaotong_mode == 'easy':
             # 新手模式服务端执行同一套输入拦截；客户端按钮已隐藏，这里防绕过。
             reason = protection_reason(

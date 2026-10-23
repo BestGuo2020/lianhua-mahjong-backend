@@ -122,6 +122,14 @@ async def test_hold_pauses_drive_and_action_releases_budget():
     assert room.state.serial == serial  # 等期间整桌不推进
     await asyncio.sleep(0.12)
 
+    # 等期间不能摸打，只能胡/过。
+    ok, error = room.handle_client_message(0, {
+        'kind': 'action', 'action': {'type': 'discard', 'index': 0},
+    })
+    assert ok is False
+    assert error == 'HOLD_ACTION_NOT_ALLOWED'
+    room.handle_client_message(0, {'kind': 'hold', 'holding': False})
+
     ok, error = room.handle_client_message(0, {
         'kind': 'action', 'action': {'type': 'discard', 'index': 0},
     })

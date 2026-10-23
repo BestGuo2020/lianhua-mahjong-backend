@@ -89,14 +89,15 @@ async def test_reconnect_restores_control_after_ai_takeover(server, fresh_rooms)
         'openingDelayStart', 'openingDelay', 'redKongDraw',
     )}
     room = rooms.create('RECONN3', mode='east', capacity=1, turn_timeout=2.0, pace=pace)
-    seat, _, state = room.join_or_rejoin('老赵')
+    seat, _, state = room.join_or_rejoin('老赵', player_id='wakudemo-default')
     room.ready_seat(seat)
     code = state.rejoin_code
     a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'RECONN3', code))
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
-            await http.post('/api/rooms/RECONN3/start')
+            response = await http.post('/api/rooms/RECONN3/start')
+            assert response.status_code == 200, response.text
         # 开局就绪屏障（pace 非空）：客户端发牌动画结束 → opening_done
         await read_until(a, 'state_snapshot')
         await a.send(json.dumps({'type': 'opening_done'}))

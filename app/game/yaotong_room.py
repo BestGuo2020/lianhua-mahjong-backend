@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -60,6 +61,13 @@ class _Transition:
     step: FlowStep
     resume: Callable[[], None]
     deadline: float
+
+
+@dataclass
+class _Decision:
+    key: tuple
+    deadline: float
+    paused_remaining: Optional[float] = None
 
 
 class YaotongRoomSession:
@@ -122,10 +130,8 @@ class YaotongRoomSession:
         # 真人房间注入 PACE 时按单机 AI_DELAYS/YAOTONG_AI_DISCARD_MS 停顿；
         # 测试/无头房间默认 0（仍可用 ai_delay 覆盖）。
         self.ai_delay = 1.0 if pace else 0.0
-        # 老手“等”由客户端显式开始/结束；未点等时不自动代胡。
-        # 这里只留超长兜底防止幽灵会话，真人掉线会立即转 AI。
-        self.hard_fallback_timeout = 3600.0
-        self._decision_deadline: Optional[float] = None
+        # 操作窗口按座位同时计时；“等”暂停剩余时长，不能重置整段 20 秒。
+        self._decisions: dict[int, _Decision] = {}
         self._holds: dict[int, dict] = {}
         self._hold_tasks: dict[int, asyncio.Task] = {}
         self._transition: Optional[_Transition] = None
@@ -394,6 +400,7 @@ class YaotongRoomSession:
         state = self.state
         if state is None:
             return
+        self._sync_decisions()
         if self._holds:
             # 任一座位点“等”时暂停整桌推进；等额度耗尽或玩家胡/过/取消后恢复。
             self._wake.clear()
@@ -523,6 +530,62 @@ class YaotongRoomSession:
             base = 0.45
         return base * self.ai_delay
 
+    def _decision_key(self, seat: int) -> Optional[tuple]:
+        state = self.state
+        if (state is None or self.closed or self.match_finished or self._opening is not None
+                or self.seats[seat] is None):
+            return None
+        if self._human_automatic_command(seat) is not None:
+            return None
+        base = (id(state), state.phase, seat)
+        player = state.players[seat]
+        if state.phase == 'original' and not state.original_decisions[seat] and waits(player):
+            return base
+        if state.phase == 'discard' and state.current == seat:
+            # 过胡/重连/托管消息不构成新出牌窗口；实际摸牌、碰杠后才重新计时。
+            return (*base, player.draws, player.discards, tuple(player.hand),
+                    tuple((meld.kind, meld.tile) for meld in player.melds))
+        pending = state.pending
+        if (state.phase == 'response' and pending is not None
+                and seat in pending.options and seat not in pending.choices):
+            return (*base, id(pending))
+        return None
+
+    def _sync_decisions(self) -> None:
+        now = time.monotonic()
+        for seat in range(4):
+            key = self._decision_key(seat)
+            decision = self._decisions.get(seat)
+            if key is None or (decision is not None and decision.key != key):
+                self._decisions.pop(seat, None)
+                decision = None
+            if key is None:
+                continue
+            if decision is None and self._human_seat(seat):
+                decision = _Decision(key, now + self.turn_timeout)
+                self._decisions[seat] = decision
+            if decision is None:
+                continue
+            if self._holds and decision.paused_remaining is None:
+                decision.paused_remaining = max(0.0, decision.deadline - now)
+            elif not self._holds and decision.paused_remaining is not None:
+                decision.deadline = now + decision.paused_remaining
+                decision.paused_remaining = None
+
+    def decision_view(self, seat: int) -> dict:
+        self._sync_decisions()
+        decision = self._decisions.get(seat) if self._human_seat(seat) else None
+        if decision is None:
+            return {'decisionDeadlineAt': 0, 'decisionRemainingMs': 0, 'decisionPaused': False}
+        paused = decision.paused_remaining is not None
+        remaining = (decision.paused_remaining if paused
+                     else max(0.0, decision.deadline - time.monotonic()))
+        return {
+            'decisionDeadlineAt': 0 if paused else int((time.time() + remaining) * 1000),
+            'decisionRemainingMs': math.ceil(remaining * 1000),
+            'decisionPaused': paused,
+        }
+
     async def _human_or_ai(self, seat: int) -> None:
         if self._human_seat(seat):
             if self._holds:
@@ -536,15 +599,12 @@ class YaotongRoomSession:
                          else 0.65 * self.ai_delay)
                 await self._act_ai(seat, command=automatic, delay=delay)
                 return
-            timeout = (
-                self.hard_fallback_timeout
-                if self.yaotong_mode == 'hard' else self.turn_timeout
-            )
-            self._decision_deadline = time.time() + timeout
-            try:
-                acted = await self._wait_for_action(seat, timeout)
-            finally:
-                self._decision_deadline = None
+            self._sync_decisions()
+            decision = self._decisions.get(seat)
+            if decision is None:
+                return
+            timeout = max(0.0, decision.deadline - time.monotonic())
+            acted = await self._wait_for_action(seat, timeout)
             if acted:
                 return
             if self._holds:
@@ -553,6 +613,9 @@ class YaotongRoomSession:
                 while self._holds:
                     await asyncio.sleep(0.2)
                 return
+            # 已经给足真人操作时间；沿用安全 AI 决策，不再附加 AI 思考停顿。
+            await self._act_ai(seat, delay=0)
+            return
         await self._act_ai(seat)
 
     async def _wait_for_action(self, seat: int, timeout: float) -> bool:

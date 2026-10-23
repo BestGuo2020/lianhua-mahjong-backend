@@ -258,6 +258,11 @@ def snapshot_view(room, seat: int) -> dict:
         player_view(player, index, seat, room.seats[index])
         for index, player in enumerate(state.players)
     ]
+    wait_remaining = list(state.wait_remaining_ms)
+    for hold_seat in getattr(room, '_holds', {}):
+        remaining = room.hold_remaining_ms(hold_seat)
+        if remaining is not None:
+            wait_remaining[hold_seat] = remaining
     return {
         'seat': seat,
         'phase': state.phase,
@@ -291,7 +296,7 @@ def snapshot_view(room, seat: int) -> dict:
         'seenChickenDiscards': [
             to_tile_type(tile) for tile in state.seen_chicken_discards
         ],
-        'waitRemainingMs': list(state.wait_remaining_ms),
+        'waitRemainingMs': wait_remaining,
     }
 
 
@@ -309,6 +314,7 @@ def snapshot_for(room, seat: int) -> dict:
         'dealer': state.dealer if state is not None else 0,
         'matchLength': room.match_length,
         'yaotongMode': getattr(room, 'yaotong_mode', 'easy'),
+        'holdSeats': sorted(getattr(room, '_holds', {}).keys()),
         'decisionDeadlineAt': (
             int(room._decision_deadline * 1000)
             if getattr(room, '_decision_deadline', None) else 0

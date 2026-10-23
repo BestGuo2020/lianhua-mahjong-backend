@@ -105,8 +105,11 @@ class YaotongRoomSession:
         # 真人房间注入 PACE 时按单机 AI_DELAYS/YAOTONG_AI_DISCARD_MS 停顿；
         # 测试/无头房间默认 0（仍可用 ai_delay 覆盖）。
         self.ai_delay = 1.0 if pace else 0.0
-        self.hard_timeout = 15.0
+        # 老手“等”由客户端显式开始/结束；未点等时不按 15s 自动代胡，只保留 60s 断线兜底。
+        self.hard_fallback_timeout = 60.0
         self._decision_deadline: Optional[float] = None
+        self._holds: dict[int, dict] = {}
+        self._hold_tasks: dict[int, asyncio.Task] = {}
         self.game_factory = create_game
 
     # ── 限时 ─────────────────────────────────────────────
@@ -224,6 +227,9 @@ class YaotongRoomSession:
         state = self.seats[seat]
         if state is not None:
             state.controller.connected = False
+        # 暂离/断线结束本次等待；已用额度不返还。
+        if seat in self._holds:
+            self._release_hold(seat)
 
     def _human_seat(self, seat: int) -> bool:
         state = self.seats[seat]
@@ -277,6 +283,7 @@ class YaotongRoomSession:
         if llm_seats:
             raise RoomError('LLM_NOT_ENABLED')
 
+        self._release_all_holds()
         self.state = self.game_factory(StartOptions(length=self.match_length))
         self._apply_names()
         self.match_started = True
@@ -317,6 +324,7 @@ class YaotongRoomSession:
                 if state is None:
                     break
                 if state.phase == 'settled':
+                    self._release_all_holds()
                     self.broadcast_snapshot()
                     if state.result is not None and state.result.finished:
                         break
@@ -345,6 +353,14 @@ class YaotongRoomSession:
     async def _drive_step(self) -> None:
         state = self.state
         if state is None:
+            return
+        if self._holds:
+            # 任一座位点“等”时暂停整桌推进；等额度耗尽或玩家胡/过/取消后恢复。
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(self._wake.wait(), 0.5)
+            except asyncio.TimeoutError:
+                pass
             return
         if state.phase == 'original':
             seat = next(
@@ -404,9 +420,13 @@ class YaotongRoomSession:
 
     async def _human_or_ai(self, seat: int) -> None:
         if self._human_seat(seat):
+            if self._holds:
+                while self._holds:
+                    await asyncio.sleep(0.2)
+                return
             timeout = (
-                self.hard_timeout if self.yaotong_mode == 'hard'
-                else self.turn_timeout
+                self.hard_fallback_timeout
+                if self.yaotong_mode == 'hard' else self.turn_timeout
             )
             self._decision_deadline = time.time() + timeout
             try:
@@ -415,12 +435,20 @@ class YaotongRoomSession:
                 self._decision_deadline = None
             if acted:
                 return
+            if self._holds:
+                # 等开始后本函数让出主线；等结束由 _drive_step 重新评估状态，
+                # 避免拿着旧决策窗口继续等或直接代打。
+                while self._holds:
+                    await asyncio.sleep(0.2)
+                return
         await self._act_ai(seat)
 
     async def _wait_for_action(self, seat: int, timeout: float) -> bool:
         start_epoch = self._action_epoch
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
+            if self._holds:
+                return False
             if self._action_epoch != start_epoch:
                 return True
             self._wake.clear()
@@ -445,6 +473,8 @@ class YaotongRoomSession:
         delay = self._ai_think_seconds(state)
         if delay:
             await asyncio.sleep(delay)
+        if self._holds:
+            return
         state = self.state
         if state is None:
             return
@@ -462,6 +492,67 @@ class YaotongRoomSession:
             self.force_finish('AI_ACTION_FAILED')
             return
         self.broadcast_snapshot()
+
+    # ── 老手“等”：每小局每个座位独立累计 15 秒 ─────────────
+
+    def hold_remaining_ms(self, seat: int) -> Optional[int]:
+        entry = self._holds.get(seat)
+        if entry is None:
+            return None
+        elapsed = (time.monotonic() - entry['started_at']) * 1000
+        return max(0, int(entry['remaining'] - elapsed))
+
+    def _start_hold(self, seat: int) -> tuple[bool, str]:
+        if self.yaotong_mode != 'hard':
+            return False, 'HOLD_NOT_AVAILABLE'
+        if self.seats[seat] is None or self.state is None \
+                or self.state.phase == 'settled':
+            return False, 'STALE_HOLD'
+        if seat in self.auto_seats:
+            return False, 'AUTO_SEAT'
+        if seat in self._holds:
+            return True, ''
+        budget = self.state.wait_remaining_ms[seat]
+        if budget <= 0:
+            return False, 'NO_HOLD_BUDGET'
+        self._holds[seat] = {
+            'started_at': time.monotonic(),
+            'remaining': budget,
+        }
+        self._hold_tasks[seat] = asyncio.create_task(self._expire_hold(seat))
+        self._wake.set()
+        self.broadcast_snapshot()
+        return True, ''
+
+    def _release_hold(self, seat: int, *, expired: bool = False) -> None:
+        entry = self._holds.pop(seat, None)
+        task = self._hold_tasks.pop(seat, None)
+        if task is not None and not task.done() and not expired:
+            task.cancel()
+        if entry is not None and self.state is not None:
+            if expired:
+                self.state.wait_remaining_ms[seat] = 0
+            else:
+                elapsed = (time.monotonic() - entry['started_at']) * 1000
+                self.state.wait_remaining_ms[seat] = max(
+                    0, int(entry['remaining'] - elapsed))
+        self._wake.set()
+        self.broadcast_snapshot()
+
+    async def _expire_hold(self, seat: int) -> None:
+        entry = self._holds.get(seat)
+        if entry is None:
+            return
+        await asyncio.sleep(max(0.0, entry['remaining'] / 1000))
+        if self._holds.get(seat) is entry:
+            self._release_hold(seat, expired=True)
+
+    def _release_all_holds(self) -> None:
+        for seat in list(self._holds):
+            task = self._hold_tasks.pop(seat, None)
+            if task is not None and not task.done():
+                task.cancel()
+        self._holds.clear()
 
     @staticmethod
     def _fallback_command(state: GameState, seat: int) -> Optional[Command]:
@@ -548,10 +639,22 @@ class YaotongRoomSession:
             self._wake.set()
             self.broadcast_snapshot()
             return True, ''
+        if message.get('kind') == 'hold':
+            holding = message.get('holding')
+            if not isinstance(holding, bool):
+                return False, 'INVALID_HOLD'
+            if holding:
+                return self._start_hold(seat)
+            self._release_hold(seat)
+            return True, ''
         if message.get('kind') != 'action':
             return False, 'INVALID_MESSAGE'
         if self.state is None or self.state.phase == 'settled':
             return False, 'STALE_ACTION'
+        if self._holds and seat not in self._holds:
+            return False, 'TABLE_HELD'
+        if seat in self._holds:
+            self._release_hold(seat)
         try:
             command = command_from_action(message.get('action'))
         except ValueError:
@@ -573,6 +676,7 @@ class YaotongRoomSession:
 
     def close(self) -> None:
         self.closed = True
+        self._release_all_holds()
         self.conn.broadcast({'kind': 'room_closed'})
         try:
             current = asyncio.current_task()
@@ -591,6 +695,7 @@ class YaotongRoomSession:
                      cancel_task: bool = True) -> bool:
         if self._forced_finishing or self.status != 'playing':
             return False
+        self._release_all_holds()
         self._forced_finishing = True
         self.status = 'finished'
         self.match_finished = True

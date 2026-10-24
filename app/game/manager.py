@@ -386,8 +386,10 @@ class GameManager:
         self.events.snapshot()
 
     async def _sleep(self, ms: int) -> None:
-        if ms and ms > 0:
-            await asyncio.sleep(ms / 1000)
+        # Zero pace skips animation delays, not cooperative scheduling. Without
+        # this yield, immediate AI controllers can run an entire hand inline,
+        # starving WebSocket handshakes and delaying room-task cancellation.
+        await asyncio.sleep(ms / 1000 if ms and ms > 0 else 0)
 
     def _apply_kong_score(
         self,

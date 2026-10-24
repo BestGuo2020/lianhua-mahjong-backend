@@ -6,7 +6,8 @@
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from app.core.lotus_rules import chi_options as lotus_chi_options
+from app.core.lotus_rules import chi_options as lotus_chi_options, waiting_tiles
+from app.core.blood_flow.kong_value import post_kong_state
 from app.core.tiles import TILE_TYPES, sort_tiles_with_jokers
 from app.core.blood_flow.config import BLOOD_FLOW_CONFIG
 from app.core.blood_flow.types import SourceTileEvent, WinEvaluation
@@ -177,8 +178,24 @@ class BloodFlowEngine:
             if not self.seats[seat]['locked'] or index == player['drawnTileIndex']:
                 moves.append({'kind': 'discard', 'index': index})
         source = self.draw_source or self.source('draw', seat, player['hand'][-1])
+        moves = [action for action in moves if self.kong_keeps_ready(seat, action)]
         options = [moves if s == seat else [] for s in SEATS]
         self.open('turn', source, options)
+
+    def kong_keeps_ready(self, seat: int, action: dict, claimed_tile=None) -> bool:
+        """胡后只能开杠仍听牌的组合；不依靠未知补牌修复失听。"""
+        kind = action['kind']
+        if not self.seats[seat]['locked'] or kind not in KONG_ACTIONS:
+            return True
+        player = self.players[seat]
+        post = post_kong_state('discard-gang' if kind == 'gang' else kind,
+                               player['hand'], player['melds'],
+                               claimed_tile if kind == 'gang' else action.get('tile'),
+                               action.get('meldIndex'))
+        if post is None:
+            return False
+        owned = [*post['hand'], *[tile for meld in post['melds'] for tile in meld['tiles']]]
+        return any(owned.count(tile) < 4 for tile in waiting_tiles(post['hand'], len(post['melds']), self.jokers))
 
     def command(self, seat: int, action: dict) -> dict:
         if not self.window:
@@ -298,7 +315,7 @@ class BloodFlowEngine:
             if source['kind'] == 'discard' and self.wall:
                 hand = self.players[seat]['hand']
                 count = hand.count(source['tile'])
-                if count >= 3:
+                if count >= 3 and self.kong_keeps_ready(seat, {'kind': 'gang'}, source['tile']):
                     actions.append({'kind': 'gang'})
                 if count >= 2 and not self.seats[seat]['locked']:
                     actions.append({'kind': 'peng'})

@@ -79,13 +79,19 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
     # 断幺九只看成牌牌面，标准型与七对（含豪华七对）都可叠加。
     if all(not is_honor(t) and not is_terminal(t) for t in tiles):
         result.append('all-simples')
+    melds = [g for g in hand.groups if g.kind != 'pair']
+    triplets = [g for g in melds if g.kind in ('triplet', 'kong')]
+    all_triplets = len(triplets) == 4
+    # 幺九牌种属性适用于七对；标准型继续要求四副刻子/杠。
+    terminal_shape = hand.shape == 'sevenPairs' or all_triplets
+    if terminal_shape and all(is_terminal(t) for t in tiles):
+        result.append('pure-terminals')
+    if terminal_shape and honors and len(suits) > 0 and all(is_honor(t) or is_terminal(t) for t in tiles):
+        result.append('mixed-terminals')
     if hand.shape == 'sevenPairs':
         return result
-    melds = [g for g in hand.groups if g.kind != 'pair']
     pair = next(g for g in hand.groups if g.kind == 'pair').tiles[0]
-    triplets = [g for g in melds if g.kind in ('triplet', 'kong')]
     sequences = [g for g in melds if g.kind == 'sequence']
-    all_triplets = len(triplets) == 4
     if all_triplets:
         result.append('all-triplets')
     dragon_count = sum(1 for t in DRAGONS if any(g.tiles[0] == t for g in triplets))
@@ -98,10 +104,6 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
         result.append('big-four-winds')
     if wind_count == 3 and pair in WINDS and not any(g.tiles[0] == pair for g in triplets):
         result.append('little-four-winds')
-    if all_triplets and all(is_terminal(t) for t in tiles):
-        result.append('pure-terminals')
-    if all_triplets and honors and len(suits) > 0 and all(is_honor(t) or is_terminal(t) for t in tiles):
-        result.append('mixed-terminals')
     concealed_triplets = sum(1 for g in triplets if g.concealed)
     if concealed_triplets >= 3:
         result.append('three-concealed-triplets')

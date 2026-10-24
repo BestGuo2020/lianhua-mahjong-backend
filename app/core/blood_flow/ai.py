@@ -555,7 +555,7 @@ def _chain_ev_legacy(hand: list[str], melds: list[dict], jokers: list[str],
     waits = waiting_tiles_cached(hand, len(melds), jokers)
     if not waits:
         return 0.0
-    if is_any_tile_wait(waits):
+    if is_any_tile_wait(waits, hand):
         return forecast_self_draw_income(
             hand, melds, jokers, visible, wall_count, config.chain_horizon, offset)
     chain_factor = min(1.0, config.chain_horizon / max(1, wall_count / 4))
@@ -588,8 +588,9 @@ def chain_ev_est(hand: list[str], melds: list[dict], jokers: list[str],
 
 
 
-def is_any_tile_wait(waits: list[str]) -> bool:
-    return len(waits) >= len(TILE_TYPES)
+def is_any_tile_wait(waits: list[str], owned: list[str] | None = None) -> bool:
+    owned = owned or []
+    return bool(waits) and all(tile in waits or owned.count(tile) >= 4 for tile in TILE_TYPES)
 
 
 # ── 对手牌型（大牌）风险定价（前后端同源；见 core/opponent_pattern_risk.py） ──
@@ -911,7 +912,7 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
         if not locked and window and window['kind'] == 'turn' and source.get('kind') == 'draw' \
         and drawn_index >= 0 and win_offered else []
     income_model = 'self-draw-v1' if config.chain_forecast == 'legacy' and any(
-        is_any_tile_wait(waiting_tiles_cached(tiles, len(melds), jokers))
+        is_any_tile_wait(waiting_tiles_cached(tiles, len(melds), jokers), tiles)
         for tiles in [locked_hand, *reform_hands]) else config.chain_forecast
 
     def chain(tiles: list[str], offset: int = draw_offset) -> float:
@@ -945,7 +946,7 @@ def blood_flow_ev_context(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI)
             reform_candidates.append({
                 'index': action['index'], 'tile': hand[action['index']],
                 'ev': chain(after),
-                'anyWait': len(waits) >= len(TILE_TYPES), 'waitCount': len(waits),
+                'anyWait': is_any_tile_wait(waits, after), 'waitCount': len(waits),
                 'patterns': [BLOOD_FLOW_CONFIG.patterns[d['id']].label
                              for d in sorted(pattern_potentials(after, melds, jokers, config.seven_pairs_model),
                                              key=lambda x: -x['score'])[:3]],
@@ -1094,10 +1095,63 @@ def _drop_dominated_peng(actions: list[dict]) -> list[dict]:
     return [action for action in actions if action.get('kind') != 'peng']
 
 
+def preferred_any_wait_kong(view: dict, actions: list[dict]) -> Optional[dict]:
+    """只用本座可见牌，比较任意听开杠的常规收益与补牌杠开收益。"""
+    from .kong_value import post_kong_state
+    window = view.get('window') or {}
+    source = window.get('source') or {}
+    if window.get('kind') != 'turn' or source.get('kind') != 'draw' or view.get('wallCount', 0) <= 0:
+        return None
+    actions = [a for a in actions if a['kind'] in ('concealed-kong', 'wind-kong')]
+    if not actions:
+        return None
+    player = view['players'][view['seat']]
+    hand, melds, jokers = player['hand'], player['melds'], view['jokers']
+    before = [tile for index, tile in enumerate(hand) if index != player.get('drawnTileIndex', -1)]
+    counts = [(tile, count) for tile, count in unseen_counts(_exposure_visible_tiles(view)) if count > 0]
+    unseen = sum(count for _, count in counts)
+    if not unseen:
+        return None
+    current = view.get('ownScore') if any(a['kind'] == 'win' for a in view.get('ownActions', [])) else None
+    immediate = (current or {}).get('paymentPerPayer', 0) * 3
+    normal = forecast_win_income(before, melds, jokers, source['tile'], 'self-draw') if current else 0
+    best, best_income = None, float('-inf')
+    for action in actions:
+        kind = action['kind']
+        if kind not in ('concealed-kong', 'wind-kong'):
+            continue
+        post = post_kong_state(kind, hand, melds, action.get('tile'))
+        if post is None:
+            continue
+        owned = [*post['hand'], *[tile for meld in post['melds'] for tile in meld['tiles']]]
+        waits = waiting_tiles_cached(post['hand'], len(post['melds']), jokers)
+        if not waits or not all(tile in waits or owned.count(tile) >= 4 for tile in TILE_TYPES):
+            continue
+        bloom, safe = 0.0, True
+        for tile, count in counts:
+            after = forecast_win_income(post['hand'], post['melds'], jokers, tile, 'self-draw')
+            replacement = forecast_win_income(post['hand'], post['melds'], jokers, tile, 'kong-bloom')
+            baseline = max(normal, forecast_win_income(before, melds, jokers, tile, 'self-draw'))
+            if not replacement or (view['wallCount'] > 1 and after < baseline):
+                safe = False
+                break
+            bloom += count / unseen * replacement
+        if not safe:
+            continue
+        payment = 'wind' if kind == 'wind-kong' else 'concealed'
+        income = bloom + BLOOD_FLOW_CONFIG.base_points * BLOOD_FLOW_CONFIG.kong_payments[payment] * 3
+        if income >= immediate and income > best_income:
+            best, best_income = action, income
+    return best
+
+
 def decide_blood_flow_action_ev(view: dict, config: BloodFlowAiConfig = BLOOD_FLOW_AI) -> Optional[dict]:
     # 政策一次决策只算一遍；候选构造与兜牌分支共用（硬约束下候选必须用同一份 config）。
     defense = None if config.defense.mode == 'off' else blood_flow_defense_policy(view, config)
     legal = blood_flow_ai_actions(view, config, defense)
+    bloom = preferred_any_wait_kong(view, legal)
+    if bloom:
+        return bloom
     route_plan = narrow_routes_for_bot(view, legal, config)
     moves = route_plan['actions']
     if not moves:

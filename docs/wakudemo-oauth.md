@@ -29,7 +29,7 @@ backend/
 
 ## 完整流程
 
-1. 浏览器访问 `GET /api/login/wakudemo`。
+1. 浏览器访问共用后端的 `GET /api/login/wakudemo?return_to=<游戏页面完整地址>`；不传 `return_to` 的旧客户端仍返回默认旧站。后端只接受白名单中的完整返回地址，并将其保存在服务端 OAuth 事务内。
 2. 后端分别生成高熵 `state` 与 RFC 7636 `code_verifier`，计算 `BASE64URL(SHA256(code_verifier))`；只把随机 OAuth transaction ID 放进 `HttpOnly; SameSite=Lax` Cookie。
 3. 后端 302 到 `https://wakudemo.cn/oauth/authorize`，参数完整包含：
    `client_id`、`redirect_uri`、`response_type=code`、`scope=account.read`、`state`、`code_challenge`、`code_challenge_method=S256`。
@@ -60,7 +60,8 @@ OAuth 事务 Cookie 和登录 Cookie 是两个独立值。取消重登、错误 
 | `WAKUDEMO_CLIENT_ID` | 空 | 平台审核后发放，必填 |
 | `WAKUDEMO_BASE_URL` | 空（模板为 `https://wakudemo.cn`） | 平台根地址；生产强制 HTTPS，不能带 path/query/fragment/userinfo |
 | `WAKUDEMO_REDIRECT_URI` | 空 | 平台登记的回调完整地址，必须精确一致；不能带 fragment |
-| `WAKUDEMO_FRONTEND_URL` | 空 | 成功/失败后返回的游戏页面，只允许 HTTPS 或 loopback HTTP |
+| `WAKUDEMO_FRONTEND_URL` | 空 | 默认返回的游戏页面，同时加入返回地址白名单；兼容不传 `return_to` 的旧客户端 |
+| `WAKUDEMO_FRONTEND_URLS` | 空 | 额外允许的完整游戏页面地址，用英文逗号分隔；只允许 HTTPS 或 loopback HTTP；不设置默认地址时采用列表第一项 |
 | `WAKUDEMO_SCOPE` | `account.read` | 固定最小权限；其他值会使 OAuth 配置失效 |
 | `WAKUDEMO_TIMEOUT_SECONDS` | `10` | Token/Account 单次网络超时 |
 | `WAKUDEMO_PENDING_TTL_SECONDS` | `600` | state + verifier 临时事务有效期 |
@@ -86,6 +87,37 @@ WAKUDEMO_COOKIE_SECURE=true
 ```
 
 跨站 `SameSite=None` Cookie 仍可能被 Safari、隐私模式或 WebView 的第三方 Cookie 策略拦截。生产优先在游戏同站网关反代 `/api/login`，并把前端/API 放在同一站点边界；否则必须在目标浏览器实测。
+
+### 旧站与幺筒新站共用后端和回调
+
+`WAKUDEMO_FRONTEND_URL` / `WAKUDEMO_FRONTEND_URLS` 是本游戏后端的部署配置，**不是 WakuDemo 申请项，也不会发送给授权页或 Token 接口**。平台始终只收到已经登记的同一个 `redirect_uri`。
+
+在原后端服务器的 `.env` 保留现有 Client ID 和平台地址，配置：
+
+```dotenv
+WAKUDEMO_REDIRECT_URI=https://www.bestguo.top:58000/api/login/callback
+WAKUDEMO_FRONTEND_URL=https://lianhuaguangdongmahjong.guoguo-labs.online/
+WAKUDEMO_FRONTEND_URLS=https://yaotongmahjong.guoguo-labs.online/
+WAKUDEMO_COOKIE_SAMESITE=none
+WAKUDEMO_COOKIE_SECURE=true
+WAKUDEMO_LOGIN_BYPASS=false
+```
+
+部署新后端代码并更新服务器 `.env` 后，重新创建容器以加载新配置（例如源码部署使用 `docker compose up -d --build --force-recreate backend`）。单纯 `docker restart` 不会重新读取 Compose 的 `env_file`。只修改本仓库 `.env.example` 不会更新服务器环境。
+
+幺筒前端生产构建默认连接 `https://www.bestguo.top:58000`；也可显式设置 `VITE_API_BASE=https://www.bestguo.top:58000` 后重新构建。开发环境仍默认使用同源 Vite 代理。旧站可继续使用原有版本，无需同步升级。
+
+新前端发起登录时将当前 `origin + pathname` 作为 `return_to`，不携带查询参数和 hash。新站请求示例：
+
+```text
+https://www.bestguo.top:58000/api/login/wakudemo?return_to=https%3A%2F%2Fyaotongmahjong.guoguo-labs.online%2F
+```
+
+返回地址与配置逐字匹配（包括路径和末尾斜杠），拒绝未登记地址、同源其他路径及重复 `return_to` 参数。回调使用服务器事务中记录的地址，忽略回调里的 `return_to`；成功、取消、state 校验失败和 Token/Account 失败都使用该事务的站点。事务已被清理、Cookie 丢失或后端重启时无法恢复发起站点，安全地返回默认旧站并提示重新登录。
+
+两站的 origin 都会自动加入 credentialed CORS、会话查询和退出登录的来源白名单。登录入口、回调、会话查询和业务 API 必须全部访问上述共用后端；不要仅把登录入口反代到新站而仍回调旧 API 主机，浏览器无法把临时事务 Cookie 带到另一主机。
+
+两站会使用同一后端会话：在允许发送 Cookie 的浏览器中，一站登录后另一站可读到同一身份，一站退出也会结束该会话。跨站 Cookie 仍需在正式浏览器验证；本次多站返回支持没有改变浏览器的 Cookie 策略。后端继续使用单 worker。
 
 ## 启动与本地联调
 
@@ -129,7 +161,7 @@ pnpm dev
 
 ```powershell
 cd D:\vueprojects\lianhua_guangma\backend
-.venv\Scripts\python.exe -m pytest tests\test_wakudemo_auth.py tests\test_logging.py -q -p no:cacheprovider
+.venv\Scripts\python.exe -m pytest tests\test_wakudemo_auth.py tests\test_wakudemo_multi_site.py tests\test_logging.py -q -p no:cacheprovider
 .venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
 ```
 

@@ -124,6 +124,8 @@ class WakuDemoOAuthConfig:
     # 仅本地开发联调：无真实会话时按客户端 playerId 推导测试身份，绕过 OAuth。
     # 生产环境严禁开启（联机鉴权会完全失效）。
     login_bypass: bool = False
+    # 额外允许的完整返回地址；frontend_url 继续作为旧客户端的默认返回地址。
+    frontend_urls: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> 'WakuDemoOAuthConfig':
@@ -134,6 +136,9 @@ class WakuDemoOAuthConfig:
             base_url=os.getenv('WAKUDEMO_BASE_URL', '').strip().rstrip('/'),
             redirect_uri=os.getenv('WAKUDEMO_REDIRECT_URI', '').strip(),
             frontend_url=os.getenv('WAKUDEMO_FRONTEND_URL', '').strip(),
+            frontend_urls=tuple(value.strip() for value in
+                                os.getenv('WAKUDEMO_FRONTEND_URLS', '').split(',')
+                                if value.strip()),
             scope=os.getenv('WAKUDEMO_SCOPE', 'account.read').strip(),
             request_timeout_seconds=_env_float('WAKUDEMO_TIMEOUT_SECONDS', 10.0),
             pending_ttl_seconds=_env_int('WAKUDEMO_PENDING_TTL_SECONDS', 600),
@@ -153,7 +158,8 @@ class WakuDemoOAuthConfig:
 
     @property
     def configured(self) -> bool:
-        if not (self.client_id and self.base_url and self.redirect_uri and self.frontend_url):
+        if not (self.client_id and self.base_url and self.redirect_uri
+                and self.allowed_frontend_urls):
             return False
         if '<' in self.client_id or '>' in self.client_id or self.scope != 'account.read':
             return False
@@ -161,7 +167,8 @@ class WakuDemoOAuthConfig:
             return False
         if not _valid_http_url(self.redirect_uri):
             return False
-        if not _valid_http_url(self.frontend_url, allow_fragment=True):
+        if not all(_valid_http_url(url, allow_fragment=True)
+                   for url in self.allowed_frontend_urls):
             return False
         if not math.isfinite(self.request_timeout_seconds) \
                 or self.request_timeout_seconds <= 0 or self.pending_ttl_seconds <= 0:
@@ -171,9 +178,10 @@ class WakuDemoOAuthConfig:
         if self.max_pending_authorizations <= 0 or self.login_rate_limit_per_minute < 0:
             return False
         redirect_host = (urlsplit(self.redirect_uri).hostname or '').lower()
-        frontend_host = (urlsplit(self.frontend_url).hostname or '').lower()
         if not self.cookie_secure and not (
-                _is_loopback_host(redirect_host) and _is_loopback_host(frontend_host)):
+                _is_loopback_host(redirect_host)
+                and all(_is_loopback_host((urlsplit(url).hostname or '').lower())
+                        for url in self.allowed_frontend_urls)):
             return False
         return self.cookie_settings_valid
 
@@ -191,16 +199,37 @@ class WakuDemoOAuthConfig:
         return self.cookie_name != self.transaction_cookie_name
 
     @property
-    def browser_origins(self) -> frozenset[str]:
-        origins = (
-            _normalized_origin(self.frontend_url, allow_fragment=True),
-            _normalized_origin(self.redirect_uri),
-        )
+    def allowed_frontend_urls(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(
+            ((self.frontend_url,) if self.frontend_url else ()) + self.frontend_urls))
+
+    @property
+    def default_frontend_url(self) -> str:
+        return next(iter(self.allowed_frontend_urls), '')
+
+    def resolve_frontend_url(self, return_to: str | None = None) -> str:
+        # 精确匹配完整地址，不接受同源任意路径、子域或客户端传入的外部 URL。
+        target = self.default_frontend_url if return_to is None else return_to
+        if target not in self.allowed_frontend_urls \
+                or not _valid_http_url(target, allow_fragment=True):
+            raise WakuDemoOAuthError('return_url_not_allowed')
+        return target
+
+    @property
+    def frontend_origins(self) -> frozenset[str]:
+        origins = (_normalized_origin(url, allow_fragment=True)
+                   for url in self.allowed_frontend_urls)
         return frozenset(origin for origin in origins if origin is not None)
 
     @property
+    def browser_origins(self) -> frozenset[str]:
+        callback_origin = _normalized_origin(self.redirect_uri)
+        return self.frontend_origins | (
+            frozenset({callback_origin}) if callback_origin else frozenset())
+
+    @property
     def frontend_origin(self) -> str | None:
-        return _normalized_origin(self.frontend_url, allow_fragment=True)
+        return _normalized_origin(self.default_frontend_url, allow_fragment=True)
 
     @property
     def authorize_url(self) -> str:
@@ -220,6 +249,7 @@ class PendingAuthorization:
     state: str = field(repr=False)
     code_verifier: str = field(repr=False)
     expires_at: float
+    frontend_url: str
 
 
 @dataclass
@@ -303,8 +333,10 @@ class WakuDemoOAuthService:
         attempts.append(now)
 
     def begin(self, old_transaction_id: str | None = None,
-              client_key: str | None = None) -> tuple[str, str]:
+              client_key: str | None = None, *,
+              frontend_url: str | None = None) -> tuple[str, str]:
         self.ensure_configured()
+        frontend_url = self.config.resolve_frontend_url(frontend_url)
         now = time.time()
         transaction_id = secrets.token_urlsafe(32)
         state = secrets.token_urlsafe(32)
@@ -320,6 +352,7 @@ class WakuDemoOAuthService:
                 state=state,
                 code_verifier=verifier,
                 expires_at=now + self.config.pending_ttl_seconds,
+                frontend_url=frontend_url,
             )
         query = urlencode({
             'client_id': self.config.client_id,
@@ -331,6 +364,12 @@ class WakuDemoOAuthService:
             'code_challenge_method': 'S256',
         })
         return f'{self.config.authorize_url}?{query}', transaction_id
+
+    def pending_frontend_url(self, transaction_id: str | None) -> str:
+        """回跳目标只来自服务端事务；回调参数不能覆盖，事务丢失时回默认站点。"""
+        with self._lock:
+            pending = self._pending.get(transaction_id or '')
+            return pending.frontend_url if pending else self.config.default_frontend_url
 
     def consume_pending(self, transaction_id: str | None, state: str | None,
                         code: str | None) -> PendingAuthorization:

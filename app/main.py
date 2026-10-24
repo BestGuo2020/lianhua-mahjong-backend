@@ -91,9 +91,8 @@ _cors_origins = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
 ]
-_wakudemo_frontend_origin = WakuDemoOAuthConfig.from_env().frontend_origin
-if _wakudemo_frontend_origin and _wakudemo_frontend_origin not in _cors_origins:
-    _cors_origins.append(_wakudemo_frontend_origin)
+_wakudemo_frontend_origins = WakuDemoOAuthConfig.from_env().frontend_origins
+_cors_origins.extend(sorted(_wakudemo_frontend_origins - set(_cors_origins)))
 
 app.add_middleware(
     CORSMiddleware,

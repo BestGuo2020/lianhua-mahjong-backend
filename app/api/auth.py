@@ -133,18 +133,28 @@ def _account_summary(account: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get('/wakudemo')
-async def begin_wakudemo_login(request: Request):
+async def begin_wakudemo_login(request: Request, return_to: str | None = Query(default=None)):
     service = get_wakudemo_oauth_service()
+    frontend_url = service.config.default_frontend_url
+    if return_to is not None:
+        try:
+            if len(request.query_params.getlist('return_to')) != 1:
+                raise WakuDemoOAuthError('return_url_not_allowed')
+            frontend_url = service.config.resolve_frontend_url(return_to)
+        except WakuDemoOAuthError as exc:
+            # 拒绝未登记地址，保留正在进行的登录事务和已有会话。
+            return _auth_error_response(exc.code, exc.status_code)
     try:
         authorize_url, transaction_id = service.begin(
             request.cookies.get(service.config.transaction_cookie_name),
             request.client.host if request.client else 'unknown',
+            frontend_url=frontend_url,
         )
     except WakuDemoOAuthError as exc:
         # 登录由整页跳转触发；只要前端地址本身有效，就把配置/容量错误带回 UI。
         if service.config.frontend_origin:
             response = RedirectResponse(
-                _redirect_url(service.config.frontend_url, 'error', exc.code),
+                _redirect_url(frontend_url, 'error', exc.code),
                 status_code=302,
             )
             _delete_transaction_cookie(response)
@@ -164,6 +174,7 @@ async def wakudemo_login_callback(
 ):
     service = get_wakudemo_oauth_service()
     transaction_id = request.cookies.get(service.config.transaction_cookie_name)
+    frontend_url = service.pending_frontend_url(transaction_id)
     existing_session_id = request.cookies.get(service.config.cookie_name)
     preserve_transaction_cookie = False
     try:
@@ -199,7 +210,7 @@ async def wakudemo_login_callback(
         logger.warning('WakuDemo OAuth 登录失败: {}', exc.code)
         if service.config.frontend_origin:
             response = RedirectResponse(
-                _redirect_url(service.config.frontend_url, 'error', exc.code),
+                _redirect_url(frontend_url, 'error', exc.code),
                 status_code=302,
             )
         else:
@@ -212,7 +223,7 @@ async def wakudemo_login_callback(
 
     service.delete_session(existing_session_id)
     response = RedirectResponse(
-        _redirect_url(service.config.frontend_url, 'success'), status_code=302)
+        _redirect_url(frontend_url, 'success'), status_code=302)
     _set_session_cookie(response, authenticated_session_id, expires_in)
     _delete_transaction_cookie(response)
     return _harden_auth_response(response)

@@ -92,6 +92,12 @@ docker compose -f docker-compose.yml logs -f --tail=100       # 日志
 
 ## 4. 前端如何连后端
 
+每个玩法按 `rulesetId` 独立计算房间名额，默认各 4 间；`ROOM_MAX` 调整的是**每个玩法**的上限。
+`lotus-classic`、`lotus-legacy`、`lotus-blood-flow`、`yaotong` 互不占用名额，
+同一玩法的东风/半庄、庄数和新手/老手模式共用该玩法的名额。
+大厅查询剩余房间时须传入当前玩法，例如 `GET /api/rooms/meta?rulesetId=yaotong`；
+响应的 `active`、`max` 只描述该玩法。省略参数时默认 `lotus-classic`，与建房默认值一致。
+
 后端监听 `0.0.0.0:8000`（REST + WebSocket）。前端构建时设 `VITE_API_BASE` 指向本服务器，
 例如 `VITE_API_BASE=https://你的域名`。幺筒前端生产默认指向共用后端 `https://www.bestguo.top:58000`。
 后端 credentialed CORS 只允许 `app/main.py`

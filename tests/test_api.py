@@ -20,6 +20,9 @@ import pytest
 from app.game.room import room_registry as rooms
 
 
+ROOM_RULESETS = ('lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong')
+
+
 async def start_as_creator(http, room_id, **kwargs):
     """生命周期测试显式使用当前房主登录身份，不能沿用最后入座者的 Cookie。"""
     room = rooms.peek(room_id)
@@ -239,7 +242,7 @@ async def test_create_and_get_room(server, fresh_rooms, temp_storage):
 
 @pytest.mark.asyncio
 async def test_room_count_limit(server, fresh_rooms, temp_storage):
-    """本服务器最多 4 个房间：第 5 个创建 → 409 ROOM_LIMIT_REACHED。"""
+    """默认玩法最多 4 个房间：第 5 个创建 → 409 ROOM_LIMIT_REACHED。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         created = []
         for _ in range(4):
@@ -252,6 +255,107 @@ async def test_room_count_limit(server, fresh_rooms, temp_storage):
         resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ROOM_LIMIT_REACHED'
+
+
+@pytest.mark.asyncio
+async def test_room_limits_are_independent(server, fresh_rooms, temp_storage, monkeypatch):
+    """四种玩法各建满 4 间，场次/模式不拆名额，关闭只释放所属玩法名额。"""
+    monkeypatch.setattr('app.api.rooms.MAX_ROOMS', 4)
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        created = {}
+        for ruleset_id in ROOM_RULESETS:
+            created[ruleset_id] = []
+            for index in range(4):
+                response = await http.post('/api/rooms', json={
+                    'rulesetId': ruleset_id, 'capacity': 4,
+                    'mode': 'east' if index % 2 == 0 else 'hanchan',
+                    'matchLength': (4, 8, 16, 4)[index],
+                    'yaotongMode': 'easy' if index % 2 == 0 else 'hard',
+                })
+                assert response.status_code == 200, response.text
+                created[ruleset_id].append(response.json()['roomId'])
+            response = await http.post('/api/rooms', json={'rulesetId': ruleset_id})
+            assert response.status_code == 409
+            assert response.json()['detail']['code'] == 'ROOM_LIMIT_REACHED'
+
+        assert rooms.count() == 16
+        for ruleset_id in ROOM_RULESETS:
+            room_id = created[ruleset_id][0]
+            joined = (await http.post(f'/api/rooms/{room_id}/join',
+                                     json={'nickname': '房主'})).json()
+            response = await http.request('DELETE', f'/api/rooms/{room_id}', json={
+                'seat': joined['seat'], 'rejoinCode': joined['rejoinCode'],
+            })
+            assert response.status_code == 200, response.text
+            for other_id in ROOM_RULESETS:
+                assert rooms.count(other_id) == (3 if other_id == ruleset_id else 4)
+            response = await http.post('/api/rooms', json={'rulesetId': ruleset_id})
+            assert response.status_code == 200, response.text
+        assert rooms.count() == 16
+
+
+@pytest.mark.asyncio
+async def test_concurrent_creations_respect_each_ruleset_limit(
+        server, fresh_rooms, temp_storage, monkeypatch):
+    """并发申请各玩法的第 5 间时，限额检查和房间注册之间不能插入其他建房。"""
+    import app.api.rooms as rooms_api
+
+    monkeypatch.setattr(rooms_api, 'MAX_ROOMS', 4)
+    original_new_room_id = rooms_api._new_room_id
+
+    def slow_new_room_id():
+        time.sleep(0.01)  # 放大检查后、注册前的并发窗口
+        return original_new_room_id()
+
+    monkeypatch.setattr(rooms_api, '_new_room_id', slow_new_room_id)
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        requests = [(ruleset_id, http.post('/api/rooms', json={'rulesetId': ruleset_id}))
+                    for ruleset_id in ROOM_RULESETS for _ in range(5)]
+        responses = await asyncio.gather(*(request for _, request in requests))
+        for ruleset_id in ROOM_RULESETS:
+            results = [response for (requested_id, _), response in zip(requests, responses)
+                       if requested_id == ruleset_id]
+            assert sorted(response.status_code for response in results) == [200] * 4 + [409]
+            rejected = next(response for response in results if response.status_code == 409)
+            assert rejected.json()['detail']['code'] == 'ROOM_LIMIT_REACHED'
+            assert rooms.count(ruleset_id) == 4
+
+
+@pytest.mark.asyncio
+async def test_room_meta_is_scoped_to_ruleset(server, fresh_rooms, temp_storage, monkeypatch):
+    """容量与建房使用同一玩法口径，默认玩法、配置覆盖和过期回收都保持隔离。"""
+    monkeypatch.setattr('app.api.rooms.MAX_ROOMS', 3)
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        created = {}
+        for count, ruleset_id in enumerate(ROOM_RULESETS):
+            created[ruleset_id] = []
+            for _ in range(count):
+                response = await http.post('/api/rooms', json={'rulesetId': ruleset_id})
+                assert response.status_code == 200, response.text
+                created[ruleset_id].append(response.json()['roomId'])
+
+        for count, ruleset_id in enumerate(ROOM_RULESETS):
+            response = await http.get('/api/rooms/meta', params={'rulesetId': ruleset_id})
+            assert response.status_code == 200
+            assert response.json()['active'] == count
+            assert response.json()['max'] == 3
+        assert (await http.get('/api/rooms/meta')).json()['active'] == 0
+        assert (await http.post('/api/rooms', json={'rulesetId': 'yaotong'})).status_code == 409
+
+        # 幺筒到期房只释放幺筒名额，其余玩法不受影响。
+        expired_room_id = created['yaotong'][0]
+        rooms.get(expired_room_id).deadline = time.monotonic() - 1
+        meta = (await http.get('/api/rooms/meta', params={'rulesetId': 'yaotong'})).json()
+        assert meta['active'] == 2
+        assert rooms.get(expired_room_id) is None
+        assert (await http.post('/api/rooms', json={'rulesetId': 'yaotong'})).status_code == 200
+        for ruleset_id, expected in [('lotus-classic', 0), ('lotus-legacy', 1),
+                                     ('lotus-blood-flow', 2)]:
+            meta = (await http.get('/api/rooms/meta', params={'rulesetId': ruleset_id})).json()
+            assert meta['active'] == expected
+
+        response = await http.get('/api/rooms/meta', params={'rulesetId': 'unknown'})
+        assert response.status_code == 422
 
 
 @pytest.mark.asyncio

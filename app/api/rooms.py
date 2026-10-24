@@ -2,7 +2,7 @@
 
 Phase 6 起房间生命周期由本层接管：
 - POST   /api/rooms            创建房间（mode / capacity），签发 6 位房间码
-- GET    /api/rooms/meta       服务器房间容量（active 在册数 / max 上限，大厅「剩余房间」用）
+- GET    /api/rooms/meta       按 rulesetId 查询玩法房间容量（active 在册数 / max 上限）
 - GET    /api/rooms/{id}       房间详情 + 座位表 + 准备状态
 - POST   /api/rooms/{id}/join  加入（占座 + 签发 rejoinCode，写 room_seats 落库）
 - POST   /api/rooms/{id}/leave 离开（释放座位）
@@ -15,6 +15,7 @@ Phase 6 起房间生命周期由本层接管：
 
 import os
 import secrets
+from threading import Lock
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -39,8 +40,12 @@ from app.storage.db import storage
 
 router = APIRouter(prefix='/api/rooms', tags=['rooms'])
 
-# 本服务器最多同时存在的房间数（可环境变量覆盖）
+# 每个玩法最多同时存在的房间数，互不占用（可环境变量覆盖）
 MAX_ROOMS = int(os.environ.get('ROOM_MAX', '4'))
+# REST 同步路由在线程池执行：限额检查与注册必须串行，防止并发建房超额。
+_room_creation_lock = Lock()
+
+RoomRulesetId = Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong']
 
 # 6 位房间码字母表：去掉易混淆字符（0/O、1/I、U）
 _ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -146,7 +151,7 @@ class CreateRoomRequest(BaseModel):
     mode: Literal['east', 'hanchan'] = 'east'
     capacity: int = Field(default=4, ge=2, le=4)
     playerId: Optional[str] = Field(default=None, max_length=64)  # 已废弃：联机身份由登录会话推导
-    rulesetId: Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong'] = 'lotus-classic'
+    rulesetId: RoomRulesetId = 'lotus-classic'
     # 幺筒场次：4/8/16 庄。经典/血流仍由 mode 推导（east=4、hanchan=8）。
     matchLength: Literal[4, 8, 16] = 4
     # 幺筒模式：easy=新手模式（服务端同步拦截违规输入）/ hard=老手模式。
@@ -205,7 +210,7 @@ def create_room(body: CreateRoomRequest,
     防重复占房：该登录身份已在某个房间占座（含对局中）→ ALREADY_IN_ROOM，
     阻止跨标签页/绕过前端守卫再开新房。
     房间数上限：先清扫到期房间（绕过惰性节流，确保到期房释放槽位），
-    在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED（客户端提示「房间已满」）。
+    该玩法在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED，其他玩法不占用其名额。
     """
     if room_registry.find_room_by_player(user.player_id) is not None:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
@@ -217,8 +222,6 @@ def create_room(body: CreateRoomRequest,
     # 收尾后 status 不再是 playing ⇒ 过期的那些随即被 TTL 通道回收（真正释放槽位）。
     # 未过期的僵尸房变成普通 finished 房：座位上的人可重开或关闭，不再两头堵死。
     room_registry.sweep_expired()
-    if room_registry.count() >= MAX_ROOMS:
-        raise HTTPException(status_code=409, detail={'code': 'ROOM_LIMIT_REACHED'})
     if body.rulesetId == 'yaotong':
         if body.capacity != 4:
             raise HTTPException(status_code=409, detail={'code': 'INVALID_CAPACITY'})
@@ -228,18 +231,21 @@ def create_room(body: CreateRoomRequest,
         match_length = body.matchLength
     else:
         match_length = 4 if body.mode == 'east' else 8
-    room_id = _new_room_id()
-    try:
-        # 真人联机房间注入视觉节奏（AI 出牌/碰杠有可读延迟，对齐前端 PACE_MS）；
-        # 测试直接构造 RoomSession 不经此路径，保持默认 0 加速
-        room = room_registry.create(
-            room_id, mode=body.mode, capacity=body.capacity, storage=storage,
-            pace=PLAY_PACE, ruleset_id=body.rulesetId,
-            llm_enabled=body.llmEnabled, match_length=match_length,
-            yaotong_mode=body.yaotongMode)
-    except RoomError as exc:
-        logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
-        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    with _room_creation_lock:
+        if room_registry.count(body.rulesetId) >= MAX_ROOMS:
+            raise HTTPException(status_code=409, detail={'code': 'ROOM_LIMIT_REACHED'})
+        room_id = _new_room_id()
+        try:
+            # 真人联机房间注入视觉节奏（AI 出牌/碰杠有可读延迟，对齐前端 PACE_MS）；
+            # 测试直接构造 RoomSession 不经此路径，保持默认 0 加速
+            room = room_registry.create(
+                room_id, mode=body.mode, capacity=body.capacity, storage=storage,
+                pace=PLAY_PACE, ruleset_id=body.rulesetId,
+                llm_enabled=body.llmEnabled, match_length=match_length,
+                yaotong_mode=body.yaotongMode)
+        except RoomError as exc:
+            logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
+            raise HTTPException(status_code=409, detail={'code': str(exc)})
     storage.create_room(
         room_id, body.mode, body.capacity, body.rulesetId, match_length)
     storage.update_room_status(room_id, 'lobby')
@@ -250,8 +256,11 @@ def create_room(body: CreateRoomRequest,
 
 
 @router.get('/meta')
-def get_room_meta(_: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
-    """服务器房间容量（需登录）：active = 当前在册房间数，max = 上限。
+def get_room_meta(_: AuthenticatedUser = Depends(require_wakudemo_login),
+                  rulesetId: RoomRulesetId = 'lotus-classic') -> dict:
+    """玩法房间容量（需登录）：active = 该玩法在册房间数，max = 该玩法上限。
+
+    rulesetId 与建房参数一致；省略时沿用默认玩法 lotus-classic。
 
     客户端大厅展示「剩余房间」用。先清扫到期房间，保证计数与实际可建槽位一致
     （对齐 create_room 的 ROOM_LIMIT_REACHED 判定）。定义在 /{room_id} 之前，
@@ -259,7 +268,7 @@ def get_room_meta(_: AuthenticatedUser = Depends(require_wakudemo_login)) -> dic
     llmProviders：服务端注册的提供商（不含 key），房主建房时按 id 选择。
     """
     room_registry.sweep_expired()
-    return {'active': room_registry.count(), 'max': MAX_ROOMS,
+    return {'active': room_registry.count(rulesetId), 'max': MAX_ROOMS,
             'llmAvailable': llm_server_available(),
             'llmProviders': _llm_providers_public()}
 

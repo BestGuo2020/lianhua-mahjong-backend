@@ -1656,9 +1656,12 @@ class RoomRegistry:
         self._maybe_sweep()
         return self._rooms.get(room_id)
 
-    def count(self) -> int:
-        """当前在册房间数（房间数上限检查用）。"""
-        return len(self._rooms)
+    def count(self, ruleset_id: Optional[str] = None) -> int:
+        """当前在册房间数；指定玩法时只统计该玩法的名额。"""
+        if ruleset_id is None:
+            return len(self._rooms)
+        return sum(room.ruleset_id == ruleset_id
+                   for room in list(self._rooms.values()))
 
     def find_room_by_player(self, player_id: str) -> Optional[RoomSession]:
         """按匿名身份（guestId）定位其所在房间：该 player_id 是否已在某房间占座。

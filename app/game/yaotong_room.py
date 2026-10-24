@@ -891,12 +891,17 @@ class YaotongRoomSession:
             command = command_from_action(message.get('action'))
         except ValueError:
             return False, 'INVALID_ACTION'
+        # 延长胡口只由房间驱动决定。真人主动点“过”始终按放弃处理，
+        # 不能通过客户端标记绕过必须胡/过手判定。
+        command.defer_hu = False
         if seat in self._holds:
             if command.type not in ('declareHu', 'passHu'):
                 return False, 'HOLD_ACTION_NOT_ALLOWED'
             self._release_hold(seat)
         if self.yaotong_mode == 'easy':
             # 新手模式服务端执行同一套输入拦截；客户端按钮已隐藏，这里防绕过。
+            if command.type in ('declareHu', 'passHu'):
+                return False, 'PROTECTED_ACTION'
             reason = protection_reason(
                 action_protection(self.state, seat), command)
             if reason:

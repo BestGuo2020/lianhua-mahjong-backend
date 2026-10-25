@@ -77,17 +77,25 @@ def aggregate_player_stats(rows: Sequence, match_seats: dict) -> dict:
         seat = match_seats[row['match_id']]
         result = json.loads(row['result_json'])
         deltas = result.get('deltas', []) or []
-        entry = next(
-            (delta for delta in deltas if delta.get('playerIndex') == seat),
-            None,
-        )
-        if entry is None:
-            continue
+        if result.get('rulesetId') == 'yaotong':
+            if not 0 <= seat < len(deltas):
+                continue
+            amount = deltas[seat]
+            won = seat in (result.get('winners') or [])
+        else:
+            entry = next(
+                (delta for delta in deltas if delta.get('playerIndex') == seat),
+                None,
+            )
+            if entry is None:
+                continue
+            amount = entry.get('amount', 0) or 0
+            won = result.get('winner_index') == seat
         matches.add(row['match_id'])
         hands += 1
-        if result.get('winner_index') == seat:
+        if won:
             wins += 1
-        total_delta += entry.get('amount', 0) or 0
+        total_delta += amount
     return {
         'matches': len(matches),
         'hands': hands,
@@ -215,13 +223,21 @@ class BaseStorage(ABC):
             )
 
     def insert_round_result(self, match_id: str, round_data: dict) -> None:
+        result_id = _new_id()
+        on_conflict = ''
+        if round_data.get('rulesetId') == 'yaotong':
+            # 同一幺筒小局重连、补写或取消后台任务后重试，均只记一次。
+            result_id = uuid.uuid5(
+                uuid.NAMESPACE_URL, f'yaotong-round:{match_id}:{round_data.get("round", 0)}',
+            ).hex
+            on_conflict = ' ON CONFLICT (id) DO NOTHING'
         with self._conn() as conn:
             self._execute(
                 conn,
                 'INSERT INTO round_results (id, match_id, round, result_json) '
-                'VALUES (:p, :p, :p, :p)',
+                'VALUES (:p, :p, :p, :p)' + on_conflict,
                 (
-                    _new_id(),
+                    result_id,
                     match_id,
                     round_data.get('round', 0),
                     json.dumps(round_data, ensure_ascii=False),
@@ -385,12 +401,18 @@ class BaseStorage(ABC):
             match_seats = {row['match_id']: row['seat'] for row in rows}
             return {'nickname': nickname, **self._aggregate_stats(conn, match_seats)}
 
-    def get_player_stats_by_id(self, player_id: str) -> dict:
+    def get_player_stats_by_id(self, player_id: str, ruleset_id: Optional[str] = None) -> dict:
         with self._conn() as conn:
+            query = (
+                'SELECT p.match_id, p.seat FROM match_players p '
+                'JOIN matches m ON m.id = p.match_id WHERE p.player_id = :p'
+            )
+            params = [player_id]
+            if ruleset_id is not None:
+                query += ' AND m.ruleset_id = :p'
+                params.append(ruleset_id)
             rows = self._execute(
-                conn,
-                'SELECT match_id, seat FROM match_players WHERE player_id = :p',
-                (player_id,),
+                conn, query, params,
             ).fetchall()
             if not rows:
                 return {

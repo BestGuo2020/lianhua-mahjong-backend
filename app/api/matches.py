@@ -7,6 +7,8 @@
 路由全部定义为同步函数 → FastAPI 自动放线程池，不阻塞事件循环。
 """
 
+from typing import Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 
@@ -54,7 +56,10 @@ def get_player_stats_by_id(player_id: str) -> dict:
 
 
 @router.get('/api/me/stats')
-def get_my_stats(user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
-    """当前登录玩家的个人统计（按 wakudemo-<uid>）：联机战绩绑定登录身份。"""
+def get_my_stats(
+    user: AuthenticatedUser = Depends(require_wakudemo_login),
+    rulesetId: Optional[Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong']] = None,
+) -> dict:
+    """登录身份战绩；可按玩法筛选，不传 rulesetId 保留原有跨玩法汇总。"""
     logger.bind(player_id=user.player_id).debug("查询我的战绩")
-    return storage.get_player_stats_by_id(user.player_id)
+    return storage.get_player_stats_by_id(user.player_id, rulesetId)

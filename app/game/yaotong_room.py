@@ -29,7 +29,7 @@ from app.core.yaotong.mode import action_protection, protection_reason
 from app.core.yaotong.tiles import YAO
 from app.core.yaotong.types import Command, GameState
 from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
-from app.game.yaotong_protocol import command_from_action, snapshot_for
+from app.game.yaotong_protocol import command_from_action, settlement_view, snapshot_for
 from app.ws.manager import ConnectionManager
 
 # 对齐前端 src/game/core/local/localGameConfig.ts 的 PACE_MS。
@@ -106,6 +106,8 @@ class YaotongRoomSession:
 
         self.state: Optional[GameState] = None
         self.match_id: Optional[str] = None
+        self._queued_rounds: set[tuple[str, int]] = set()
+        self._round_writes: list[tuple[str, dict]] = []
         self.match_started = False
         self.match_finished = False
         self.closed = False
@@ -368,6 +370,7 @@ class YaotongRoomSession:
                     break
                 if state.phase == 'settled':
                     self._release_all_holds()
+                    await self._persist_round()
                     self.broadcast_snapshot()
                     if state.result is not None and state.result.finished:
                         break
@@ -386,6 +389,7 @@ class YaotongRoomSession:
             self.status = 'finished'
             self.broadcast_snapshot()
             self._broadcast_match_finished()
+            await self._persist_round()
             self._persist_match_end()
             if self.is_past_deadline():
                 room_registry.remove(self.room_id)
@@ -956,6 +960,7 @@ class YaotongRoomSession:
         return True
 
     async def finalize_forced(self) -> None:
+        await self._persist_round()
         if self.storage is not None and self.match_id is not None:
             try:
                 self.storage.update_room_status(self.room_id, 'finished')
@@ -965,6 +970,29 @@ class YaotongRoomSession:
             room_registry.remove(self.room_id)
 
     # ── 落库 ────────────────────────────────────────────
+
+    async def _persist_round(self) -> None:
+        if self.storage is None or self.match_id is None:
+            return
+        state = self.state
+        if state is not None and state.phase == 'settled' and state.result is not None:
+            key = (self.match_id, state.hand_number)
+            if key not in self._queued_rounds:
+                self._round_writes.append((self.match_id, {
+                    'round': state.hand_number,
+                    'rulesetId': self.ruleset_id,
+                    **settlement_view(state.result),
+                }))
+                self._queued_rounds.add(key)
+        # 按序补写：数据库抖动不阻断牌局，下一次结算或收尾时重试。
+        while self._round_writes:
+            match_id, data = self._round_writes[0]
+            try:
+                await asyncio.to_thread(self.storage.insert_round_result, match_id, data)
+            except Exception:
+                logger.bind(room_id=self.room_id).exception('幺筒结算落库失败，待下次补写')
+                return
+            self._round_writes.pop(0)
 
     def _persist_match_start(self) -> None:
         if self.storage is None:

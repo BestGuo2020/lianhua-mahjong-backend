@@ -250,16 +250,20 @@ def create_room(body: CreateRoomRequest,
 
 
 @router.get('/meta')
-def get_room_meta(_: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
-    """服务器房间容量（需登录）：active = 当前在册房间数，max = 上限。
+def get_room_meta(
+    _: AuthenticatedUser = Depends(require_wakudemo_login),
+    rulesetId: Optional[Literal['lotus-classic', 'lotus-legacy', 'lotus-blood-flow', 'yaotong']] = None,
+) -> dict:
+    """服务器房间容量（需登录）：active = 当前在册房间数，max = 服务器总上限。
 
-    客户端大厅展示「剩余房间」用。先清扫到期房间，保证计数与实际可建槽位一致
-    （对齐 create_room 的 ROOM_LIMIT_REACHED 判定）。定义在 /{room_id} 之前，
+    rulesetId 可选：传入时 active 只统计指定玩法，省略时统计全部玩法。
+    客户端大厅展示用。先清扫到期房间；建房容量限制仍按全部玩法共用的上限检查。
+    定义在 /{room_id} 之前，
     避免「meta」被当作房间码匹配。
     llmProviders：服务端注册的提供商（不含 key），房主建房时按 id 选择。
     """
     room_registry.sweep_expired()
-    return {'active': room_registry.count(), 'max': MAX_ROOMS,
+    return {'active': room_registry.count(rulesetId), 'max': MAX_ROOMS,
             'llmAvailable': llm_server_available(),
             'llmProviders': _llm_providers_public()}
 

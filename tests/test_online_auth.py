@@ -96,6 +96,9 @@ async def test_room_endpoints_require_login(client, fake_auth):
         r = await http.get('/api/rooms/meta')
         assert r.status_code == 401
 
+        r = await http.get('/api/rooms/meta?rulesetId=yaotong')
+        assert r.status_code == 401
+
         r = await http.get('/api/rooms/ABC123')
         assert r.status_code == 401
 

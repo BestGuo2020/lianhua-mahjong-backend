@@ -336,6 +336,39 @@ async def test_room_meta_count(server, fresh_rooms, temp_storage, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_room_meta_filters_ruleset(server, fresh_rooms, temp_storage):
+    """筛选幺筒房间时排除其他玩法，过期房不计入；无参数仍统计全部玩法。"""
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        yaotong_ids = []
+        for ruleset_id in ('yaotong', 'lotus-classic', 'lotus-blood-flow', 'yaotong'):
+            response = await http.post('/api/rooms', json={
+                'capacity': 4, 'rulesetId': ruleset_id,
+            })
+            assert response.status_code == 200, response.text
+            if ruleset_id == 'yaotong':
+                yaotong_ids.append(response.json()['roomId'])
+
+        for ruleset_id, expected in (
+            ('yaotong', 2), ('lotus-classic', 1),
+            ('lotus-blood-flow', 1), ('lotus-legacy', 0),
+        ):
+            response = await http.get('/api/rooms/meta', params={'rulesetId': ruleset_id})
+            assert response.status_code == 200, response.text
+            assert response.json()['active'] == expected
+            assert response.json()['max'] == 4
+
+        assert (await http.get('/api/rooms/meta')).json()['active'] == 4
+        rooms.peek(yaotong_ids[0]).deadline = time.monotonic() - 1
+        response = await http.get('/api/rooms/meta?rulesetId=yaotong')
+        assert response.status_code == 200, response.text
+        assert response.json()['active'] == 1
+        assert (await http.get('/api/rooms/meta')).json()['active'] == 3
+
+        response = await http.get('/api/rooms/meta?rulesetId=unknown')
+        assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_create_rejected_when_player_in_room(server, fresh_rooms, temp_storage):
     """已在房间占座的登录身份再创建房间 → 409 ALREADY_IN_ROOM；离房后可再建。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:

@@ -110,6 +110,7 @@ def discard_view(discard: Discard) -> dict:
         'id': discard.id,
         'firstChicken': discard.first_chicken,
         'followChicken': discard.follow_chicken,
+        'followedDealer': discard.followed_dealer,
         'pre': discard.pre,
     }
 
@@ -137,6 +138,7 @@ def player_view(player: Player, seat: int, self_seat: int,
         'drawn': _tile(player.drawn) if is_self or reveal else None,
         'afterKong': player.after_kong,
         'burned': player.burned,
+        'followDealer': player.follow_dealer,
         'passedHu': player.passed_hu if is_self else None,
         'passedShape': player.passed_shape if is_self else None,
         'chickenPeng': [to_tile_type(tile) for tile in player.chicken_peng]

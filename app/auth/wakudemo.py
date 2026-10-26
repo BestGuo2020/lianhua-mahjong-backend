@@ -250,12 +250,21 @@ class PendingAuthorization:
     code_verifier: str = field(repr=False)
     expires_at: float
     frontend_url: str
+    session_challenge: str | None = None
 
 
 @dataclass
 class AuthenticatedSession:
     access_token: str = field(repr=False)
     account: dict[str, Any]
+    expires_at: float
+
+
+@dataclass
+class SessionHandoff:
+    session_id: str = field(repr=False)
+    challenge: str = field(repr=False)
+    origin: str
     expires_at: float
 
 
@@ -274,6 +283,18 @@ def generate_code_verifier() -> str:
 def create_s256_challenge(code_verifier: str) -> str:
     digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+
+
+def request_session_id(request: Any, service: 'WakuDemoOAuthService') -> str | None:
+    """显式凭据优先，失效时不回退到另一个账号的 Cookie。"""
+    authorization = request.headers.get('authorization')
+    if authorization is not None:
+        scheme, _, token = authorization.partition(' ')
+        origin = request.headers.get('origin')
+        if origin is not None and origin not in service.config.browser_origins:
+            return None
+        return token if scheme.lower() == 'bearer' and re.fullmatch(r'[A-Za-z0-9_-]{43}', token) else None
+    return request.cookies.get(service.config.cookie_name)
 
 
 _STANDARD_OAUTH_ERRORS = frozenset({
@@ -295,7 +316,8 @@ def _safe_oauth_error(response: httpx.Response) -> str:
 class WakuDemoOAuthService:
     """服务端 OAuth 会话仓库。
 
-    access token 只存在服务端内存，浏览器 Cookie 仅保存不可推导的随机 ID。
+    access token 只存在服务端内存，浏览器只保存不可推导的应用会话 ID。
+    支持 HttpOnly Cookie，以及经一次性票据和原标签页证明换取的 Bearer 会话。
     OAuth 临时事务与登录会话使用不同 Cookie，失败回调不会注销已有登录。
     多 worker 部署时应将事务/防重放/会话状态替换为共享 Redis 存储。
     """
@@ -305,6 +327,7 @@ class WakuDemoOAuthService:
         self._client = client
         self._pending: dict[str, PendingAuthorization] = {}
         self._sessions: dict[str, AuthenticatedSession] = {}
+        self._handoffs: dict[str, SessionHandoff] = {}
         self._used_codes: dict[str, float] = {}
         self._login_attempts: dict[str, deque[float]] = {}
         self._lock = threading.RLock()
@@ -316,6 +339,7 @@ class WakuDemoOAuthService:
     def _cleanup(self, now: float) -> None:
         self._pending = {key: item for key, item in self._pending.items() if item.expires_at > now}
         self._sessions = {key: item for key, item in self._sessions.items() if item.expires_at > now}
+        self._handoffs = {key: item for key, item in self._handoffs.items() if item.expires_at > now}
         self._used_codes = {key: expiry for key, expiry in self._used_codes.items() if expiry > now}
         cutoff = now - 60.0
         for client_key, attempts in list(self._login_attempts.items()):
@@ -334,9 +358,12 @@ class WakuDemoOAuthService:
 
     def begin(self, old_transaction_id: str | None = None,
               client_key: str | None = None, *,
-              frontend_url: str | None = None) -> tuple[str, str]:
+              frontend_url: str | None = None,
+              session_challenge: str | None = None) -> tuple[str, str]:
         self.ensure_configured()
         frontend_url = self.config.resolve_frontend_url(frontend_url)
+        if session_challenge is not None and not re.fullmatch(r'[A-Za-z0-9_-]{43}', session_challenge):
+            raise WakuDemoOAuthError('invalid_session_challenge')
         now = time.time()
         transaction_id = secrets.token_urlsafe(32)
         state = secrets.token_urlsafe(32)
@@ -353,6 +380,7 @@ class WakuDemoOAuthService:
                 code_verifier=verifier,
                 expires_at=now + self.config.pending_ttl_seconds,
                 frontend_url=frontend_url,
+                session_challenge=session_challenge,
             )
         query = urlencode({
             'client_id': self.config.client_id,
@@ -397,6 +425,28 @@ class WakuDemoOAuthService:
     def delete_pending(self, transaction_id: str | None) -> None:
         with self._lock:
             self._pending.pop(transaction_id or '', None)
+
+    def create_handoff(self, session_id: str, pending: PendingAuthorization) -> str:
+        """短期一次性票据；须由原标签页的 verifier 兑换，URL 不携带会话或上游 token。"""
+        ticket = secrets.token_urlsafe(32)
+        with self._lock:
+            self._cleanup(time.time())
+            self._handoffs[ticket] = SessionHandoff(
+                session_id, pending.session_challenge or '',
+                _normalized_origin(pending.frontend_url, allow_fragment=True) or '', time.time() + 60)
+        return ticket
+
+    def redeem_handoff(self, ticket: str, verifier: str, origin: str | None) -> str:
+        with self._lock:
+            self._cleanup(time.time())
+            handoff = self._handoffs.get(ticket)
+            if (handoff is None or handoff.origin != origin
+                    or not re.fullmatch(r'[A-Za-z0-9_-]{43,128}', verifier)
+                    or not secrets.compare_digest(handoff.challenge, create_s256_challenge(verifier))
+                    or handoff.session_id not in self._sessions):
+                raise WakuDemoOAuthError('session_handoff_rejected', 401)
+            self._handoffs.pop(ticket)
+            return handoff.session_id
 
     async def exchange_code(self, code: str, verifier: str) -> tuple[str, int, dict[str, Any]]:
         timeout = httpx.Timeout(self.config.request_timeout_seconds)

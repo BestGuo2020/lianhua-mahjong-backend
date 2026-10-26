@@ -139,7 +139,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 51,
-      "serial": 10,
+      "serial": 11,
       "hands": [
         14,
         13,
@@ -158,7 +158,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 50,
-      "serial": 12,
+      "serial": 13,
       "hands": [
         13,
         14,
@@ -177,7 +177,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 49,
-      "serial": 14,
+      "serial": 15,
       "hands": [
         13,
         13,
@@ -196,7 +196,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 48,
-      "serial": 16,
+      "serial": 17,
       "hands": [
         13,
         13,
@@ -215,7 +215,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 47,
-      "serial": 18,
+      "serial": 19,
       "hands": [
         14,
         13,
@@ -234,7 +234,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 46,
-      "serial": 20,
+      "serial": 21,
       "hands": [
         13,
         14,
@@ -253,7 +253,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 45,
-      "serial": 22,
+      "serial": 23,
       "hands": [
         13,
         13,
@@ -272,7 +272,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 44,
-      "serial": 24,
+      "serial": 25,
       "hands": [
         13,
         13,
@@ -291,7 +291,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 43,
-      "serial": 26,
+      "serial": 27,
       "hands": [
         14,
         13,
@@ -310,7 +310,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 42,
-      "serial": 28,
+      "serial": 29,
       "hands": [
         13,
         14,
@@ -329,7 +329,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 41,
-      "serial": 30,
+      "serial": 31,
       "hands": [
         13,
         13,
@@ -348,7 +348,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 40,
-      "serial": 32,
+      "serial": 33,
       "hands": [
         13,
         13,
@@ -367,7 +367,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 39,
-      "serial": 34,
+      "serial": 35,
       "hands": [
         14,
         13,
@@ -386,7 +386,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 38,
-      "serial": 36,
+      "serial": 37,
       "hands": [
         13,
         14,
@@ -405,7 +405,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 37,
-      "serial": 38,
+      "serial": 39,
       "hands": [
         13,
         13,
@@ -424,7 +424,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 36,
-      "serial": 40,
+      "serial": 41,
       "hands": [
         13,
         13,
@@ -443,7 +443,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 35,
-      "serial": 42,
+      "serial": 43,
       "hands": [
         14,
         13,
@@ -462,7 +462,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 34,
-      "serial": 44,
+      "serial": 45,
       "hands": [
         13,
         14,
@@ -481,7 +481,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 33,
-      "serial": 46,
+      "serial": 47,
       "hands": [
         13,
         13,
@@ -500,7 +500,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 32,
-      "serial": 48,
+      "serial": 49,
       "hands": [
         13,
         13,
@@ -519,7 +519,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 31,
-      "serial": 50,
+      "serial": 51,
       "hands": [
         14,
         13,
@@ -538,7 +538,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 30,
-      "serial": 52,
+      "serial": 53,
       "hands": [
         13,
         14,
@@ -557,7 +557,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 29,
-      "serial": 54,
+      "serial": 55,
       "hands": [
         13,
         13,
@@ -576,7 +576,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 28,
-      "serial": 56,
+      "serial": 57,
       "hands": [
         13,
         13,
@@ -595,7 +595,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 27,
-      "serial": 58,
+      "serial": 59,
       "hands": [
         14,
         13,
@@ -614,7 +614,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 26,
-      "serial": 60,
+      "serial": 61,
       "hands": [
         13,
         14,
@@ -633,7 +633,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 25,
-      "serial": 62,
+      "serial": 63,
       "hands": [
         13,
         13,
@@ -652,7 +652,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 24,
-      "serial": 64,
+      "serial": 65,
       "hands": [
         13,
         13,
@@ -671,7 +671,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 23,
-      "serial": 66,
+      "serial": 67,
       "hands": [
         14,
         13,
@@ -690,7 +690,7 @@
       "phase": "discard",
       "current": 1,
       "wallCount": 22,
-      "serial": 68,
+      "serial": 69,
       "hands": [
         13,
         14,
@@ -709,7 +709,7 @@
       "phase": "discard",
       "current": 2,
       "wallCount": 21,
-      "serial": 70,
+      "serial": 71,
       "hands": [
         13,
         13,
@@ -728,7 +728,7 @@
       "phase": "discard",
       "current": 3,
       "wallCount": 20,
-      "serial": 72,
+      "serial": 73,
       "hands": [
         13,
         13,
@@ -747,7 +747,7 @@
       "phase": "discard",
       "current": 0,
       "wallCount": 19,
-      "serial": 74,
+      "serial": 75,
       "hands": [
         14,
         13,
@@ -766,7 +766,7 @@
       "phase": "settled",
       "current": 0,
       "wallCount": 18,
-      "serial": 75,
+      "serial": 76,
       "hands": [
         14,
         13,
@@ -774,10 +774,10 @@
         13
       ],
       "scores": [
-        391,
-        -141,
-        -109,
-        -141
+        346,
+        -126,
+        -94,
+        -126
       ]
     }
   ],
@@ -805,87 +805,96 @@
         "river": [
           {
             "tile": 0,
-            "chicken": 4,
+            "chicken": 0,
             "stage": "normal",
             "id": 3,
             "firstChicken": true,
             "followChicken": false,
-            "pre": true
+            "pre": true,
+            "followedDealer": true
           },
           {
             "tile": 1,
             "chicken": 0,
             "stage": "normal",
-            "id": 11,
+            "id": 12,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 2,
             "chicken": 0,
             "stage": "normal",
-            "id": 19,
+            "id": 20,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 3,
             "chicken": 0,
             "stage": "normal",
-            "id": 27,
+            "id": 28,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 4,
             "chicken": 0,
             "stage": "normal",
-            "id": 35,
+            "id": 36,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 5,
             "chicken": 0,
             "stage": "normal",
-            "id": 43,
+            "id": 44,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 6,
             "chicken": 0,
             "stage": "normal",
-            "id": 51,
+            "id": 52,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 7,
             "chicken": 0,
             "stage": "normal",
-            "id": 59,
+            "id": 60,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 8,
             "chicken": 0,
             "stage": "normal",
-            "id": 67,
+            "id": 68,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           }
         ],
-        "score": 391,
+        "score": 346,
         "declaration": "none",
         "draws": 10,
         "discards": 9,
@@ -895,7 +904,8 @@
         "passedHu": null,
         "passedShape": null,
         "chickenPeng": [],
-        "chickenDiscard": []
+        "chickenDiscard": [],
+        "followDealer": true
       },
       {
         "name": "听风",
@@ -918,87 +928,96 @@
         "river": [
           {
             "tile": 0,
-            "chicken": 4,
+            "chicken": 0,
             "stage": "normal",
             "id": 5,
             "firstChicken": false,
             "followChicken": true,
-            "pre": true
+            "pre": true,
+            "followedDealer": true
           },
           {
             "tile": 1,
             "chicken": 0,
             "stage": "normal",
-            "id": 13,
+            "id": 14,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 2,
             "chicken": 0,
             "stage": "normal",
-            "id": 21,
+            "id": 22,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 3,
             "chicken": 0,
             "stage": "normal",
-            "id": 29,
+            "id": 30,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 4,
             "chicken": 0,
             "stage": "normal",
-            "id": 37,
+            "id": 38,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 5,
             "chicken": 0,
             "stage": "normal",
-            "id": 45,
+            "id": 46,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 6,
             "chicken": 0,
             "stage": "normal",
-            "id": 53,
+            "id": 54,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 7,
             "chicken": 0,
             "stage": "normal",
-            "id": 61,
+            "id": 62,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 8,
             "chicken": 0,
             "stage": "normal",
-            "id": 69,
+            "id": 70,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           }
         ],
-        "score": -141,
+        "score": -126,
         "declaration": "none",
         "draws": 9,
         "discards": 9,
@@ -1008,7 +1027,8 @@
         "passedHu": null,
         "passedShape": null,
         "chickenPeng": [],
-        "chickenDiscard": []
+        "chickenDiscard": [],
+        "followDealer": false
       },
       {
         "name": "观山",
@@ -1031,87 +1051,96 @@
         "river": [
           {
             "tile": 0,
-            "chicken": 4,
+            "chicken": 0,
             "stage": "normal",
             "id": 7,
             "firstChicken": false,
             "followChicken": true,
-            "pre": true
+            "pre": true,
+            "followedDealer": true
           },
           {
             "tile": 1,
             "chicken": 0,
             "stage": "normal",
-            "id": 15,
+            "id": 16,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 2,
             "chicken": 0,
             "stage": "normal",
-            "id": 23,
+            "id": 24,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 3,
             "chicken": 0,
             "stage": "normal",
-            "id": 31,
+            "id": 32,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 4,
             "chicken": 0,
             "stage": "normal",
-            "id": 39,
+            "id": 40,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 5,
             "chicken": 0,
             "stage": "normal",
-            "id": 47,
+            "id": 48,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 6,
             "chicken": 0,
             "stage": "normal",
-            "id": 55,
+            "id": 56,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 7,
             "chicken": 0,
             "stage": "normal",
-            "id": 63,
+            "id": 64,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 8,
             "chicken": 0,
             "stage": "normal",
-            "id": 71,
+            "id": 72,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           }
         ],
-        "score": -109,
+        "score": -94,
         "declaration": "none",
         "draws": 9,
         "discards": 9,
@@ -1121,7 +1150,8 @@
         "passedHu": null,
         "passedShape": null,
         "chickenPeng": [],
-        "chickenDiscard": []
+        "chickenDiscard": [],
+        "followDealer": false
       },
       {
         "name": "望月",
@@ -1144,87 +1174,96 @@
         "river": [
           {
             "tile": 0,
-            "chicken": 4,
+            "chicken": 0,
             "stage": "normal",
             "id": 9,
             "firstChicken": false,
             "followChicken": true,
-            "pre": true
+            "pre": true,
+            "followedDealer": true
           },
           {
             "tile": 1,
             "chicken": 0,
             "stage": "normal",
-            "id": 17,
+            "id": 18,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 2,
             "chicken": 0,
             "stage": "normal",
-            "id": 25,
+            "id": 26,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 3,
             "chicken": 0,
             "stage": "normal",
-            "id": 33,
+            "id": 34,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 4,
             "chicken": 0,
             "stage": "normal",
-            "id": 41,
+            "id": 42,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 5,
             "chicken": 0,
             "stage": "normal",
-            "id": 49,
+            "id": 50,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 6,
             "chicken": 0,
             "stage": "normal",
-            "id": 57,
+            "id": 58,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 7,
             "chicken": 0,
             "stage": "normal",
-            "id": 65,
+            "id": 66,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           },
           {
             "tile": 8,
             "chicken": 0,
             "stage": "normal",
-            "id": 73,
+            "id": 74,
             "firstChicken": false,
             "followChicken": false,
-            "pre": false
+            "pre": false,
+            "followedDealer": false
           }
         ],
-        "score": -141,
+        "score": -126,
         "declaration": "none",
         "draws": 9,
         "discards": 9,
@@ -1234,7 +1273,8 @@
         "passedHu": null,
         "passedShape": null,
         "chickenPeng": [],
-        "chickenDiscard": []
+        "chickenDiscard": [],
+        "followDealer": false
       }
     ],
     "wall": [
@@ -1293,15 +1333,42 @@
         true
       ],
       "deltas": [
-        391,
-        -141,
-        -109,
-        -141
+        346,
+        -126,
+        -94,
+        -126
       ],
       "nextDealer": 0,
       "finished": false,
       "transfers": [
         {
+          "from": 0,
+          "to": 1,
+          "account": "跟庄赔付",
+          "base": 15,
+          "multiplier": 1,
+          "amount": 15,
+          "reason": "首圈跟庄·一万（跟牌不再计分）"
+        },
+        {
+          "from": 0,
+          "to": 2,
+          "account": "跟庄赔付",
+          "base": 15,
+          "multiplier": 1,
+          "amount": 15,
+          "reason": "首圈跟庄·一万（跟牌不再计分）"
+        },
+        {
+          "from": 0,
+          "to": 3,
+          "account": "跟庄赔付",
+          "base": 15,
+          "multiplier": 1,
+          "amount": 15,
+          "reason": "首圈跟庄·一万（跟牌不再计分）"
+        },
+        {
           "from": 1,
           "to": 0,
           "account": "胡牌分",
@@ -1332,109 +1399,55 @@
           "from": 1,
           "to": 0,
           "account": "鸡分",
-          "base": 12,
+          "base": 8,
           "multiplier": 1,
-          "amount": 12,
-          "reason": "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+          "amount": 8,
+          "reason": "一条·底鸡 4×2=8分"
         },
         {
           "from": 2,
           "to": 0,
           "account": "鸡分",
-          "base": 12,
+          "base": 8,
           "multiplier": 1,
-          "amount": 12,
-          "reason": "一条·底鸡 4×2=8分；一万·冲鸡 4分"
+          "amount": 8,
+          "reason": "一条·底鸡 4×2=8分"
         },
         {
           "from": 3,
           "to": 0,
           "account": "鸡分",
-          "base": 12,
+          "base": 8,
           "multiplier": 1,
-          "amount": 12,
-          "reason": "一条·底鸡 4×2=8分；一万·冲鸡 4分"
-        },
-        {
-          "from": 0,
-          "to": 1,
-          "account": "鸡分",
-          "base": 4,
-          "multiplier": 1,
-          "amount": 4,
-          "reason": "一万·冲鸡 4分"
-        },
-        {
-          "from": 2,
-          "to": 1,
-          "account": "鸡分",
-          "base": 4,
-          "multiplier": 1,
-          "amount": 4,
-          "reason": "一万·冲鸡 4分"
-        },
-        {
-          "from": 3,
-          "to": 1,
-          "account": "鸡分",
-          "base": 4,
-          "multiplier": 1,
-          "amount": 4,
-          "reason": "一万·冲鸡 4分"
+          "amount": 8,
+          "reason": "一条·底鸡 4×2=8分"
         },
         {
           "from": 0,
           "to": 2,
           "account": "鸡分",
-          "base": 12,
+          "base": 8,
           "multiplier": 1,
-          "amount": 12,
-          "reason": "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+          "amount": 8,
+          "reason": "八筒·底鸡 4×2=8分"
         },
         {
           "from": 1,
           "to": 2,
           "account": "鸡分",
-          "base": 12,
+          "base": 8,
           "multiplier": 1,
-          "amount": 12,
-          "reason": "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
+          "amount": 8,
+          "reason": "八筒·底鸡 4×2=8分"
         },
         {
           "from": 3,
           "to": 2,
           "account": "鸡分",
-          "base": 12,
+          "base": 8,
           "multiplier": 1,
-          "amount": 12,
-          "reason": "八筒·底鸡 4×2=8分；一万·冲鸡 4分"
-        },
-        {
-          "from": 0,
-          "to": 3,
-          "account": "鸡分",
-          "base": 4,
-          "multiplier": 1,
-          "amount": 4,
-          "reason": "一万·冲鸡 4分"
-        },
-        {
-          "from": 1,
-          "to": 3,
-          "account": "鸡分",
-          "base": 4,
-          "multiplier": 1,
-          "amount": 4,
-          "reason": "一万·冲鸡 4分"
-        },
-        {
-          "from": 2,
-          "to": 3,
-          "account": "鸡分",
-          "base": 4,
-          "multiplier": 1,
-          "amount": 4,
-          "reason": "一万·冲鸡 4分"
+          "amount": 8,
+          "reason": "八筒·底鸡 4×2=8分"
         }
       ],
       "values": {
@@ -1482,7 +1495,7 @@
       15000,
       15000
     ],
-    "serial": 75,
+    "serial": 76,
     "matchLength": 4,
     "dealerRound": 1,
     "handNumber": 1,

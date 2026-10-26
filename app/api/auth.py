@@ -8,8 +8,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from loguru import logger
+from pydantic import BaseModel, Field
 
-from app.auth.wakudemo import WakuDemoOAuthError, get_wakudemo_oauth_service
+from app.auth.wakudemo import WakuDemoOAuthError, get_wakudemo_oauth_service, request_session_id
 
 router = APIRouter(prefix='/api/login', tags=['auth'])
 
@@ -133,7 +134,8 @@ def _account_summary(account: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get('/wakudemo')
-async def begin_wakudemo_login(request: Request, return_to: str | None = Query(default=None)):
+async def begin_wakudemo_login(request: Request, return_to: str | None = Query(default=None),
+                              session_challenge: str | None = Query(default=None)):
     service = get_wakudemo_oauth_service()
     frontend_url = service.config.default_frontend_url
     if return_to is not None:
@@ -145,10 +147,13 @@ async def begin_wakudemo_login(request: Request, return_to: str | None = Query(d
             # 拒绝未登记地址，保留正在进行的登录事务和已有会话。
             return _auth_error_response(exc.code, exc.status_code)
     try:
+        if len(request.query_params.getlist('session_challenge')) > 1:
+            return _auth_error_response('invalid_session_challenge', 400)
         authorize_url, transaction_id = service.begin(
             request.cookies.get(service.config.transaction_cookie_name),
             request.client.host if request.client else 'unknown',
             frontend_url=frontend_url,
+            session_challenge=session_challenge,
         )
     except WakuDemoOAuthError as exc:
         # 登录由整页跳转触发；只要前端地址本身有效，就把配置/容量错误带回 UI。
@@ -222,11 +227,33 @@ async def wakudemo_login_callback(
         return _harden_auth_response(response)
 
     service.delete_session(existing_session_id)
-    response = RedirectResponse(
-        _redirect_url(frontend_url, 'success'), status_code=302)
+    destination = _redirect_url(frontend_url, 'success')
+    if pending.session_challenge:
+        parts = urlsplit(destination)
+        fragment = dict(parse_qsl(parts.fragment, keep_blank_values=True))
+        fragment['wakudemo_ticket'] = service.create_handoff(authenticated_session_id, pending)
+        destination = urlunsplit((*parts[:4], urlencode(fragment)))
+    response = RedirectResponse(destination, status_code=302)
     _set_session_cookie(response, authenticated_session_id, expires_in)
     _delete_transaction_cookie(response)
     return _harden_auth_response(response)
+
+
+class SessionExchange(BaseModel):
+    ticket: str = Field(min_length=43, max_length=43, pattern=r'^[A-Za-z0-9_-]+$')
+    verifier: str = Field(min_length=43, max_length=128, pattern=r'^[A-Za-z0-9_-]+$')
+
+
+@router.post('/exchange')
+async def exchange_login_session(request: Request, payload: SessionExchange):
+    service = get_wakudemo_oauth_service()
+    try:
+        session_id = service.redeem_handoff(
+            payload.ticket, payload.verifier, request.headers.get('origin'))
+    except WakuDemoOAuthError as exc:
+        return _auth_error_response(exc.code, exc.status_code)
+    # 只返回本应用的随机会话 ID；WakuDemo access token 始终留在服务端。
+    return _harden_auth_response(JSONResponse({'sessionToken': session_id}))
 
 
 @router.get('/session')
@@ -235,7 +262,7 @@ async def get_login_session(request: Request):
     # 真实登录态必须校验浏览器 Origin；开发旁路模式无真实凭据，跳过该校验。
     if not service.config.login_bypass and not _browser_origin_allowed(request):
         return _auth_error_response('auth_origin_not_allowed', 403)
-    session = service.get_session(request.cookies.get(service.config.cookie_name))
+    session = service.get_session(request_session_id(request, service))
     if session is None:
         if service.config.login_bypass:
             # 仅本地开发：无真实会话也返回已登录，跳过 OAuth 联调。
@@ -260,7 +287,7 @@ async def logout(request: Request):
     content_type = request.headers.get('content-type', '').partition(';')[0].strip().lower()
     if content_type != 'application/json' or not _browser_origin_allowed(request):
         return _auth_error_response('csrf_check_failed', 403)
-    service.delete_session(request.cookies.get(service.config.cookie_name))
+    service.delete_session(request_session_id(request, service))
     response = JSONResponse({'authenticated': False})
     _delete_session_cookie(response)
     return _harden_auth_response(response)

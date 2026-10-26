@@ -33,6 +33,7 @@ def norm_player(player):
             {'tile': discard.tile, 'chicken': discard.chicken,
              'stage': discard.stage, 'id': discard.id,
              'firstChicken': discard.first_chicken,
+             'followedDealer': discard.followed_dealer,
              'followChicken': discard.follow_chicken, 'pre': discard.pre}
             for discard in player.river
         ],
@@ -40,6 +41,7 @@ def norm_player(player):
         'draws': player.draws, 'discards': player.discards,
         'drawn': player.drawn, 'afterKong': player.after_kong,
         'burned': player.burned, 'passedHu': player.passed_hu,
+        'followDealer': player.follow_dealer,
         'passedShape': player.passed_shape,
         'chickenPeng': list(player.chicken_peng),
         'chickenDiscard': list(player.chicken_discard),

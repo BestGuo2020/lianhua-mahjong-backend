@@ -243,7 +243,7 @@ def _structural_values(player: Player, ctx: WinContext) -> list[HandValue]:
             patterns.append(Pattern('天胡' if ctx.is_dealer else '地胡', 40))
 
         has_kong = any(meld.kind != 'peng' for meld in player.melds)
-        if (ctx.kind == 'discard' and not big and not has_kong
+        if (ctx.kind == 'discard' and not big and not has_kong and not player.follow_dealer
                 and player.declaration == 'none'):
             return
 

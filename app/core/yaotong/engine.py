@@ -4,6 +4,7 @@
 """
 
 from __future__ import annotations
+from app.core.yaotong.follow_dealer import complete_follow_dealer, follow_dealer_base
 
 import random as random_module
 from dataclasses import dataclass, fields, replace
@@ -513,6 +514,11 @@ def _resolve_responses(state: GameState,
             advance(state, flow, 'after-peng',
                     lambda: setattr(state, 'phase', 'discard'))
     else:
+        followed = complete_follow_dealer(state)
+        if followed is not None:
+            amount = follow_dealer_base(followed) * (2 if state.dice[0] == state.dice[1] else 1)
+            _event(state, state.dealer, 'follow-dealer',
+                   f'跟庄成立 · {tile_name(followed)} · 庄家赔每家{amount}分，取得胡牌通行证', followed)
         advance(state, flow, 'next-draw',
                 lambda: _draw(state, (pending.from_seat + 1) % 4))
 

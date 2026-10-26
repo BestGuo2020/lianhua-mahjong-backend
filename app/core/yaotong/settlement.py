@@ -12,6 +12,7 @@ from typing import Callable, Optional
 
 from app.core.yaotong.hands import context_allows, evaluate_hand, waits
 from app.core.yaotong.hu_window import hu_window
+from app.core.yaotong.follow_dealer import follow_dealer_base
 from app.core.yaotong.tiles import TILES, YAO, counts_of, is_fixed, next_tile, tile_name
 from app.core.yaotong.types import (
     GameState,
@@ -93,7 +94,7 @@ def owned_tiles(player: Player, exposed_only: bool = False) -> list[Tile]:
     return [
         *([] if exposed_only else player.hand),
         *[meld.tile for meld in player.melds for _ in range(3 if meld.kind == 'peng' else 4)],
-        *[discard.tile for discard in player.river],
+        *[discard.tile for discard in player.river if not discard.followed_dealer],
     ]
 
 
@@ -139,6 +140,8 @@ def chicken_breakdown(
         'hot': '杠冲', 'normal': '牌河',
     }
     for discard in player.river:
+        if discard.followed_dealer:
+            continue
         if discard.tile == YAO:
             add(discard.tile, stage_labels[discard.stage], 1, discard.chicken)
         elif is_fixed(discard.tile):
@@ -389,6 +392,12 @@ def settle(state: GameState, ending: Ending) -> Settlement:
 
     def others(seat: Seat) -> list[Seat]:
         return [index for index in range(4) if index != seat]
+
+    followed = next((d for d in players[state.dealer].river if d.followed_dealer), None)
+    if players[state.dealer].follow_dealer and followed is not None:
+        for to in others(state.dealer):
+            add(state.dealer, to, '跟庄赔付', follow_dealer_base(followed.tile),
+                f'首圈跟庄·{tile_name(followed.tile)}（跟牌不再计分）')
 
     if ending.kind == 'penalty':
         base = max([45, *[item['price'] for item in info if item['ready']]])

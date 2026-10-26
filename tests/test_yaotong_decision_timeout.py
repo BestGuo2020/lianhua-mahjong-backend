@@ -39,7 +39,8 @@ async def test_unanswered_decision_times_out_and_advances(mode, phase):
     room.turn_timeout = 0.03
     state = prepare(room, phase)
     try:
-        assert 0 < room.snapshot_for(0)['decisionRemainingMs'] <= 30
+        # ceil((deadline - monotonic) * 1000) may round 30ms + floating-point noise to 31ms.
+        assert 0 < room.snapshot_for(0)['decisionRemainingMs'] <= 31
         await asyncio.wait_for(room._human_or_ai(0), 1)
         if phase == 'original':
             assert state.original_decisions[0]

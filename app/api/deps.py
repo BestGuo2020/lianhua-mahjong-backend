@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 
-from app.auth.wakudemo import get_wakudemo_oauth_service
+from app.auth.wakudemo import get_wakudemo_oauth_service, request_session_id
 
 AUTH_REQUIRED = 'AUTH_REQUIRED'
 
@@ -37,7 +37,7 @@ async def require_wakudemo_login(request: Request) -> AuthenticatedUser:
     playerId 推导测试身份（非法/缺失时用 dev-bypass），跳过 OAuth 流程。
     """
     service = get_wakudemo_oauth_service()
-    session = service.get_session(request.cookies.get(service.config.cookie_name))
+    session = service.get_session(request_session_id(request, service))
     if session is not None:
         account: dict[str, Any] = session.account or {}
         uid = account.get('id')

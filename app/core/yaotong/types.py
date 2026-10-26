@@ -21,10 +21,10 @@ Phase = Literal['original', 'discard', 'response', 'transition', 'settled']
 MatchLength = Literal[4, 8, 16]
 SettlementKind = Literal['win', 'draw', 'penalty']
 EventKind = Literal['draw', 'discard', 'peng', 'kong', 'kong-intent',
-                    'hu', 'ready', 'penalty', 'start']
+                    'hu', 'ready', 'penalty', 'start', 'follow-dealer']
 Account = Literal[
     '胡牌分', '鸡分', '杠分', '幺筒责任分', '见面礼',
-    '杀报加分', '一般包牌赔付', '流局赔听款',
+    '杀报加分', '一般包牌赔付', '流局赔听款', '跟庄赔付',
 ]
 
 
@@ -47,6 +47,7 @@ class Discard:
     first_chicken: bool = False
     follow_chicken: bool = False
     pre: bool = False
+    followed_dealer: bool = False
 
 
 @dataclass
@@ -66,6 +67,7 @@ class Player:
     passed_shape: Optional[int] = None
     chicken_peng: list[Tile] = field(default_factory=list)
     chicken_discard: list[Tile] = field(default_factory=list)
+    follow_dealer: bool = False
 
 
 @dataclass

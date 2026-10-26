@@ -28,8 +28,8 @@ _REJOIN_CODE_PATTERN = re.compile(
 
 # OAuth 授权码、state、PKCE 和 token 都是凭据；不得进入任何日志出口。
 _OAUTH_QUERY_SECRET_PATTERN = re.compile(
-    r'((?:^|[?&\s])(?:code|state|code_verifier|code_challenge|access_token|'
-    r'refresh_token|id_token)=)[^&\s"\']*',
+    r'((?:^|[?&#\s])(?:code|state|code_verifier|code_challenge|access_token|'
+    r'refresh_token|id_token|wakudemo_ticket|session_challenge|sessionToken|ticket|verifier)=)[^&\s"\']*',
     flags=re.IGNORECASE,
 )
 _BEARER_TOKEN_PATTERN = re.compile(

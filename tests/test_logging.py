@@ -82,6 +82,15 @@ def test_oauth_credentials_are_redacted_from_logs():
     assert rendered.count('***') == 5
 
 
+def test_session_handoff_credentials_are_redacted():
+    rendered = redact_sensitive_data(
+        'Location: https://game.example/#wakudemo_ticket=private-ticket '
+        'verifier=private-verifier&sessionToken=private-session '
+        'session_challenge=private-challenge')
+    assert 'private-' not in rendered
+    assert rendered.count('***') == 4
+
+
 def test_console_sink_disables_exception_local_diagnostics(monkeypatch):
     add_calls = []
 

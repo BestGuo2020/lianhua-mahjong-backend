@@ -1,6 +1,6 @@
 # WakuDemo OAuth 2.0 + PKCE 接入
 
-本项目使用服务端 BFF 方式完成 OAuth 2.0 Authorization Code + PKCE。浏览器只持有随机、`HttpOnly` 的本游戏会话 ID；`code_verifier`、授权码交换和 `access_token` 始终留在后端。项目不会收集、传输或保存 WakuDemo 密码，也不使用 password grant。
+本项目使用服务端方式完成 OAuth 2.0 Authorization Code + PKCE。上游 PKCE verifier、授权码交换和 `access_token` 始终留在后端；浏览器只持有随机的本游戏会话 ID。旧客户端用 `HttpOnly` Cookie，新客户端另用一次性票据交换取得 Bearer 会话，兼容 Safari 阻止跨站 Cookie 的情况。项目不会收集、传输或保存 WakuDemo 密码，也不使用 password grant。
 
 实现遵循 [RFC 7636（PKCE）](https://www.rfc-editor.org/rfc/rfc7636.html)、[RFC 6749（OAuth 2.0）](https://www.rfc-editor.org/rfc/rfc6749.html) 和 [RFC 9700（OAuth 2.0 Security BCP）](https://www.rfc-editor.org/rfc/rfc9700.html)。
 
@@ -36,7 +36,19 @@ backend/
 4. WakuDemo 回调 `GET /api/login/callback?code=...&state=...`。成功和错误回调都严格、常量时间校验 `state`；事务只允许消费一次。
 5. 后端以 `application/x-www-form-urlencoded` POST Token 接口，字段为 `grant_type=authorization_code`、`code`、`client_id`、`redirect_uri`、`code_verifier`。超时或失败后不会重试同一个 code，用户应重新发起授权。
 6. 后端以 `Authorization: Bearer <access_token>` GET Account 接口。账户必须含稳定的 `uid`（兼容 `id/account_id/user_id`）；只保留 `id/displayName/avatarUrl` 摘要。
-7. 后端保存 token、最小账户摘要和过期时间，给浏览器签发新的随机登录 session Cookie，并删除 OAuth transaction Cookie。浏览器通过 `GET /api/login/session` 读取摘要，响应中永不包含 token。
+7. 后端保存 token、最小账户摘要和过期时间，给浏览器签发新的随机登录 session Cookie，并删除 OAuth transaction Cookie。新客户端还会执行下节的会话交接。浏览器通过 `GET /api/login/session` 读取摘要，响应中永不包含上游 access token。
+
+### Safari 与跨站 Cookie 受限时的会话交接
+
+1. 点击登录时，前端生成256位随机 verifier，保存于本站当前标签页的 `sessionStorage`；只将其 SHA-256 摘要以 `session_challenge` 参数发给登录入口。这与后端对接 WakuDemo 的 PKCE 是两套独立校验。
+2. 授权成功后，后端在白名单返回地址的 URL fragment 中附加 `wakudemo_ticket`。票据60秒内有效、仅可兑换一次，服务端绑定原发起站点 Origin、challenge 与已建立的会话。
+3. 前端先从地址栏移除票据，再用 JSON POST `/api/login/exchange` 提交 `{ticket, verifier}`。后端校验浏览器 Origin 和 S256 证明，返回随机的本游戏 `sessionToken`，不会返回 WakuDemo token。
+4. 前端将会话 ID 保存在本站 `sessionStorage`，后续全部 REST 请求携带 `Authorization: Bearer ...`。同标签页刷新仍可登录；关闭标签页后不保证保留此副本，过期则重新授权。显式 Bearer 凭据优先，失效时不回退到可能属于另一账号的 Cookie。
+5. 退出时撤销服务端会话并清除本站副本和 Cookie。认证响应均不可缓存；票据、verifier 和会话 ID 均视为凭据，不写应用日志。
+
+此会话 ID 是脚本可读的短期应用凭据，前端须继续防范 XSS；上游 token 留在后端。长远采用同站 API 代理时可仅用 HttpOnly Cookie。
+
+上线顺序：先部署支持 `/exchange` 的后端，再部署新前端；旧前端不传 challenge，仍走原 Cookie 流程，无须更换 WakuDemo 已登记的回调地址。
 
 OAuth 事务 Cookie 和登录 Cookie 是两个独立值。取消重登、错误 state、旧标签页回调和 callback 重放都不会删除已有的有效登录会话。
 
@@ -46,6 +58,7 @@ OAuth 事务 Cookie 和登录 Cookie 是两个独立值。取消重登、错误 
 | --- | --- | --- |
 | `GET` | `/api/login/wakudemo` | 创建一次性 PKCE 事务并 302 到授权页 |
 | `GET` | `/api/login/callback` | 校验回调、服务端换 token、拉取账户、建立会话 |
+| `POST` | `/api/login/exchange` | 用一次性票据、原标签页 verifier 与绑定 Origin 换本游戏会话 ID |
 | `GET` | `/api/login/session` | 返回 `{authenticated, account?}`；过期时返回 false 并清 Cookie |
 | `POST` | `/api/login/logout` | 删除服务端 token 会话；要求 JSON Content-Type，浏览器 Origin 必须在配置白名单 |
 
@@ -86,7 +99,7 @@ WAKUDEMO_COOKIE_SAMESITE=none
 WAKUDEMO_COOKIE_SECURE=true
 ```
 
-跨站 `SameSite=None` Cookie 仍可能被 Safari、隐私模式或 WebView 的第三方 Cookie 策略拦截。生产优先在游戏同站网关反代 `/api/login`，并把前端/API 放在同一站点边界；否则必须在目标浏览器实测。
+跨站 `SameSite=None` Cookie 仍可能被 Safari、隐私模式或 WebView 的第三方 Cookie 策略拦截。新前端通过上述会话交接支持此场景；无需要求用户关闭“阻止跨网站跟踪”。正式平台与目标设备仍须实测顶层 OAuth 回调。
 
 ### 旧站与幺筒新站共用后端和回调
 
@@ -117,7 +130,7 @@ https://www.bestguo.top:58000/api/login/wakudemo?return_to=https%3A%2F%2Fyaotong
 
 两站的 origin 都会自动加入 credentialed CORS、会话查询和退出登录的来源白名单。登录入口、回调、会话查询和业务 API 必须全部访问上述共用后端；不要仅把登录入口反代到新站而仍回调旧 API 主机，浏览器无法把临时事务 Cookie 带到另一主机。
 
-两站会使用同一后端会话：在允许发送 Cookie 的浏览器中，一站登录后另一站可读到同一身份，一站退出也会结束该会话。跨站 Cookie 仍需在正式浏览器验证；本次多站返回支持没有改变浏览器的 Cookie 策略。后端继续使用单 worker。
+在允许发送 Cookie 的浏览器中，一站登录后另一站可读到同一身份，一站退出也会结束该会话。新前端的显式会话副本按站点与标签页隔离，不以跨站 Cookie 可用为前提。后端继续使用单 worker。
 
 ## 启动与本地联调
 
@@ -170,7 +183,7 @@ cd D:\vueprojects\lianhua_guangma\backend
 真实平台冒烟时检查：
 
 1. 授权 URL 有全部八个参数，`code_challenge_method` 为 `S256`；URL 中绝不能出现 `code_verifier`。
-2. callback 后地址栏只留下游戏页的 `wakudemo_login` 结果，前端随后会清掉它。
+2. callback 后地址栏仅短暂携带 `wakudemo_login` 结果和一次性 `wakudemo_ticket` fragment；前端在兑换前清掉两者。
 3. DevTools 的 Cookie 中只有随机 ID；Local Storage、响应 JSON、URL 和服务日志中都没有 access token。
 4. 刷新后 `GET /api/login/session` 仍返回最小账户摘要；到期后返回 `authenticated:false` 并删除 Cookie。
 5. 取消授权、篡改 state、回放 callback、禁用第三方 Cookie、模拟慢网分别得到可恢复的失败结果，不会破坏已有登录。
@@ -179,7 +192,7 @@ cd D:\vueprojects\lianhua_guangma\backend
 
 当前整个游戏后端按 Dockerfile 使用单个 Uvicorn worker；OAuth 的 pending、已用 code 哈希和 access token 会话也保存在该进程内存中。优点是 token 不落磁盘，缺点是进程重启后需重新登录。
 
-不要直接增加 worker 或水平扩容。多进程/多实例前应把三类状态迁到 Redis：pending 使用带 TTL 的原子 compare-and-delete，code 哈希使用 `SET NX EX`，session 使用带 TTL 的服务端记录，并对 token 做静态加密；负载均衡各实例共享该存储。登录起点还应在反向代理按 IP/设备限速。
+不要直接增加 worker 或水平扩容。多进程/多实例前应把四类状态迁到 Redis：pending 与 handoff 使用带 TTL 的原子 compare-and-delete，code 哈希使用 `SET NX EX`，session 使用带 TTL 的服务端记录，并对 token 做静态加密；负载均衡各实例共享该存储。登录起点还应在反向代理按 IP/设备限速。
 
 应用层登录限流使用 Uvicorn 的 `request.client.host`。反向代理必须删除客户端自带的转发头，再写入真实地址，并把**代理自身的精确 IP/CIDR** 配进 Uvicorn `FORWARDED_ALLOW_IPS`；不要在后端可被公网直连时设为 `*`。如果 EdgeOne/CDN 无法稳定传递受信客户端 IP，请在网关完成 `/api/login/wakudemo` 限流，并将 `WAKUDEMO_LOGIN_RATE_LIMIT_PER_MINUTE=0`，避免所有玩家共享代理 IP 配额。
 

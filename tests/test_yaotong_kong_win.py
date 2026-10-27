@@ -1,4 +1,4 @@
-"""杠开 +25：真实开杠/补摸/胡牌流程与场景边界。"""
+"""杠开 +20：真实开杠/补摸/胡牌流程与场景边界。"""
 import pytest
 
 from app.core.yaotong.engine import act, self_options
@@ -36,13 +36,13 @@ def kong_draw(kind, double=False):
 
 
 @pytest.mark.parametrize('kind', ['open', 'turn', 'stored', 'added'])
-def test_all_kong_kinds_add_25_to_hu_and_keep_independent_kong_payment(kind):
+def test_all_kong_kinds_add_20_to_hu_and_keep_independent_kong_payment(kind):
     state = kong_draw(kind)
-    assert self_options(state, 0).h == 40
+    assert self_options(state, 0).h == 35
     assert act(state, 0, Command(type='hu'))
     value = state.result.values[0]
-    assert [(p.name, p.points) for p in value.patterns] == [('硬胡', 10), ('杠开', 25)]
-    assert [t.amount for t in state.result.transfers if t.account == '胡牌分'] == [40, 40, 40]
+    assert [(p.name, p.points) for p in value.patterns] == [('硬胡', 10), ('杠开', 20)]
+    assert [t.amount for t in state.result.transfers if t.account == '胡牌分'] == [35, 35, 35]
     assert [t.amount for t in state.result.transfers if t.account == '杠分'] == (
         [] if kind == 'stored' else [5] if kind == 'open' else [5, 5, 5])
     assert sum(state.result.deltas) == 0
@@ -54,18 +54,18 @@ def test_kong_win_stacks_with_flush_hard_hu_and_dice_once():
     state.players[0].hand = tiles('234678m 99m 123m')
     state.players[0].drawn = 2
     assert act(state, 0, Command(type='hu'))
-    assert state.result.values[0].h == 60
-    assert [t.amount for t in state.result.transfers if t.account == '胡牌分'] == [120, 120, 120]
+    assert state.result.values[0].h == 55
+    assert [t.amount for t in state.result.transfers if t.account == '胡牌分'] == [110, 110, 110]
     assert [t.amount for t in state.result.transfers if t.account == '杠分'] == [10, 10, 10]
 
 
-def test_joker_kong_win_is_5_plus_25_without_hard_hu():
+def test_joker_kong_win_is_5_plus_20_without_hard_hu():
     state = kong_draw('turn')
     state.players[0].hand = tiles('234m 234s 66p 78s 1p')
     state.players[0].drawn = 9
     assert act(state, 0, Command(type='hu'))
-    assert state.result.values[0].h == 30
-    assert [(p.name, p.points) for p in state.result.values[0].patterns] == [('杠开', 25)]
+    assert state.result.values[0].h == 25
+    assert [(p.name, p.points) for p in state.result.values[0].patterns] == [('杠开', 20)]
 
 
 @pytest.mark.parametrize('kind', ['discard', 'rob', 'hot', 'ready'])
@@ -95,5 +95,5 @@ def test_multiple_kongs_still_count_kong_win_only_once():
     player = Player('P', hand=tiles('234m 66p 789s'), drawn=26, after_kong=True,
                     melds=[Meld(4, 'turn'), Meld(12, 'added')])
     value = evaluate_hand(player, WinContext('self', 26))[0]
-    assert value.h == 40
-    assert [(p.name, p.points) for p in value.patterns if p.name == '杠开'] == [('杠开', 25)]
+    assert value.h == 35
+    assert [(p.name, p.points) for p in value.patterns if p.name == '杠开'] == [('杠开', 20)]

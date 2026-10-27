@@ -88,6 +88,22 @@ def test_settle_self_draw_no_chicken():
     assert result.finished is False
 
 
+def test_settle_self_draw_with_chicken_in_river_is_not_su_hu():
+    """素胡＝什么都没有：牌河里的固定鸡或翻牌鸡都不再按素胡结算（截图手牌）。"""
+    hand = [5, 6, 7, 11, 11, 11, 12, 13, 13, 14, 14, 15, 22, 22]
+    for river_tile in (18, 25):  # 一条（固定鸡）、八条（指示牌七条 → 翻牌鸡）
+        state = make_state(hand, wall=[24], dice=(2, 3), dealer=0,
+                           dealer_round=0, match_length=4)
+        state.players[0].river = [
+            Discard(tile=river_tile, chicken=4, stage='first', id=1),
+        ]
+        result = settle(state, Ending(kind='win', winners=[0], win_kind='self', tile=13))
+        assert result.chicken == 25
+        assert [(p.name, p.points) for p in result.values[0].patterns] == [('硬胡', 10)]
+        assert result.values[0].h == 15
+        assert [t.amount for t in result.transfers if t.account == '胡牌分'] == [15, 15, 15]
+
+
 def test_settle_discard_win_with_ready_and_kill_report():
     state = make_state(NO_CHICKEN, wall=[8], dice=(2, 3), dealer=0,
                        dealer_round=0, match_length=4)

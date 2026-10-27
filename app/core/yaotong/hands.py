@@ -184,6 +184,20 @@ def _meld_tiles(player: Player) -> list[Tile]:
     return tiles
 
 
+def _pure_holdings(player: Player, chicken: Optional[Tile]) -> bool:
+    """素胡＝什么都没有：手牌、副露和牌河都不含固定鸡、幺筒或本局翻牌鸡。"""
+    tiles = [
+        *player.hand,
+        *_meld_tiles(player),
+        # 跟庄的跟牌留在牌河展示，但不再参与任何计分，也不影响素胡。
+        *(discard.tile for discard in player.river if not discard.followed_dealer),
+    ]
+    return not any(
+        is_chicken(tile) or (chicken is not None and tile == chicken)
+        for tile in tiles
+    )
+
+
 def _structural_values(player: Player, ctx: WinContext) -> list[HandValue]:
     hand = player.hand
     if len(hand) != 14 - len(player.melds) * 3:
@@ -244,7 +258,7 @@ def _structural_values(player: Player, ctx: WinContext) -> list[HandValue]:
 
         has_kong = any(meld.kind != 'peng' for meld in player.melds)
         if ctx.kind == 'self' and has_kong and player.after_kong and player.drawn == ctx.tile:
-            patterns.append(Pattern('杠开', 25))
+            patterns.append(Pattern('杠开', 20))
         if (ctx.kind == 'discard' and not big and not has_kong and not player.follow_dealer
                 and player.declaration == 'none'):
             return
@@ -276,10 +290,9 @@ def _structural_values(player: Player, ctx: WinContext) -> list[HandValue]:
             )
             result.append(value)
 
-            used = [*hand, *[meld.tile for meld in player.melds for _ in range(3)]]
             if (ctx.kind == 'self' and not player.melds and not has_kong
                     and not ctx.kills_report
-                    and not any(is_chicken(tile) or tile == ctx.chicken for tile in used)):
+                    and _pure_holdings(player, ctx.chicken)):
                 result.append(replace(
                     value,
                     h=25,

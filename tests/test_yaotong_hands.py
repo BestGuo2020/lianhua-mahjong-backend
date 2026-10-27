@@ -10,7 +10,7 @@ from app.core.yaotong.hands import (
     shape_points,
     waits,
 )
-from app.core.yaotong.types import Player, WinContext
+from app.core.yaotong.types import Discard, Player, WinContext
 
 # 2m3m4m / 5m6m7m / 2p3p4p / 5p6p7p / 9s9s，不含鸡牌
 NO_CHICKEN_HAND = [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15, 26, 26]
@@ -56,6 +56,27 @@ def test_chicken_blocks_su_hu():
     assert not any(pattern.name == '素胡' for value in values for pattern in value.patterns)
     assert max(value.h for value in values) == 15
     assert evaluate_hand(player(CHICKEN_HAND), WinContext(kind='discard', tile=9)) == []
+
+
+def test_river_chicken_also_blocks_su_hu():
+    """素胡＝什么都没有：手牌、副露和牌河都不含固定鸡、幺筒或翻牌鸡。"""
+    def discard(tile, **kwargs):
+        return Discard(tile=tile, chicken=0, stage='normal', id=1, **kwargs)
+
+    def has_su_hu(river, chicken=None):
+        values = evaluate_hand(
+            player(NO_CHICKEN_HAND, river=list(river)),
+            WinContext(kind='self', tile=26, chicken=chicken),
+        )
+        return any(pattern.name == '素胡' for value in values for pattern in value.patterns)
+
+    assert has_su_hu([discard(7), discard(20)])
+    # 固定鸡（一万/八筒/一条）、幺筒、翻牌鸡出现在牌河同样不能算素胡。
+    for chicken_tile in (0, 16, 18, 9):
+        assert not has_su_hu([discard(chicken_tile)])
+    assert not has_su_hu([discard(20)], chicken=20)
+    # 跟庄跟牌留在牌河展示但不参与计分，不否定素胡。
+    assert has_su_hu([discard(18, followed_dealer=True)])
 
 
 def test_waits_and_discard_waits():

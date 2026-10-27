@@ -297,7 +297,7 @@ def offered_hu_plans(state: GameState, seat: Seat) -> list[dict]:
 
     if len(viable) < 2:
         return []
-    excluded = {'报听', '原报', '天胡', '地胡', '抢杠', '热炮'}
+    excluded = {'报听', '原报', '天胡', '地胡', '抢杠', '热炮', '杠开'}
     return [
         {
             'key': key,

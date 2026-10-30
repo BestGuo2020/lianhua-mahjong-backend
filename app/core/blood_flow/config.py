@@ -60,6 +60,8 @@ PATTERNS: dict[str, PatternDefinition] = {
     'all-with-terminals': PatternDefinition('all-with-terminals', '全带幺', 4),
     # 低番 / 基础
     'shiSanLan': PatternDefinition('shiSanLan', '十三烂', 2),
+    # 四组吃/碰/明杠（含补杠）落地，暗杠和风杠不算；可叠加，精吊自摸也成立。
+    'fully-exposed-hand': PatternDefinition('fully-exposed-hand', '十二落抬', 2),
     'all-simples': PatternDefinition('all-simples', '断幺九', 2,
                                      ('all-with-terminals', 'mixed-terminals', 'pure-terminals', 'all-honors')),
     # —— 2026-09-15 用户定案：拆掉「门清平胡」这个 2 番合并番种，换成两个独立番种（与前端 config.ts 一致）——

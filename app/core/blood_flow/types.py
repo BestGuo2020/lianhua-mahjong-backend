@@ -17,6 +17,7 @@ RegularPatternId = Literal[
     'all-simples', 'concealed-hand', 'all-with-terminals',
     'one-suit-three-steps', 'one-suit-four-steps', 'pure-straight',
     'one-suit-three-joints', 'one-suit-four-joints',
+    'fully-exposed-hand',
 ]
 SpecialPatternId = Literal['pinghu', 'sevenPairs', 'luxury-seven-pairs', 'shiSanLan', 'qiXing', 'thirteenOrphans']
 PatternId = str  # 保持宽松以便共享夹具 JSON 直接使用

@@ -18,6 +18,7 @@ FIXTURES = Path(os.environ.get(
 ))
 
 golden_cases = json.loads((FIXTURES / 'golden.json').read_text(encoding='utf-8'))['cases']
+golden_cases += json.loads((FIXTURES / 'fullyExposedHand.json').read_text(encoding='utf-8'))['cases']
 scoring_cases = json.loads((FIXTURES / 'scoring.json').read_text(encoding='utf-8'))['cases']
 
 

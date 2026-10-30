@@ -178,6 +178,9 @@ def pattern_potentials(hand: list[str], melds: list[dict], jokers: list[str],
         directions.append({'id': pattern_id, 'weight': weight, 'progress': progress,
                            'score': weight * progress ** 2})
 
+    # 仅四副已落地时计入确定附加番，不预支尚未发生的吃碰收益。
+    if len(melds) == 4:
+        add('fully-exposed-hand', 1)
     meld_tiles = s['meld_tiles']
     suit_counts: dict[str, int] = {}
     for tile in s['suited']:
@@ -294,6 +297,8 @@ def _certain_patterns(hand: list[str], melds: list[dict], jokers: list[str],
                       model: str = 'off') -> set[str]:
     s = _shape(hand, melds, jokers)
     certain: set[str] = set()
+    if len(melds) == 4 and can_develop_pattern_with_melds('fully-exposed-hand', melds):
+        certain.add('fully-exposed-hand')
     meld_tiles = s['meld_tiles']
     suits = {t[0] for t in s['suited']}
     honors = len(s['honors']) + sum(1 for t in meld_tiles if len(t) != 2)

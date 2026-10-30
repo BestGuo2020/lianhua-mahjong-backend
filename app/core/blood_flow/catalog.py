@@ -90,6 +90,11 @@ def match_patterns(hand: WinningDecomposition) -> list[str]:
         result.append('mixed-terminals')
     if hand.shape == 'sevenPairs':
         return result
+    # 只认已落地明面子；点炮补成的手内刻子、暗杠与风杠不计。
+    if len(melds) == 4 and all(g.origin.get('kind') == 'meld'
+                               and not g.concealed and g.kind != 'wind-kong'
+                               for g in melds):
+        result.append('fully-exposed-hand')
     pair = next(g for g in hand.groups if g.kind == 'pair').tiles[0]
     sequences = [g for g in melds if g.kind == 'sequence']
     if all_triplets:

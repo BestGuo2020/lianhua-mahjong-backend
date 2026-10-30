@@ -70,6 +70,9 @@ def can_develop_pattern_with_melds(pattern_id: str, melds: list[dict]) -> bool:
                    for meld in melds)
     if pattern_id == 'concealed-hand':
         return all(meld.get('type') == 'angang' for meld in melds)
+    if pattern_id == 'fully-exposed-hand':
+        return len(melds) <= 4 and all(not m.get('pending') and not m.get('windKong')
+                                      and m.get('type') in ('chi', 'peng', 'gang') for m in melds)
     if pattern_id == 'pinghu':
         return all(meld.get('type') == 'chi' for meld in melds)
     return True

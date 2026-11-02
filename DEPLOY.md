@@ -90,6 +90,10 @@ docker compose -f docker-compose.yml logs -f --tail=100       # 日志
 # 回滚：把 compose 里 image 的 tag 从 latest 改回 sha-<commit>，再 pull && up
 ```
 
+当前生产 TTS 配置需独立保留和挂载，更新前执行配置/真实合成检查。
+缺失配置导致的 `LOCAL_TTS_UNAVAILABLE` 恢复步骤与验收记录见
+[2026-11-02 TTS 恢复记录](docs/tts-recovery-2026-11-02.md)。
+
 ## 4. 前端如何连后端
 
 每个玩法按 `rulesetId` 独立计算房间名额，默认各 4 间；`ROOM_MAX` 调整的是**每个玩法**的上限。

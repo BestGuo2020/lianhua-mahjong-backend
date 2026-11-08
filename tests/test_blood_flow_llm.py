@@ -10,7 +10,7 @@ import pytest
 
 from app.game.blood_flow_engine import BloodFlowEngine
 from app.game.blood_flow_room import BloodFlowRoomSession
-from app.llm.blood_flow_candidates import (_candidate_summary, blood_flow_prompt_rules,
+from app.llm.blood_flow_candidates import (blood_flow_prompt_rules,
                                            build_blood_flow_candidates,
                                            build_blood_flow_prompt,
                                            ev_features_for,
@@ -200,20 +200,15 @@ def test_discard_candidates_carry_opponent_risk_feature():
     assert by_label['打出8筒'] > by_label['打出8万']
 
 
-def test_summary_and_prompt_render_risk_payment():
+def test_prompt_keeps_structured_risk_payment():
     engine = risk_rig(FLUSH_MELDS)
     room = make_room(engine)
     view = room._seat_view(0)
-    built = build_blood_flow_candidates(view, 'req-risk-sum')
-    risk = next(c for c in built['candidates'] if c['features'].get('opponentRisk'))
-    expected_payment = risk['features']['opponentRisk']['payment']
-    summaries = {c['id']: _candidate_summary(c) for c in built['candidates']}
-    assert risk['id'] in summaries
-    assert f'风险赔付：约{expected_payment}点（中·副露染手嫌疑' in summaries[risk['id']]
-    system, user = build_blood_flow_prompt('稳健', view, built)
-    payload = json.loads(user)
-    assert any('风险赔付：约' in c['summary'] for c in payload['candidates'])
-    assert 'opponentRisk' in json.dumps(payload['candidates'], ensure_ascii=False)
+    built = build_blood_flow_candidates(view, 'req-risk')
+    candidate = next(c for c in built['candidates'] if c['features'].get('opponentRisk'))
+    _, user = build_blood_flow_prompt('稳健', view, built)
+    rendered = next(c for c in json.loads(user)['candidates'] if c['id'] == candidate['id'])
+    assert rendered['features']['opponentRisk'] == candidate['features']['opponentRisk']
 
 
 def test_no_signal_keeps_old_candidate_shape():
@@ -222,7 +217,6 @@ def test_no_signal_keeps_old_candidate_shape():
     view = make_room(engine)._seat_view(0)
     built = build_blood_flow_candidates(view, 'req-quiet')
     assert all('opponentRisk' not in c['features'] for c in built['candidates'])
-    assert all('风险赔付' not in _candidate_summary(c) for c in built['candidates'])
 
 
 def test_switch_off_candidates_have_no_risk_feature():
@@ -327,6 +321,14 @@ def test_prompt_builds_system_and_user_payload_with_ev():
     assert payload.pop('styleSpeechGuide').startswith('台词风格沉着自然')
     assert other_payload.pop('styleSpeechGuide').startswith('台词风格简短克制')
     assert other_payload == payload
+    assert 'scores' not in payload
+    assert [(p['seat'], p['score']) for p in payload['publicPlayers']] == [
+        (p['seat'], p['score']) for p in view['players']
+    ]
+    assert payload['candidates'] == [
+        {'id': c['id'], 'label': c['label'], 'features': c['features']}
+        for c in built['candidates']
+    ]
     assert payload['engineSuggestion'] == next(
         c['id'] for c in built['candidates'] if c['action']['kind'] == 'win')
     win = next(c for c in payload['candidates'] if c['features'].get('ev', {}).get('win'))

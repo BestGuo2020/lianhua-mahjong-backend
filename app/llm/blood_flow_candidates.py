@@ -440,7 +440,6 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
         'wallCount': view.get('wallCount'),
         'locked': view['public']['seats'][seat]['locked'],
         'wins': [s['winCount'] for s in view['public']['seats']],
-        'scores': [p.get('score') for p in view['players']],
         'publicPlayers': [{'seat': p.get('seat'), 'score': p.get('score'),
                            'discards': [tile_name(t) for t in p.get('discards', [])],
                            'melds': [{'type': m.get('type'), 'tiles': [tile_name(t) for t in m.get('tiles', [])]}
@@ -469,42 +468,6 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
         **({'bigHandRoute': built['bigHandRoute']} if built.get('bigHandRoute') else {}),
         'candidates': [{
             'id': c['id'], 'label': c['label'], 'features': c['features'],
-            'summary': _candidate_summary(c),
         } for c in built['candidates']],
     }
     return system, json.dumps(user_payload, ensure_ascii=False)
-
-
-def _candidate_summary(candidate: dict) -> str:
-    parts = [f"{candidate['id']} {candidate['label']}"]
-    features = candidate['features']
-    if features.get('scoreDelta') is not None:
-        parts.append(f"收益：{features['scoreDelta']}")
-    ev = features.get('ev') or {}
-    if ev.get('win'):
-        win = ev['win']
-        parts.append(f"期望：立即{win['immediateTotal']}+连锁{win['lockedChain']}")
-        if win.get('declinedReason'):
-            parts.append(f"低于{'早' if win['floorStage'] == 'early' else '残' if win['floorStage'] == 'late' else '中'}局首胡门槛{win['floor']}，潜力：{win['declinedReason']}")
-    if ev.get('reform'):
-        reform = ev['reform']
-        parts.append(f"改张：连锁{reform['chain']}（单吊任意听）" if reform['anyWait']
-                     else f"改张：连锁{reform['chain']}（{reform['waitCount']}听口）")
-    if ev.get('rob'):
-        parts.append(f"抢杠期望：胡{ev['rob']['winEv']} vs 过{ev['rob']['passEv']}")
-    if ev.get('developEv') is not None:
-        parts.append(f"过：发育期望{ev['developEv']}")
-    kong = features.get('kongValue')
-    if kong:
-        sign = '+' if kong['net'] > 0 else ''
-        parts.append(f"开杠价值：{sign}{kong['net']}"
-                     f"（收益{kong['gain']}−风险{kong['risk']}−自损{kong['selfLoss']['total']}）")
-        if kong.get('reasons'):
-            parts.append(f"开杠代价：{'、'.join(kong['reasons'])}")
-    risk = features.get('opponentRisk')
-    if risk:
-        signals = f"·{'、'.join(risk['signals'])}" if risk.get('signals') else ''
-        parts.append(f"风险赔付：约{risk['payment']}点（{risk['tier']}{signals}）")
-    if features.get('risks'):
-        parts.append(f"注意：{'；'.join(features['risks'])}")
-    return ' ｜ '.join(parts)

@@ -213,9 +213,8 @@ def test_kong_value_matches_ts_engine_numbers():
 
 
 def test_llm_candidate_carries_kong_value_feature():
-    """LLM 候选带 features.kongValue 拆解与摘要行（对齐前端 features.kongValue）。"""
-    from app.llm.blood_flow_candidates import (_candidate_summary,
-                                               build_blood_flow_candidates)
+    """LLM 候选带 features.kongValue 拆解（对齐前端 features.kongValue）。"""
+    from app.llm.blood_flow_candidates import build_blood_flow_candidates
     built = build_blood_flow_candidates(claim_view(LUXURY_ROUTE, tile='m3'), 'req-kong')
     gang = next((c for c in built['candidates'] if c['action']['kind'] == 'gang'), None)
     assert gang is not None, [c['action'] for c in built['candidates']]
@@ -223,8 +222,6 @@ def test_llm_candidate_carries_kong_value_feature():
     assert kong['net'] < 0
     assert kong['selfLoss']['sevenPairs'] > kong['gain']
     assert '七对' in ''.join(kong['reasons'])
-    assert '开杠价值' in _candidate_summary(gang)
-    assert '开杠代价' in _candidate_summary(gang)
     # 七对路线已废的那手：净值仍为正，AI 决策与默认建议都是杠。
     dead_view = claim_view(SEVEN_PAIRS_DEAD, tile='m5')
     suggestion = decide_blood_flow_action_ev(dead_view, BLOOD_FLOW_AI)

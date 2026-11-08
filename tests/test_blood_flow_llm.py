@@ -367,6 +367,34 @@ def claim_rig() -> BloodFlowEngine:
     return engine
 
 
+@pytest.mark.parametrize('stage,payment,locked,wins,suggestion,expect_hint', [
+    pytest.param('early', 30, False, 0, 'pass', True, id='low-early-first-win'),
+    pytest.param('mid', 30, False, 0, 'pass', False, id='mid-game'),
+    pytest.param('early', 40, False, 0, 'pass', False, id='at-floor'),
+    pytest.param('early', 30, True, 0, 'pass', False, id='locked'),
+    pytest.param('early', 30, False, 1, 'pass', False, id='already-won'),
+    pytest.param('early', 30, False, 0, 'win', False, id='engine-suggests-win'),
+])
+def test_prompt_hints_only_when_engine_passes_low_early_first_win(
+        stage, payment, locked, wins, suggestion, expect_hint):
+    view = make_room(claim_rig())._seat_view(1)
+    view['ownScore']['paymentPerPayer'] = payment
+    ev = ev_features_for(view)
+    ev['win']['win'].update(floor=40, floorStage=stage, immediateTotal=payment * 3)
+    built = build_blood_flow_candidates(
+        view, 'first-win-hint', suggestion={'kind': suggestion}, ev_by_key=ev)
+    view['public']['seats'][view['seat']].update(locked=locked, winCount=wins)
+
+    _, user = build_blood_flow_prompt('稳健', view, built)
+    payload = json.loads(user)
+    if expect_hint:
+        pass_id = next(c['id'] for c in built['candidates'] if c['action']['kind'] == 'pass')
+        assert payload['firstWinHint'] == (
+            f'早局首胡单家30点低于门槛40点，请选{pass_id}过，保留做牌空间。')
+    else:
+        assert 'firstWinHint' not in payload
+
+
 @pytest.mark.asyncio
 async def test_llm_seat_choice_is_applied_over_ev():
     engine = claim_rig()

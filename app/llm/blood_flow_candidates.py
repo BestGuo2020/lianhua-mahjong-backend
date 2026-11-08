@@ -422,6 +422,8 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
     )
     seat = view['seat']
     player = view['players'][seat]
+    seat_state = view['public']['seats'][seat]
+    current_win = view.get('ownScore')
     from app.core.blood_flow.ai import blood_flow_defense_policy, blood_flow_known_wins
     defense = blood_flow_defense_policy(view, config)
     user_payload = {
@@ -438,13 +440,13 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
                   for m in (player.get('melds') or [])],
         'jokerTiles': [tile_name(t) for t in view.get('jokers', [])],
         'wallCount': view.get('wallCount'),
-        'locked': view['public']['seats'][seat]['locked'],
+        'locked': seat_state['locked'],
         'wins': [s['winCount'] for s in view['public']['seats']],
         'publicPlayers': [{'seat': p.get('seat'), 'score': p.get('score'),
                            'discards': [tile_name(t) for t in p.get('discards', [])],
                            'melds': [{'type': m.get('type'), 'tiles': [tile_name(t) for t in m.get('tiles', [])]}
                                      for m in (p.get('melds') or [])]} for p in view['players']],
-        'currentWin': view.get('ownScore'),
+        'currentWin': current_win,
         # 顶层对手风险档（与 TS bloodFlowDecisionPrompt 同形状）：只保留有信号的对手，
         # 无信号时是空数组（字段始终存在）。数据源与候选级 features.opponentRisk 同源。
         'opponentRisk': [{'seat': seat, 'tier': profile.tier, 'signals': list(profile.signals)}
@@ -470,4 +472,17 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
             'id': c['id'], 'label': c['label'], 'features': c['features'],
         } for c in built['candidates']],
     }
+    if current_win and not seat_state['locked'] and seat_state['winCount'] == 0:
+        win_ev = next(((c['features'].get('ev') or {}).get('win')
+                       for c in built['candidates'] if c['action']['kind'] == 'win'), None) or {}
+        payment = current_win.get('paymentPerPayer')
+        floor = win_ev.get('floor')
+        suggestion = built['engineSuggestion']
+        if (win_ev.get('floorStage') == 'early'
+                and isinstance(payment, (int, float)) and isinstance(floor, (int, float))
+                and payment < floor
+                and any(c['id'] == suggestion and c['action']['kind'] == 'pass'
+                        for c in built['candidates'])):
+            user_payload['firstWinHint'] = (
+                f'早局首胡单家{payment}点低于门槛{floor}点，请选{suggestion}过，保留做牌空间。')
     return system, json.dumps(user_payload, ensure_ascii=False)

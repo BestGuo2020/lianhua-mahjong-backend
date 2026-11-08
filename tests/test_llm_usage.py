@@ -89,6 +89,43 @@ async def test_deepseek_truncated_response_keeps_usage(monkeypatch, usage_record
     assert record['llm_reasoning_tokens'] == 90
 
 
+@pytest.mark.parametrize(('reasoning', 'effort', 'mode'), [
+    (False, 'low', 'always-on'),
+    (True, 'medium', 'explicit-on'),
+])
+async def test_official_gpt_sol_records_stream_usage(monkeypatch, usage_records, reasoning, effort, mode):
+    async def handler(request):
+        assert str(request.url) == 'https://api.openai.com/v1/chat/completions'
+        payload = json.loads(request.content)
+        assert payload['reasoning_effort'] == effort
+        assert payload['stream_options'] == {'include_usage': True}
+        assert 'temperature' not in payload and 'top_p' not in payload
+        assert 'max_tokens' not in payload
+        assert ('max_completion_tokens' in payload) is reasoning
+        return _stream(
+            {'choices': [{'delta': {'content': '{"choice":"A1"}'}, 'finish_reason': 'stop'}]},
+            {'choices': [], 'usage': {
+                'prompt_tokens': 1500, 'completion_tokens': 41,
+                'prompt_tokens_details': {'cached_tokens': 1024, 'cache_write_tokens': 320},
+                'completion_tokens_details': {'reasoning_tokens': 32},
+            }},
+        )
+
+    cfg = LlmServerConfig(base_url='https://api.openai.com/v1', api_key='test',
+                          model='gpt-6.1-sol', provider_id='relay_gpt')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: client)
+        assert await request_llm_decision(cfg, 'system', 'user', ['A1'], reasoning=reasoning) == ('A1', '')
+
+    record, = usage_records
+    assert record['llm_reasoning_mode'] == mode
+    assert record['llm_usage_available']
+    assert record['llm_cached_tokens'] == 1024
+    assert record['llm_cache_write_tokens'] == 320
+    assert record['llm_uncached_tokens'] == 476
+    assert record['llm_reasoning_tokens'] == 32
+
+
 async def test_cancelled_http_attempt_records_missing_usage(monkeypatch, usage_records):
     entered = asyncio.Event()
 

@@ -193,6 +193,11 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
             return _policy(kind, 'naturally-off', '该 MiniMax 型号本身不输出思考链')
         return _policy(kind, 'unknown', '无法确认该 MiniMax 型号是否支持非思考模式')
     if kind == 'openai':
+        if re.match(r'^gpt-6\.1-sol(?:-|$)', name):
+            return _policy(
+                kind, 'explicit-on' if reasoning else 'always-on',
+                'GPT-6.1 Sol 疑难时用中档推理，普通决策用低档推理',
+                {'reasoning_effort': 'medium' if reasoning else 'low'})
         if re.match(r'^o(?:1|3|4)(?:[.-]|$)', name):
             return _policy(kind, 'reasoning-only', 'OpenAI o 系列属于推理模型')
         if re.match(r'^gpt-5(?:[.-]|$)', name):

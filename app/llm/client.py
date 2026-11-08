@@ -224,12 +224,15 @@ def _usage_fields(usage: dict) -> dict:
     uncached = _reported_tokens(usage, 'prompt_cache_miss_tokens')
     if uncached is None and prompt is not None and cached is not None and cached <= prompt:
         uncached = prompt - cached
+    cache_write = _reported_tokens(prompt_details, 'cache_creation_input_tokens')
+    if cache_write is None:
+        cache_write = _reported_tokens(prompt_details, 'cache_write_tokens')
     return {
         'llm_usage_available': prompt is not None and completion is not None,
         'llm_prompt_tokens': prompt,
         'llm_cached_tokens': cached,
         'llm_uncached_tokens': uncached,
-        'llm_cache_write_tokens': _reported_tokens(prompt_details, 'cache_creation_input_tokens'),
+        'llm_cache_write_tokens': cache_write,
         'llm_completion_tokens': completion,
         'llm_reasoning_tokens': _reported_tokens(usage.get('completion_tokens_details'),
                                                  'reasoning_tokens'),
@@ -296,6 +299,11 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             max_tokens = max(max_tokens, 1024)
         max_tokens = adaptive_reasoning_budget(cfg, reasoning_policy, max_tokens)
     payload.update(reasoning_policy.request_body)
+    if urlsplit(endpoint).hostname == 'api.openai.com':
+        payload['stream_options'] = {'include_usage': True}
+        if payload.get('reasoning_effort') not in (None, 'none'):
+            payload.pop('temperature', None)
+            payload.pop('top_p', None)
     # DashScope 上别家模型（glm / kimi / deepseek…）的原生思考参数无效，统一改用 enable_thinking。
     if is_dashscope_endpoint(cfg.base_url):
         dashscope_body = dashscope_thinking_body(reasoning_policy.mode)

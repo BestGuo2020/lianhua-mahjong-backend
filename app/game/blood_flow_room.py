@@ -559,9 +559,14 @@ class BloodFlowRoomSession:
             # 预算 = 决策窗口 − 安全余量 − 思考停顿：aiThink 前置后总耗时仍不越过 deadline。
             timeout_ms = max(2_000, min(int(cfg.timeout_s * 1000),
                                         self.decision_ms - 500 - self.pace.get('aiThink', 0)))
-            choice, message = await asyncio.wait_for(
-                self.llm_request(cfg, system, user, candidate_ids, False),
-                timeout=timeout_ms / 1000)
+            window = built['window']
+            with logger.contextualize(
+                    room_id=self.room_id, seat=seat, llm_round=engine.round_id,
+                    llm_ruleset=self.ruleset_id, llm_window=window['kind'],
+                    llm_origin=(window.get('source') or {}).get('kind'), llm_request_id=request_id):
+                choice, message = await asyncio.wait_for(
+                    self.llm_request(cfg, system, user, candidate_ids, False),
+                    timeout=timeout_ms / 1000)
             match = next((c for c in built['candidates'] if c['id'] == choice), None)
             action = match['action'] if match is not None else None
         except Exception as exc:  # noqa: BLE001 - 任何失败都回退 EV，不阻塞对局

@@ -5,10 +5,12 @@
 """
 
 import asyncio
+import hashlib
 import json
 import re
 import time
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 import httpx
 from loguru import logger
@@ -161,11 +163,11 @@ def _emit_reasoning_progress(callback: Optional[Callable[[], None]]) -> None:
 
 
 async def _read_sse_response(response: httpx.Response,
-                             on_reasoning_progress: Optional[Callable[[], None]]):
+                             on_reasoning_progress: Optional[Callable[[], None]],
+                             usage: dict):
     """读取 OpenAI 兼容 SSE；只发进度脉冲，不保留或暴露原始推理文本。"""
     content_parts: list[str] = []
     finish_reason = None
-    usage: dict = {}
     saw_data = False
     saw_reasoning = False
     async for raw_line in response.aiter_lines():
@@ -180,8 +182,11 @@ async def _read_sse_response(response: httpx.Response,
         except ValueError:
             continue
         saw_data = True
-        if isinstance(event.get('usage'), dict):
-            usage = event['usage']
+        event_usage = event.get('usage')
+        if isinstance(event_usage, dict) and event_usage:
+            # Keep the reported usage even if the stream fails before it closes.
+            usage.clear()
+            usage.update(event_usage)
         event_reasoning = _has_reasoning_value(event.get('reasoning'))
         choices = event.get('choices') or []
         if choices:
@@ -201,7 +206,34 @@ async def _read_sse_response(response: httpx.Response,
             _emit_reasoning_progress(on_reasoning_progress)
     if not saw_data:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'API 流式响应没有有效数据')
-    return ''.join(content_parts), finish_reason, usage, saw_reasoning
+    return ''.join(content_parts), finish_reason, saw_reasoning
+
+
+def _reported_tokens(data: object, field: str) -> Optional[int]:
+    value = data.get(field) if isinstance(data, dict) else None
+    return value if type(value) is int and value >= 0 else None
+
+
+def _usage_fields(usage: dict) -> dict:
+    prompt = _reported_tokens(usage, 'prompt_tokens')
+    completion = _reported_tokens(usage, 'completion_tokens')
+    prompt_details = usage.get('prompt_tokens_details')
+    cached = _reported_tokens(usage, 'prompt_cache_hit_tokens')
+    if cached is None:
+        cached = _reported_tokens(prompt_details, 'cached_tokens')
+    uncached = _reported_tokens(usage, 'prompt_cache_miss_tokens')
+    if uncached is None and prompt is not None and cached is not None and cached <= prompt:
+        uncached = prompt - cached
+    return {
+        'llm_usage_available': prompt is not None and completion is not None,
+        'llm_prompt_tokens': prompt,
+        'llm_cached_tokens': cached,
+        'llm_uncached_tokens': uncached,
+        'llm_cache_write_tokens': _reported_tokens(prompt_details, 'cache_creation_input_tokens'),
+        'llm_completion_tokens': completion,
+        'llm_reasoning_tokens': _reported_tokens(usage.get('completion_tokens_details'),
+                                                 'reasoning_tokens'),
+    }
 
 
 async def _call_once(cfg: LlmServerConfig, system: str, user: str,
@@ -269,6 +301,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         dashscope_body = dashscope_thinking_body(reasoning_policy.mode)
         if dashscope_body:
             payload.update(dashscope_body)
+        if reasoning_policy.provider_type == 'qwen':
+            payload['stream_options'] = {'include_usage': True}
     if max_tokens is not None:
         if reasoning and reasoning_policy.provider_type == 'openai':
             payload['max_completion_tokens'] = max_tokens
@@ -282,12 +316,20 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
     request_started = time.monotonic()
+    attempt_log = logger.bind(llm_provider=cfg.provider_id or 'default',
+                              llm_model=cfg.model, llm_attempt=attempt_no)
+    usage: dict = {}
+    finish_reason = None
+    http_status = None
+    http_started = False
     try:
         async with llm_semaphore():
+            http_started = True
             async with client.stream(
                     'POST', endpoint, headers=headers, json=payload,
                     timeout=budget_s) as response:
-                if response.status_code != 200:
+                http_status = response.status_code
+                if http_status != 200:
                     detail = (await response.aread()).decode(errors='replace')[:200]
                     raise LlmClientError(
                         LlmClientError.KIND_HTTP,
@@ -300,6 +342,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
                     except ValueError as exc:
                         raise LlmClientError(
                             LlmClientError.KIND_PARSE, 'API 响应非 JSON') from exc
+                    if isinstance(body.get('usage'), dict):
+                        usage = body['usage']
                     choices = body.get('choices') or []
                     if not choices:
                         raise LlmClientError(
@@ -308,7 +352,6 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
                     message_obj = first.get('message') or {}
                     message = message_obj.get('content')
                     finish_reason = first.get('finish_reason')
-                    usage = body.get('usage') if isinstance(body.get('usage'), dict) else {}
                     leaked_reasoning = any(
                         _has_reasoning_value(message_obj.get(key))
                         for key in ('reasoning_content', 'reasoning', 'thinking')
@@ -316,13 +359,11 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
                     if leaked_reasoning:
                         _emit_reasoning_progress(on_reasoning_progress)
                 else:
-                    message, finish_reason, usage, leaked_reasoning = \
-                        await _read_sse_response(response, on_reasoning_progress)
+                    message, finish_reason, leaked_reasoning = \
+                        await _read_sse_response(response, on_reasoning_progress, usage)
     except httpx.TimeoutException as exc:
         elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
-        logger.bind(
-            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
-            llm_attempt=attempt_no,
+        attempt_log.bind(
             llm_elapsed_ms=elapsed_ms,
             llm_error='timeout',
         ).warning(
@@ -333,15 +374,25 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         raise
     except httpx.HTTPError as exc:
         elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
-        logger.bind(
-            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
-            llm_attempt=attempt_no,
+        attempt_log.bind(
             llm_elapsed_ms=elapsed_ms,
             llm_error='network',
         ).warning(
             f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
             f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=network')
         raise LlmClientError(LlmClientError.KIND_NETWORK, f'网络错误: {exc}') from exc
+    finally:
+        if http_started:
+            attempt_log.bind(
+                llm_event='usage',
+                llm_endpoint=urlsplit(endpoint).netloc,
+                llm_reasoning_mode=reasoning_policy.mode,
+                llm_system_hash=hashlib.sha256(system.encode()).hexdigest()[:12],
+                llm_elapsed_ms=round((time.monotonic() - request_started) * 1000, 1),
+                llm_http_status=http_status,
+                llm_finish_reason=finish_reason,
+                **_usage_fields(usage),
+            ).info('LLM 上游用量')
     details = usage.get('completion_tokens_details') \
         if isinstance(usage.get('completion_tokens_details'), dict) else {}
     reasoning_tokens = details.get('reasoning_tokens')
@@ -363,9 +414,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     if reasoning:
         record_reasoning_success(cfg, reasoning_policy, reasoning_token_count)
     elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
-    logger.bind(
-        llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
-        llm_attempt=attempt_no,
+    attempt_log.bind(
         llm_elapsed_ms=elapsed_ms,
         llm_finish_reason=finish_reason,
         llm_completion_tokens=usage.get('completion_tokens'),

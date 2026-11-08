@@ -11,6 +11,8 @@ import asyncio
 import inspect
 from typing import Callable, Optional
 
+from loguru import logger
+
 from app.game.player import AIPlayer, ClaimContext, TurnContext
 from app.core.kong_projection import project_kong_bloom
 from app.llm.candidates import build_request, inferior_classic_discard
@@ -56,7 +58,8 @@ class LLMPlayer(AIPlayer):
                  on_message: Optional[Callable[..., None]] = None,
                  on_fallback: Optional[Callable[..., None]] = None,
                  on_status: Optional[Callable[..., None]] = None,
-                 reasoning: Optional[ConditionalReasoningCoordinator] = None):
+                 reasoning: Optional[ConditionalReasoningCoordinator] = None,
+                 room_id: str = ''):
         super().__init__(delays=delays, random=random, rule_set=rule_set)
         self.config = config or load_llm_config()
         self.stats = stats if stats is not None else {
@@ -66,6 +69,7 @@ class LLMPlayer(AIPlayer):
         }
         self.requests = 0  # 本座位自建以来请求数（房间预算近似：每座位独立计数）
         self.seat = seat
+        self.room_id = room_id
         self.provider_id = provider_id
         self.on_message = on_message
         self._on_message_accepts_metadata = _accepts_message_metadata(on_message)
@@ -211,10 +215,14 @@ class LLMPlayer(AIPlayer):
                 except Exception:
                     pass
         try:
-            choice, message = await request_llm_decision(
-                self.config, system, user, ids, reasoning=use_reasoning,
-                deadline_ms=self.reasoning.config.deadline_ms if use_reasoning else None,
-                on_reasoning_progress=on_reasoning_progress)
+            with logger.contextualize(
+                    room_id=self.room_id, seat=self.seat, llm_round=request['state']['roundIndex'],
+                    llm_ruleset=request['ruleCode'], llm_window=request['decision'],
+                    llm_origin=request['state']['turnOrigin'], llm_request_id=request['requestId']):
+                choice, message = await request_llm_decision(
+                    self.config, system, user, ids, reasoning=use_reasoning,
+                    deadline_ms=self.reasoning.config.deadline_ms if use_reasoning else None,
+                    on_reasoning_progress=on_reasoning_progress)
         except Exception:
             self.stats['fallbacks'] += 1
             notify_fallback()

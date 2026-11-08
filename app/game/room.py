@@ -975,7 +975,8 @@ class RoomSession:
                                                  on_message=self._on_llm_message,
                                                  on_fallback=self._on_llm_fallback,
                                                  on_status=self._on_llm_status,
-                                                 reasoning=conditional_reasoning))
+                                                 reasoning=conditional_reasoning,
+                                                 room_id=self.room_id))
                 else:
                     controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
         return controllers

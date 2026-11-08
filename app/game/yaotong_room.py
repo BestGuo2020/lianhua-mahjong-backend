@@ -36,6 +36,16 @@ from app.ws.manager import ConnectionManager
 PACE_MS_AFTER_CLAIM_GANG = 0.55   # 明杠补牌前
 PACE_MS_AFTER_KONG_SETTLE = 0.6   # 补杠结算/补牌前
 
+# 与前端幺筒 quickChat.ts / emotes.ts 的固定资源 ID 对齐。
+QUICK_CHAT_IDS = frozenset({
+    'follow', 'listen', 'draw', 'hurry', 'praise', 'think',
+    'hello', 'stay', 'let-draw', 'feed-peng', 'hurt', 'oops-hu',
+})
+EMOTE_IDS = frozenset({'tomato', 'egg', 'pan', 'banana', 'kiss', 'like'})
+QUICK_CHAT_GAP = 0.7
+QUICK_CHAT_REPEAT = 5.0
+EMOTE_GAP = 0.35
+
 
 @dataclass
 class _Controller:
@@ -120,6 +130,8 @@ class YaotongRoomSession:
         self._opening_round = 0
         self._opening_confirmations: set[int] = set()
         self._continue_confirmations: set[int] = set()
+        self._quick_chat_sent: dict[int, tuple[str, float]] = {}
+        self._emote_sent: dict[int, float] = {}
         self.auto_seats: set[int] = set()
         self._wake = asyncio.Event()
         self._action_epoch = 0
@@ -347,6 +359,8 @@ class YaotongRoomSession:
         self._opening_round = self.state.hand_number
         self._opening_confirmations = set()
         self._reaction_key = None
+        self._quick_chat_sent.clear()
+        self._emote_sent.clear()
 
     def _apply_names(self) -> None:
         if self.state is None:
@@ -837,10 +851,49 @@ class YaotongRoomSession:
 
     # ── 客户端消息 ──────────────────────────────────────
 
+    def _handle_interaction(self, seat: int, kind: str, message: dict) -> tuple[bool, str]:
+        state = self.state
+        hand_number = message.get('round')
+        if (self.closed or self.status != 'playing' or state is None or state.phase == 'settled'
+                or self.match_id is None or message.get('matchId') != self.match_id
+                or type(hand_number) is not int or hand_number != state.hand_number):
+            return False, 'STALE_INTERACTION'
+        if self.seats[seat] is None:
+            return False, 'NOT_HUMAN_SEAT'
+
+        event = {'kind': kind, 'matchId': self.match_id, 'round': state.hand_number, 'fromSeat': seat}
+        now = time.monotonic()
+        if kind == 'quick_chat':
+            phrase_id = message.get('phraseId')
+            if not isinstance(phrase_id, str) or phrase_id not in QUICK_CHAT_IDS:
+                return False, 'INVALID_INTERACTION'
+            previous, last_at = self._quick_chat_sent.get(seat, ('', -math.inf))
+            elapsed = now - last_at
+            if elapsed < QUICK_CHAT_GAP or (phrase_id == previous and elapsed < QUICK_CHAT_REPEAT):
+                return False, 'INTERACTION_RATE_LIMITED'
+            self._quick_chat_sent[seat] = (phrase_id, now)
+            event['phraseId'] = phrase_id
+        else:
+            emote = message.get('emote')
+            target = message.get('targetSeat')
+            if (not isinstance(emote, str) or emote not in EMOTE_IDS
+                    or type(target) is not int or not 0 <= target < self.player_count or target == seat):
+                return False, 'INVALID_INTERACTION'
+            if now - self._emote_sent.get(seat, -math.inf) < EMOTE_GAP:
+                return False, 'INTERACTION_RATE_LIMITED'
+            self._emote_sent[seat] = now
+            event.update(emote=emote, targetSeat=target)
+
+        self.conn.broadcast(event)
+        return True, ''
+
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         if message.get('type') == 'ping' or message.get('kind') == 'ping':
             self.conn.send_to_seat_nowait(seat, {'kind': 'pong'})
             return True, ''
+        kind = message.get('kind')
+        if kind in ('quick_chat', 'emote'):
+            return self._handle_interaction(seat, kind, message)
         if message.get('kind') == 'auto':
             enabled = message.get('enabled')
             if not isinstance(enabled, bool):

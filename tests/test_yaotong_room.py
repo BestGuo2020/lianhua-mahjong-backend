@@ -62,6 +62,47 @@ def test_snapshot_hides_other_hands_and_exposes_own_options():
     assert second['view']['players'][0]['hand'] == []
 
 
+def test_interactions_use_authoritative_seats_and_only_broadcast_valid_current_hand_messages(monkeypatch):
+    room = YaotongRoomSession('YT3')
+    room.join_or_rejoin('甲', player_id='wakudemo-a')
+    room.join_or_rejoin('乙', player_id='wakudemo-b')
+    events = []
+    monkeypatch.setattr(room.conn, 'broadcast', events.append)
+    hand = {'matchId': 'match', 'round': 1}
+    phrase = {**hand, 'kind': 'quick_chat', 'phraseId': 'hello'}
+    emote = {**hand, 'kind': 'emote', 'emote': 'tomato', 'targetSeat': 0}
+    assert room.handle_client_message(1, phrase) == (False, 'STALE_INTERACTION')
+    room.status = 'playing'
+    room.match_id = hand['matchId']
+    room.state = fixed_factory(StartOptions(length=4))
+
+    assert room.handle_client_message(1, {**phrase, 'phraseId': []}) == (False, 'INVALID_INTERACTION')
+    assert room.handle_client_message(1, {**emote, 'targetSeat': False}) == (False, 'INVALID_INTERACTION')
+    assert room.handle_client_message(1, {**emote, 'targetSeat': 1}) == (False, 'INVALID_INTERACTION')
+    assert room.handle_client_message(1, {**emote, 'matchId': 'old'}) == (False, 'STALE_INTERACTION')
+    assert room.handle_client_message(1, {**phrase, 'round': True}) == (False, 'STALE_INTERACTION')
+
+    assert room.handle_client_message(1, {**phrase, 'fromSeat': 3, 'text': '任意文本'}) == (True, '')
+    assert room.handle_client_message(1, phrase) == (False, 'INTERACTION_RATE_LIMITED')
+    assert room.handle_client_message(0, phrase) == (True, '')
+    assert room.handle_client_message(1, emote) == (True, '')
+    assert room.handle_client_message(1, emote) == (False, 'INTERACTION_RATE_LIMITED')
+    assert events == [
+        {**phrase, 'fromSeat': 1},
+        {**phrase, 'fromSeat': 0},
+        {**emote, 'fromSeat': 1},
+    ]
+
+    room.state.phase = 'settled'
+    assert room.handle_client_message(1, emote) == (False, 'STALE_INTERACTION')
+    room.state = fixed_factory(StartOptions(length=4))
+    room.state.hand_number = 2
+    room._prepare_opening()
+    assert room.handle_client_message(1, phrase) == (False, 'STALE_INTERACTION')
+    assert room.handle_client_message(1, {**phrase, 'round': 2}) == (True, '')
+    assert events[-1] == {**phrase, 'round': 2, 'fromSeat': 1}
+
+
 def test_start_rejects_llm_seats():
     room = YaotongRoomSession('YT3')
     room.join_or_rejoin('甲', player_id='wakudemo-a')

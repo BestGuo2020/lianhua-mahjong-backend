@@ -405,11 +405,10 @@ _STYLE_SPEECH_GUIDE = {
 
 def build_blood_flow_prompt(style: str, view: dict, built: dict,
                             config: BloodFlowAiConfig = BLOOD_FLOW_LLM_AI) -> tuple[str, str]:
-    """血流决策提示词：system（人设 + 血流出牌 + EV 依据 + 可覆盖要理由）+ user（数据 JSON）。"""
+    """血流决策提示词，固定规则排在性格和动态 JSON 字段之前。"""
     system = (
-        f'你是广东麻将桌上的牌友，风格：{style}。\n'
         '你的任务只有一件事：从候选动作列表中选择一个编号，并输出一句 ≤16 字的牌桌台词。\n'
-        f'{_STYLE_SPEECH_GUIDE.get(style, _STYLE_SPEECH_GUIDE["稳健"])}\n'
+        '你是广东麻将桌上的牌友。\n'
         '候选动作均已按血流规则校验合法；规则摘要与候选特征是唯一权威事实。\n'
         '若提供 bigHandRoute，它只是路线建议，候选仍包含所有已提供的合法动作。\n'
         'engineSuggestion 是本地期望收益模型的贪婪建议，可以覆盖它来表现自己的性格与判断，'
@@ -427,6 +426,11 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
     defense = blood_flow_defense_policy(view, config)
     user_payload = {
         'ruleSummary': blood_flow_prompt_rules(),
+        'tileRules': '手中两种精牌可替代其他牌；白板只可替代精面或自身（白板本身翻精时按精牌）。别人打出的精按本张使用。',
+        'discardPolicy': '首胡前有非精弃牌可选时，候选已保护精牌；非精白板按受限替代价值、进张、番型和风险评估，价值相近优先保留。锁手后不能换手，新摸牌不能胡则必须摸切，包括精牌。',
+        'lockImpact': '首次胡后保留当前暗手和副露，只能对新摸牌胡、过或摸切，不能再改手或吃碰杠。已胡仍须付款。',
+        'style': style,
+        'styleSpeechGuide': _STYLE_SPEECH_GUIDE.get(style, _STYLE_SPEECH_GUIDE['稳健']),
         'requestId': built['requestId'],
         'window': built['window'] and {k: built['window'][k] for k in ('id', 'kind', 'source')},
         'hand': [tile_name(t) for t in (player.get('hand') or [])],
@@ -434,8 +438,6 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
                   for m in (player.get('melds') or [])],
         'jokerTiles': [tile_name(t) for t in view.get('jokers', [])],
         'wallCount': view.get('wallCount'),
-        'tileRules': '手中两种精牌可替代其他牌；白板只可替代精面或自身（白板本身翻精时按精牌）。别人打出的精按本张使用。',
-        'discardPolicy': '首胡前有非精弃牌可选时，候选已保护精牌；非精白板按受限替代价值、进张、番型和风险评估，价值相近优先保留。锁手后不能换手，新摸牌不能胡则必须摸切，包括精牌。',
         'locked': view['public']['seats'][seat]['locked'],
         'wins': [s['winCount'] for s in view['public']['seats']],
         'scores': [p.get('score') for p in view['players']],
@@ -444,7 +446,6 @@ def build_blood_flow_prompt(style: str, view: dict, built: dict,
                            'melds': [{'type': m.get('type'), 'tiles': [tile_name(t) for t in m.get('tiles', [])]}
                                      for m in (p.get('melds') or [])]} for p in view['players']],
         'currentWin': view.get('ownScore'),
-        'lockImpact': '首次胡后保留当前暗手和副露，只能对新摸牌胡、过或摸切，不能再改手或吃碰杠。已胡仍须付款。',
         # 顶层对手风险档（与 TS bloodFlowDecisionPrompt 同形状）：只保留有信号的对手，
         # 无信号时是空数组（字段始终存在）。数据源与候选级 features.opponentRisk 同源。
         'opponentRisk': [{'seat': seat, 'tier': profile.tier, 'signals': list(profile.signals)}

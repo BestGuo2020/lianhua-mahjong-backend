@@ -316,6 +316,17 @@ def test_prompt_builds_system_and_user_payload_with_ev():
     system, user = build_blood_flow_prompt('稳健', view, built)
     assert '可以覆盖' in system and '期望收益' in system
     payload = json.loads(user)
+    other_system, other_user = build_blood_flow_prompt('高冷', view, built)
+    assert other_system == system
+    assert list(payload)[:6] == [
+        'ruleSummary', 'tileRules', 'discardPolicy', 'lockImpact', 'style', 'styleSpeechGuide',
+    ]
+    other_payload = json.loads(other_user)
+    assert payload.pop('style') == '稳健'
+    assert other_payload.pop('style') == '高冷'
+    assert payload.pop('styleSpeechGuide').startswith('台词风格沉着自然')
+    assert other_payload.pop('styleSpeechGuide').startswith('台词风格简短克制')
+    assert other_payload == payload
     assert payload['engineSuggestion'] == next(
         c['id'] for c in built['candidates'] if c['action']['kind'] == 'win')
     win = next(c for c in payload['candidates'] if c['features'].get('ev', {}).get('win'))

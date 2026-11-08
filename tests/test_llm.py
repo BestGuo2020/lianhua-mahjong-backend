@@ -422,12 +422,16 @@ class TestPromptRules:
         built = build_request(turn_ctx(hand=['white', 'm1', 'm2']), get_rule_set(),
                               'r1', 'v1', 'turn')
         system, user = build_prompt('稳健', built['request'])
+        other_system, other_user = build_prompt('高冷', built['request'])
+        assert other_system == system
+        assert user.startswith('风格：稳健。\n台词风格沉着自然')
+        assert other_user.startswith('风格：高冷。\n台词风格简短克制')
         assert '规则摘要未列出的特殊牌型一律视为不支持' in system
         assert '响应别人弃牌只能是大明杠' in system
-        assert '不支持七对、十三幺、十三烂、七星十三烂' in user
-        assert '【癞子规则】白板是本玩法的万能牌' in user
+        assert '不支持七对、十三幺、十三烂、七星十三烂' in system
+        assert '【癞子规则】白板是本玩法的万能牌' in system
         assert '出白板' not in user
-        assert '只可自摸或抢杠胡' in user
+        assert '只可自摸或抢杠胡' in system
         assert '决策优先级' in system
         assert '【默认参考】' in user
         assert '游戏引擎' not in system
@@ -496,8 +500,8 @@ class TestPromptRules:
         rules.round_state.joker_tiles = ['m5', 'm6']
         ctx = turn_ctx(hand=['m5', 'm6', 'white', 'm1'], jokers=['m5', 'm6'])
         built = build_request(ctx, rules, 'r1', 'v1', 'turn')
-        _, user = build_prompt('稳健', built['request'])
-        assert '翻出的牌面及其同序下一张均为精牌' in user
+        system, user = build_prompt('稳健', built['request'])
+        assert '翻出的牌面及其同序下一张均为精牌' in system
         assert '精牌「5万、6万」可代任意牌' in user
         assert '白板只能替代上述精牌面或白板本身' in user
         assert '出5万' not in user

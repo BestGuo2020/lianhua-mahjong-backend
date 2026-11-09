@@ -1,0 +1,10 @@
+{
+  "nodeVersion": "20.18.0",
+  "outputDirectory": "./public",
+  "cloudFunctions": {
+    "regions": {
+      "overseas": ["ap-singapore"]
+    },
+    "maxDuration": 120
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "mahjong-edgeone-gpt-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

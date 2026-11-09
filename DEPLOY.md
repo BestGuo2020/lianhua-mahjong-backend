@@ -132,6 +132,11 @@ WakuDemo 跨站 Cookie 在部分浏览器会受第三方 Cookie 策略影响，�
   全被代理吃掉，表现为「决策超时」。
 - 单 IP 每分钟上限由 `LLM_RELAY_RATE_LIMIT_PER_MINUTE` 控制（缺省 600）。
 
+### 联机 GPT 入口（EdgeOne）
+
+经典、翻精、血流和幺筒的联机 GPT 席位共用 `relay_gpt`。新加坡云函数、服务器鉴权和切换配置见
+[EdgeOne GPT 入口部署说明](deploy/edgeone-gpt-gateway/README.md)。
+
 ## 5. 已知边界
 
 - 服务器必须能访问 `ghcr.io`（国内服务器可考虑给 `ghcr.io` 配加速，或改推腾讯云 TCR）。

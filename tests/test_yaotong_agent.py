@@ -254,6 +254,60 @@ async def test_agent_audio_from_a_previous_hand_is_dropped(room, monkeypatch):
     assert queue.empty()
 
 
+@pytest.mark.parametrize('audio_ready', [True, False], ids=['during-request', 'after-request'])
+async def test_slow_agent_request_clears_its_thinking_cue_after_the_decision(room, monkeypatch, audio_ready):
+    room.on_connect(0)
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    release_model = asyncio.Event()
+    release_audio = asyncio.Event()
+    tts_started = asyncio.Event()
+    config = room.llm_seats[3].config
+    thinking_text = yaotong_room.reasoning_status_speech(config.style)
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        await release_model.wait()
+        return candidate_ids[0], ''
+
+    async def synthesize(text, style, provider_id):
+        if text == thinking_text:
+            assert (style, provider_id) == (config.style, config.provider_id)
+            tts_started.set()
+            await release_audio.wait()
+        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
+
+    monkeypatch.setattr(yaotong_room, 'LLM_THINKING_CUE_DELAY', 0)
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
+    turn = asyncio.create_task(room._act_ai(3, delay=0))
+    try:
+        status = await asyncio.wait_for(queue.get(), 1)
+        assert (status['kind'], status['seat'], status['active'], status['text']) == (
+            'llm_status', 3, True, thinking_text,
+        )
+        assert room.llm_seats[3].requests == 1
+        await asyncio.wait_for(tts_started.wait(), 1)
+        if audio_ready:
+            release_audio.set()
+            audio = await asyncio.wait_for(queue.get(), 1)
+            assert (audio['kind'], audio['messageId'], audio['purpose']) == (
+                'llm_audio', status['messageId'], 'commentary',
+            )
+    finally:
+        release_model.set()
+        await turn
+    release_audio.set()
+    await asyncio.gather(*room._llm_audio_tasks)
+    stopped = queue.get_nowait()
+    assert stopped['kind'] == 'llm_status' and stopped['active'] is False
+    assert (stopped['messageId'], stopped['matchId'], stopped['round']) == (
+        status['messageId'], status['matchId'], status['round'],
+    )
+    assert room.state.players[3].river
+    assert all(message.get('messageId') != status['messageId']
+               for message in (queue.get_nowait() for _ in range(queue.qsize())))
+
+
 @pytest.mark.parametrize('tts_result', ['audio', 'missing', 'error'])
 async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeypatch, tts_result):
     room.on_connect(0)
@@ -307,8 +361,10 @@ async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeyp
 
 
 @pytest.mark.parametrize('audio_available', [True, False])
-async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatch, audio_available):
+async def test_llm_win_audio_precedes_round_reactions_after_the_match_settles(room, monkeypatch, audio_available):
     room.on_connect(0)
+    room._opening_confirmations.add(0)
+    room.llm_seats[2] = yaotong_agent.YaotongDiscardAgent(LlmServerConfig(style='高冷', provider_id='other'))
     queue = asyncio.Queue()
     room.conn.register(0, queue, None)
     player = room.state.players[3]
@@ -316,8 +372,10 @@ async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatc
     player.hand = [1, 2, 3, 4, 5, 6, 19, 20, 21, 14, 14, 24, 25, 26]
     player.drawn = 26
     release_audio = asyncio.Event()
+    voices = []
 
-    async def synthesize(*_):
+    async def synthesize(text, style, provider_id):
+        voices.append((text, style, provider_id))
         await release_audio.wait()
         return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True) if audio_available else None
 
@@ -326,8 +384,11 @@ async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatc
     assert queue.get_nowait()['roundResult']['winners'] == [3]
     speech = queue.get_nowait()
     assert (speech['kind'], speech['actionKind'], speech['text']) == ('llm_message', 'win', '自摸！')
-    room.match_finished = True
-    room._cancel_llm_audio(keep_win=True)
+    room.state.result = replace(room.state.result, finished=True)
+    await asyncio.wait_for(room._drive(), 1)
+    assert room.match_finished
+    assert all(message.get('purpose') != 'round-reaction'
+               for message in (queue.get_nowait() for _ in range(queue.qsize())))
     release_audio.set()
     await asyncio.gather(*room._llm_audio_tasks)
     audio = queue.get_nowait()
@@ -335,3 +396,15 @@ async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatc
         assert audio['kind'] == 'llm_audio' and audio['messageId'] == speech['id']
     else:
         assert audio == {**speech, 'hasAudio': False}
+    for seat, lines in ((3, yaotong_room._LLM_WIN_LINES['self-draw']), (2, yaotong_room._LLM_LOSS_LINES)):
+        reaction = queue.get_nowait()
+        config = room.llm_seats[seat].config
+        assert (reaction['kind'], reaction['purpose'], reaction['seat'], reaction['hasAudio']) == (
+            'llm_message', 'round-reaction', seat, audio_available,
+        )
+        assert reaction['text'] in lines[config.style]
+        assert (reaction['text'], config.style, config.provider_id) in voices
+        if audio_available:
+            reaction_audio = queue.get_nowait()
+            assert (reaction_audio['kind'], reaction_audio['messageId']) == ('llm_audio', reaction['id'])
+    assert queue.empty()

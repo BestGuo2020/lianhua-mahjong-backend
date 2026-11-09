@@ -29,12 +29,15 @@ from app.core.yaotong.hands import waits
 from app.core.yaotong.mode import action_protection, protection_reason
 from app.core.yaotong.tiles import YAO
 from app.core.yaotong.types import Command, GameState
-from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
+from app.game.room import (
+    ROOM_LIFETIME, RoomError, _LLM_DRAW_LINES, _LLM_LOSS_LINES, _LLM_WIN_LINES,
+    _make_rejoin_code, room_registry,
+)
 from app.game.yaotong_protocol import command_from_action, settlement_view, snapshot_for
 from app.llm.config import llm_server_available, load_llm_providers
-from app.llm.decision_speech import decision_speech
+from app.llm.decision_speech import decision_speech, reasoning_status_speech
 from app.llm.speech_policy import LlmSpeechPolicy
-from app.llm.yaotong_agent import YaotongDiscardAgent
+from app.llm.yaotong_agent import YaotongDiscardAgent, YaotongDiscardDecision
 from app.tts.service import get_tts_service
 from app.ws.manager import ConnectionManager
 
@@ -51,6 +54,7 @@ EMOTE_IDS = frozenset({'tomato', 'egg', 'pan', 'banana', 'kiss', 'like'})
 QUICK_CHAT_GAP = 0.7
 QUICK_CHAT_REPEAT = 5.0
 EMOTE_GAP = 0.35
+LLM_THINKING_CUE_DELAY = 0.8
 LLM_MELD_ACTION_KINDS = {
     ('peng', '碰'): 'peng', ('kong-intent', '宣告补杠'): 'added-kong',
     ('kong', '明杠'): 'gang', ('kong', '暗杠'): 'concealed-kong',
@@ -446,10 +450,14 @@ class YaotongRoomSession:
                 if state is None:
                     break
                 if state.phase == 'settled':
-                    self._cancel_llm_audio(keep_win=True)
+                    self._cancel_llm_audio(keep_result=True)
                     self._release_all_holds()
                     await self._persist_round()
                     self.broadcast_snapshot()
+                    if self.llm_seats:
+                        pending_win_audio = tuple(self._llm_audio_tasks)
+                        task = asyncio.create_task(self._announce_llm_round_reactions(state, pending_win_audio))
+                        self._track_llm_audio_task(task, keep_result=True)
                     if state.result is not None and state.result.finished:
                         break
                     await self._wait_for_continues()
@@ -479,7 +487,7 @@ class YaotongRoomSession:
             self.conn.broadcast({'kind': 'error', 'code': 'INTERNAL_ERROR'})
             logger.bind(room_id=self.room_id).exception('幺筒房间驱动异常')
         finally:
-            self._cancel_llm_audio(keep_win=self.status == 'finished' and not self._forced_finishing)
+            self._cancel_llm_audio(keep_result=self.status == 'finished' and not self._forced_finishing)
 
     async def _drive_step(self) -> None:
         state = self.state
@@ -805,8 +813,8 @@ class YaotongRoomSession:
                         llm_round=state.hand_number, llm_window='discard',
                         llm_request_id=f'{self.match_id}:{state.hand_number}:{epoch}:{seat}'):
                     try:
-                        decision = await asyncio.wait_for(
-                            agent.choose_discard(state, seat, command), remaining)
+                        decision = await self._choose_discard_with_thinking(
+                            agent, state, seat, command, remaining, current_window)
                     except asyncio.TimeoutError:
                         logger.info('幺筒 Agent 出牌时间到，使用规则 AI')
                 if not current_window():
@@ -832,6 +840,67 @@ class YaotongRoomSession:
         self.broadcast_snapshot()
         if agent_played and decision is not None and state.result is None:
             self._broadcast_llm_commentary(state, seat, decision.message)
+
+    def _llm_scope(self, state: GameState, seat: int) -> dict:
+        return {'matchId': self.match_id or self.room_id, 'round': state.hand_number, 'seat': seat}
+
+    async def _choose_discard_with_thinking(
+        self, agent: YaotongDiscardAgent, state: GameState, seat: int, command: Command,
+        timeout: float, current_window: Callable[[], bool],
+    ) -> YaotongDiscardDecision | None:
+        request_count = agent.requests
+        status = None
+
+        async def announce_thinking() -> None:
+            nonlocal status
+            await asyncio.sleep(LLM_THINKING_CUE_DELAY)
+            if not current_window() or agent.requests == request_count or not self.conn.connected_seats:
+                return
+            scope = self._llm_scope(state, seat)
+            text = reasoning_status_speech(agent.config.style, request_count)
+            self._llm_message_seq += 1
+            message_id = self._llm_message_seq
+            status = {'kind': 'llm_status', 'messageId': message_id, **scope}
+            self.conn.broadcast({**status, 'active': True, 'text': text})
+            await self._synthesize_llm_audio(state, {
+                **scope, 'priority': 'normal', 'purpose': 'commentary',
+                'speechSource': 'fixed-line', 'actionKind': 'discard',
+            }, message_id, text, agent.config.style, agent.config.provider_id, is_current=current_window)
+
+        thinking = asyncio.create_task(announce_thinking())
+        try:
+            return await asyncio.wait_for(agent.choose_discard(state, seat, command), timeout)
+        finally:
+            thinking.cancel()
+            if status is not None:
+                self.conn.broadcast({**status, 'active': False})
+
+    async def _announce_llm_round_reactions(
+        self, state: GameState, pending_win_audio: tuple[asyncio.Task, ...],
+    ) -> None:
+        result = state.result
+        if result is None or result.kind not in ('win', 'draw'):
+            return
+        # 胡牌动作语音先入播放队列，感言在结算期间按座位顺序补上。
+        await asyncio.gather(*pending_win_audio, return_exceptions=True)
+        llm_seats = [seat for seat in self.llm_seats if self._discard_agent(seat) is not None]
+        anchor = next((winner for winner in result.winners if winner in llm_seats), 0)
+        order = sorted(llm_seats, key=lambda seat: (seat not in result.winners, (seat - anchor) % 4))
+        win_type = {'self': 'self-draw', 'rob': 'robbed-kong-win'}.get(result.win_kind, 'discard-win')
+        sequence = self._llm_message_seq
+        for index, seat in enumerate(order):
+            if self.state is not state or self.closed or self._forced_finishing or not self.conn.connected_seats:
+                return
+            config = self.llm_seats[seat].config
+            lines = _LLM_DRAW_LINES if result.kind == 'draw' else (
+                _LLM_WIN_LINES[win_type] if seat in result.winners else _LLM_LOSS_LINES)
+            variants = lines.get(config.style, lines['稳健'])
+            text = variants[(sequence + index) % len(variants)]
+            self._llm_message_seq += 1
+            await self._synthesize_llm_audio(state, {
+                **self._llm_scope(state, seat), 'priority': 'important',
+                'purpose': 'round-reaction', 'speechSource': 'fixed-line',
+            }, self._llm_message_seq, text, config.style, config.provider_id)
 
     def _broadcast_llm_action_events(self) -> None:
         state = self.state
@@ -878,7 +947,7 @@ class YaotongRoomSession:
         self._llm_message_seq += 1
         message_id = self._llm_message_seq
         scope = {
-            'matchId': self.match_id or self.room_id, 'round': state.hand_number, 'seat': seat,
+            **self._llm_scope(state, seat),
             'priority': priority, 'purpose': 'action' if action else 'commentary',
             'speechSource': 'fixed-line' if action else 'model-message', 'actionKind': action_kind,
         }
@@ -889,19 +958,29 @@ class YaotongRoomSession:
             return
         task = loop.create_task(self._synthesize_llm_audio(
             state, scope, message_id, text, config.style, config.provider_id))
-        self._llm_audio_tasks[task] = action_kind == 'win'
+        self._track_llm_audio_task(task, keep_result=action_kind == 'win')
+
+    def _track_llm_audio_task(self, task: asyncio.Task, *, keep_result: bool) -> None:
+        self._llm_audio_tasks[task] = keep_result
         task.add_done_callback(lambda done: self._llm_audio_tasks.pop(done, None))
 
     async def _synthesize_llm_audio(self, state: GameState, scope: dict, message_id: int,
-                                     text: str, style: str, provider_id: str) -> None:
+                                     text: str, style: str, provider_id: str,
+                                     *, is_current: Optional[Callable[[], bool]] = None) -> None:
         try:
             audio = await asyncio.wait_for(get_tts_service().ensure_audio(text, style, provider_id), 4.0)
         except Exception:
             audio = None
-        if self.closed or self._forced_finishing or self.state is not state:
+        if (self.closed or self._forced_finishing or self.state is not state
+                or (is_current is not None and not is_current())):
             return
-        if scope['actionKind'] != 'win' and (self.match_finished or state.result is not None):
+        round_reaction = scope['purpose'] == 'round-reaction'
+        if not round_reaction and scope.get('actionKind') != 'win' and (self.match_finished or state.result is not None):
             return
+        if round_reaction:
+            self.conn.broadcast({
+                'kind': 'llm_message', 'id': message_id, 'text': text, 'hasAudio': audio is not None, **scope,
+            })
         if audio is None:
             if scope['purpose'] == 'action':
                 self.conn.broadcast({
@@ -913,9 +992,9 @@ class YaotongRoomSession:
             'cached': audio.cached, **scope,
         })
 
-    def _cancel_llm_audio(self, *, keep_win: bool = False) -> None:
-        for task, is_win in tuple(self._llm_audio_tasks.items()):
-            if keep_win and is_win:
+    def _cancel_llm_audio(self, *, keep_result: bool = False) -> None:
+        for task, is_result in tuple(self._llm_audio_tasks.items()):
+            if keep_result and is_result:
                 continue
             if not task.done() and not task.get_loop().is_closed():
                 task.get_loop().call_soon_threadsafe(task.cancel)

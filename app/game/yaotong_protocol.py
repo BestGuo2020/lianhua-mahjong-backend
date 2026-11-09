@@ -325,6 +325,7 @@ def snapshot_for(room, seat: int) -> dict:
         'dealer': state.dealer if state is not None else 0,
         'matchLength': room.match_length,
         'yaotongMode': getattr(room, 'yaotong_mode', 'easy'),
+        'llmActionSpeech': True,
         'holdSeats': sorted(getattr(room, '_holds', {}).keys()),
         **room.decision_view(seat),
         'matchFinished': bool(

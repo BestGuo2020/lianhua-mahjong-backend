@@ -897,10 +897,16 @@ class YaotongRoomSession:
         try:
             audio = await asyncio.wait_for(get_tts_service().ensure_audio(text, style, provider_id), 4.0)
         except Exception:
-            return
-        if audio is None or self.closed or self._forced_finishing or self.state is not state:
+            audio = None
+        if self.closed or self._forced_finishing or self.state is not state:
             return
         if scope['actionKind'] != 'win' and (self.match_finished or state.result is not None):
+            return
+        if audio is None:
+            if scope['purpose'] == 'action':
+                self.conn.broadcast({
+                    'kind': 'llm_message', 'id': message_id, 'text': text, 'hasAudio': False, **scope,
+                })
             return
         self.conn.broadcast({
             'kind': 'llm_audio', 'messageId': message_id, 'audioUrl': audio.audio_url,

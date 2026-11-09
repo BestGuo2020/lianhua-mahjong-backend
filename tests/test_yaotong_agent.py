@@ -254,7 +254,8 @@ async def test_agent_audio_from_a_previous_hand_is_dropped(room, monkeypatch):
     assert queue.empty()
 
 
-async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeypatch):
+@pytest.mark.parametrize('tts_result', ['audio', 'missing', 'error'])
+async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeypatch, tts_result):
     room.on_connect(0)
     queue = asyncio.Queue()
     room.conn.register(0, queue, None)
@@ -262,7 +263,11 @@ async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeyp
 
     async def synthesize(text, style, provider_id):
         voices.append((text, style, provider_id))
-        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
+        if tts_result == 'error':
+            raise RuntimeError('TTS failed')
+        if tts_result == 'audio':
+            return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
+        return None
 
     monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
     room.state.players[3].declaration = 'ready'
@@ -280,20 +285,29 @@ async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeyp
     room.broadcast_snapshot()
     await asyncio.gather(*room._llm_audio_tasks)
     messages = [queue.get_nowait() for _ in range(queue.qsize())]
-    speech = [message for message in messages if message['kind'] == 'llm_message']
+    assert messages[0]['llmActionSpeech'] is True
+    speech = [message for message in messages if message['kind'] == 'llm_message' and message.get('hasAudio') is not False]
+    fallback = [message for message in messages if message['kind'] == 'llm_message' and message.get('hasAudio') is False]
     audio = [message for message in messages if message['kind'] == 'llm_audio']
     assert [message['actionKind'] for message in speech] == [
         'peng', 'gang', 'concealed-kong', 'added-kong', 'ready',
     ]
     assert all(message['seat'] == 3 and message['priority'] == 'important' for message in speech)
     assert all('大明杠' not in message['text'] for message in speech)
-    assert {message['messageId'] for message in audio} == {message['id'] for message in speech}
+    speech_ids = {message['id'] for message in speech}
+    if tts_result == 'audio':
+        assert {message['messageId'] for message in audio} == speech_ids
+        assert not fallback
+    else:
+        assert not audio
+        assert {message['id'] for message in fallback} == speech_ids
     config = room.llm_seats[3].config
     assert set(voices) == {(message['text'], config.style, config.provider_id) for message in speech}
     assert room.llm_seats[3].requests == 0
 
 
-async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatch):
+@pytest.mark.parametrize('audio_available', [True, False])
+async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatch, audio_available):
     room.on_connect(0)
     queue = asyncio.Queue()
     room.conn.register(0, queue, None)
@@ -305,7 +319,7 @@ async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatc
 
     async def synthesize(*_):
         await release_audio.wait()
-        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
+        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True) if audio_available else None
 
     monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
     await room._act_ai(3, command=Command(type='hu'))
@@ -317,4 +331,7 @@ async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatc
     release_audio.set()
     await asyncio.gather(*room._llm_audio_tasks)
     audio = queue.get_nowait()
-    assert audio['kind'] == 'llm_audio' and audio['messageId'] == speech['id']
+    if audio_available:
+        assert audio['kind'] == 'llm_audio' and audio['messageId'] == speech['id']
+    else:
+        assert audio == {**speech, 'hasAudio': False}

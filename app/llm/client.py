@@ -445,6 +445,7 @@ async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
                                candidate_ids: list[str], reasoning: bool = False,
                                deadline_ms: Optional[int] = None,
                                on_reasoning_progress: Optional[Callable[[], None]] = None,
+                               *, retry_parse: bool = True,
                                ) -> tuple[str, str]:
     """快速路径使用 cfg.timeout_s；条件深思使用独立 deadline_ms（均含语义重试）。"""
     started = time.monotonic()
@@ -481,7 +482,8 @@ async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
     try:
         return await attempt(user)
     except LlmClientError as exc:
-        if exc.kind != LlmClientError.KIND_PARSE or error_for_retry is not None:
+        if (not retry_parse or exc.kind != LlmClientError.KIND_PARSE
+                or error_for_retry is not None):
             raise
         error_for_retry = exc.args[0] if exc.args else '解析失败'
         logger.bind(

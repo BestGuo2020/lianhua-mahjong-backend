@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.core.yaotong.engine import self_options
 from app.core.yaotong.hu_window import hu_window
@@ -23,6 +23,9 @@ from app.core.yaotong.types import (
     Player,
     Settlement,
 )
+
+if TYPE_CHECKING:
+    from app.llm.yaotong_agent import YaotongDiscardAgent
 
 _ACTION_TYPES = {
     'original', 'discard', 'respond', 'hu', 'declareHu', 'passHu', 'kong',
@@ -116,17 +119,18 @@ def discard_view(discard: Discard) -> dict:
 
 
 def player_view(player: Player, seat: int, self_seat: int,
-                room_seat=None, *, reveal: bool = False) -> dict:
+                room_seat=None, *, reveal: bool = False,
+                agent: Optional[YaotongDiscardAgent] = None) -> dict:
     is_self = seat == self_seat
+    identity = room_seat if room_seat is not None else agent
+    is_agent = room_seat is None and agent is not None
     return {
         'seat': seat,
-        'name': room_seat.nickname if room_seat is not None else player.name,
-        'avatar': room_seat.avatar if room_seat is not None else '',
-        'characterId': (
-            room_seat.character_id if room_seat is not None else 'deepseek'
-        ),
-        'playerKind': 'human' if room_seat is not None else 'bot',
-        'isLlm': False,
+        'name': identity.nickname if identity is not None else player.name,
+        'avatar': identity.avatar if identity is not None else '',
+        'characterId': identity.character_id if identity is not None else 'deepseek',
+        'playerKind': 'human' if room_seat is not None else 'llm' if is_agent else 'bot',
+        'isLlm': is_agent,
         'score': player.score,
         'hand': [to_tile_type(tile) for tile in player.hand] if is_self or reveal else [],
         'concealedTileCount': len(player.hand),
@@ -259,7 +263,9 @@ def snapshot_view(room, seat: int, state: Optional[GameState] = None) -> dict:
             'wallCount': 0,
         }
     players = [
-        player_view(player, index, seat, room.seats[index], reveal=state.result is not None)
+        player_view(player, index, seat, room.seats[index],
+                    reveal=state.result is not None,
+                    agent=room.llm_seats.get(index))
         for index, player in enumerate(state.players)
     ]
     wait_remaining = list(state.wait_remaining_ms)

@@ -225,9 +225,6 @@ def create_room(body: CreateRoomRequest,
     if body.rulesetId == 'yaotong':
         if body.capacity != 4:
             raise HTTPException(status_code=409, detail={'code': 'INVALID_CAPACITY'})
-        if body.llmEnabled:
-            # MVP 只做真人 + 服务端 AI 补位；LLM 座位后置。
-            raise HTTPException(status_code=409, detail={'code': 'LLM_NOT_ENABLED'})
         match_length = body.matchLength
     else:
         match_length = 4 if body.mode == 'east' else 8
@@ -389,8 +386,6 @@ async def start_room(room_id: str, body: Optional[StartRoomRequest] = None,
         }
         for item in (body.llmSeats if body else [])
     ]
-    if entries and room.ruleset_id == 'yaotong':
-        raise HTTPException(status_code=409, detail={'code': 'LLM_NOT_ENABLED'})
     if entries:
         providers = load_llm_providers()
         seats = [entry['seat'] for entry in entries]

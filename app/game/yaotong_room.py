@@ -11,6 +11,7 @@ import math
 import secrets
 import time
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Callable, Optional
 
 from loguru import logger
@@ -30,6 +31,10 @@ from app.core.yaotong.tiles import YAO
 from app.core.yaotong.types import Command, GameState
 from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
 from app.game.yaotong_protocol import command_from_action, settlement_view, snapshot_for
+from app.llm.config import llm_server_available, load_llm_providers
+from app.llm.speech_policy import LlmSpeechPolicy
+from app.llm.yaotong_agent import YaotongDiscardAgent
+from app.tts.service import get_tts_service
 from app.ws.manager import ConnectionManager
 
 # 对齐前端 src/game/core/local/localGameConfig.ts 的 PACE_MS。
@@ -103,11 +108,16 @@ class YaotongRoomSession:
         self.match_length = match_length
         self.yaotong_mode = yaotong_mode if yaotong_mode in ('easy', 'hard') else 'easy'
         self.storage = storage
-        self.llm_enabled = False
+        self.llm_enabled = bool(llm_enabled)
+        self.llm_seats: dict[int, YaotongDiscardAgent] = {}
+        self._llm_speech = LlmSpeechPolicy()
+        self._llm_message_seq = 0
+        self._llm_audio_tasks: set[asyncio.Task] = set()
         self.status = 'lobby'
         self.creator_seat: Optional[int] = None
         self.seats: list[Optional[_Seat]] = [None] * 4
-        self.reserved_seats: dict = {}
+        self.reserved_seats: dict[int, dict[str, str]] = {}
+        self._seat_lock = Lock()
         self.table_theme = 'jade'
         self.lifetime = ROOM_LIFETIME
         self.created_at = time.monotonic()
@@ -166,33 +176,34 @@ class YaotongRoomSession:
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
                        player_id: Optional[str] = None,
                        character_id: str = 'deepseek', avatar: str = ''):
-        if rejoin_code:
-            seat, state = self.resume_by_code(rejoin_code)
-            state.nickname = nickname or state.nickname
-            return seat, True, state
-        if player_id is not None:
-            for state in self.seats:
-                if state is not None and state.player_id == player_id:
-                    return state.seat, True, state
-        if self.status == 'playing':
-            raise RoomError('ROOM_CLOSED')
-        seat = next(
-            (index for index in range(4) if self.seats[index] is None), None)
-        if seat is None:
-            raise RoomError('ROOM_FULL')
-        state = _Seat(
-            seat=seat,
-            nickname=nickname,
-            rejoin_code=_make_rejoin_code(),
-            player_id=player_id or f'yaotong-{secrets.token_hex(4)}',
-            character_id=character_id,
-            avatar=avatar or '',
-        )
-        self.seats[seat] = state
-        self.auto_seats.discard(seat)
-        if self.creator_seat is None:
-            self.creator_seat = seat
-        return seat, False, state
+        with self._seat_lock:
+            if rejoin_code:
+                seat, state = self.resume_by_code(rejoin_code)
+                state.nickname = nickname or state.nickname
+                return seat, True, state
+            if player_id is not None:
+                for state in self.seats:
+                    if state is not None and state.player_id == player_id:
+                        return state.seat, True, state
+            if self.status == 'playing':
+                raise RoomError('ROOM_CLOSED')
+            seat = next((index for index, state in enumerate(self.seats)
+                         if state is None and index not in self.reserved_seats), None)
+            if seat is None:
+                raise RoomError('SEATS_RESERVED' if self.reserved_seats else 'ROOM_FULL')
+            state = _Seat(
+                seat=seat,
+                nickname=nickname,
+                rejoin_code=_make_rejoin_code(),
+                player_id=player_id or f'yaotong-{secrets.token_hex(4)}',
+                character_id=character_id,
+                avatar=avatar or '',
+            )
+            self.seats[seat] = state
+            self.auto_seats.discard(seat)
+            if self.creator_seat is None:
+                self.creator_seat = seat
+            return seat, False, state
 
     def resume_by_code(self, rejoin_code: str):
         for state in self.seats:
@@ -213,19 +224,20 @@ class YaotongRoomSession:
         self._rejoin_attempts.pop(rejoin_code, None)
 
     def release_seat(self, seat: int, rejoin_code: Optional[str] = None) -> None:
-        state = self.seats[seat]
-        if state is not None and (
-            rejoin_code is None or state.rejoin_code == rejoin_code
-        ):
-            self.seats[seat] = None
-            self._action_epoch += 1
-            if seat in self._holds:
-                self._release_hold(seat)
-            self._wake.set()
-            self.auto_seats.discard(seat)
-            self.conn.unregister(seat)
-            if self.creator_seat == seat:
-                self._transfer_creator()
+        with self._seat_lock:
+            state = self.seats[seat]
+            if state is not None and (
+                rejoin_code is None or state.rejoin_code == rejoin_code
+            ):
+                self.seats[seat] = None
+                self._action_epoch += 1
+                if seat in self._holds:
+                    self._release_hold(seat)
+                self._wake.set()
+                self.auto_seats.discard(seat)
+                self.conn.unregister(seat)
+                if self.creator_seat == seat:
+                    self._transfer_creator()
 
     def _transfer_creator(self) -> None:
         self.creator_seat = next(
@@ -250,15 +262,25 @@ class YaotongRoomSession:
 
     @property
     def llm_available(self) -> bool:
-        return False
+        return llm_server_available()
 
     @property
     def effective_llm_enabled(self) -> bool:
-        return False
+        return self.llm_enabled and self.llm_available
 
     def set_reserved_seat(self, seat: int, provider_id: Optional[str],
                           style: Optional[str] = None) -> None:
-        raise RoomError('LLM_NOT_ENABLED')
+        with self._seat_lock:
+            if self.status not in ('lobby', 'finished'):
+                raise RoomError('ROOM_CLOSED')
+            if not 0 <= seat < self.player_count:
+                raise RoomError('INVALID_SEAT')
+            if self.seats[seat] is not None:
+                raise RoomError('SEAT_OCCUPIED')
+            if provider_id:
+                self.reserved_seats[seat] = {'providerId': provider_id, 'style': style or ''}
+            else:
+                self.reserved_seats.pop(seat, None)
 
     def on_connect(self, seat: int) -> None:
         state = self.seats[seat]
@@ -324,22 +346,24 @@ class YaotongRoomSession:
                     default_provider: Optional[str] = None) -> None:
         if self._drive_task is not None and not self._drive_task.done():
             raise RoomError('ALREADY_STARTED')
-        if self.status not in ('lobby', 'finished'):
-            raise RoomError('ROOM_CLOSED')
-        if not any(state is not None for state in self.seats):
-            raise RoomError('ROOM_EMPTY')
-        if not all(state.ready for state in self.seats if state is not None):
-            raise RoomError('NOT_ALL_READY')
-        if llm_seats:
-            raise RoomError('LLM_NOT_ENABLED')
-
-        self._release_all_holds()
-        self._transition = None
-        self.state = self.game_factory(StartOptions(length=self.match_length))
-        self._apply_names()
-        self.match_started = True
-        self.match_finished = False
-        self.status = 'playing'
+        with self._seat_lock:
+            if self.status not in ('lobby', 'finished'):
+                raise RoomError('ROOM_CLOSED')
+            if not any(state is not None for state in self.seats):
+                raise RoomError('ROOM_EMPTY')
+            if not all(state.ready for state in self.seats if state is not None):
+                raise RoomError('NOT_ALL_READY')
+            agents = self._resolve_llm_seats(llm_seats or [], default_provider)
+            self._release_all_holds()
+            self._transition = None
+            self.state = self.game_factory(StartOptions(length=self.match_length))
+            self.llm_seats = agents
+            self._llm_speech.reset()
+            self._llm_message_seq = 0
+            self._apply_names()
+            self.match_started = True
+            self.match_finished = False
+            self.status = 'playing'
         self.match_started_at = time.monotonic()
         self._forced_finishing = False
         self.match_id = secrets.token_hex(8)
@@ -349,6 +373,31 @@ class YaotongRoomSession:
         self._wake = asyncio.Event()
         self._persist_match_start()
         self._drive_task = asyncio.ensure_future(self._drive())
+
+    def _resolve_llm_seats(self, llm_seats: list,
+                           default_provider: Optional[str]) -> dict[int, YaotongDiscardAgent]:
+        """已入座的真人继续控制本座；其余座位优先用指定模型，再用默认模型。"""
+        providers = load_llm_providers() if self.llm_enabled else {}
+        if not providers:
+            if llm_seats:
+                raise RoomError('LLM_NOT_ENABLED')
+            return {}
+
+        default = providers.get(default_provider or 'default') or next(iter(providers.values()))
+        selections = self.reserved_seats | {entry['seat']: entry for entry in llm_seats}
+        agents = {}
+        for seat, state in enumerate(self.seats):
+            if state is not None:
+                continue
+            selection = selections.get(seat)
+            provider = providers.get(selection['providerId']) if selection else default
+            if provider is not None:
+                style = selection.get('style') if selection else None
+                agents[seat] = YaotongDiscardAgent(
+                    provider.to_config(style), nickname=provider.nickname,
+                    avatar_folder=provider.avatar_folder,
+                )
+        return agents
 
     def _prepare_opening(self) -> None:
         self._opening = {
@@ -369,6 +418,8 @@ class YaotongRoomSession:
             state = self.seats[index]
             if state is not None:
                 player.name = state.nickname
+            elif index in self.llm_seats:
+                player.name = self.llm_seats[index].nickname
 
     # ── 驱动 ────────────────────────────────────────────
 
@@ -383,6 +434,7 @@ class YaotongRoomSession:
                 if state is None:
                     break
                 if state.phase == 'settled':
+                    self._cancel_llm_audio()
                     self._release_all_holds()
                     await self._persist_round()
                     self.broadcast_snapshot()
@@ -413,6 +465,8 @@ class YaotongRoomSession:
             self.status = 'error'
             self.conn.broadcast({'kind': 'error', 'code': 'INTERNAL_ERROR'})
             logger.bind(room_id=self.room_id).exception('幺筒房间驱动异常')
+        finally:
+            self._cancel_llm_audio()
 
     async def _drive_step(self) -> None:
         state = self.state
@@ -706,18 +760,35 @@ class YaotongRoomSession:
             return
         epoch = self._action_epoch
         was_human = self._human_seat(seat)
+
+        def current_window() -> bool:
+            return (not self.closed and not self.match_finished and not self._holds
+                    and self.state is state
+                    and self._action_epoch == epoch and self._human_seat(seat) == was_human
+                    and state.phase != 'settled')
+
         if delay is None:
             delay = self._ai_think_seconds(state, seat)
         await self._wait_pace(delay)
-        # sleep 期间可能重连、取消托管、真人抢先操作或换局。旧任务只需丢弃。
-        if (self.closed or self._holds or self.state is not state
-                or self._action_epoch != epoch or self._human_seat(seat) != was_human
-                or state.phase == 'settled'):
+        # 等待期间可能重连、取消托管、真人操作或换局。
+        if not current_window():
             return
         command = command or choose_action(state, seat)
-        if command is None:
-            command = self._fallback_command(state, seat)
-        ok = self._apply_command(seat, command) if command is not None else False
+        decision = None
+        agent = self.llm_seats.get(seat)
+        if agent is not None and self.seats[seat] is None and command is not None:
+            with logger.contextualize(
+                    room_id=self.room_id, seat=seat, llm_ruleset=self.ruleset_id,
+                    llm_round=state.hand_number, llm_window='discard',
+                    llm_request_id=f'{self.match_id}:{state.hand_number}:{epoch}:{seat}'):
+                decision = await agent.choose_discard(state, seat, command)
+            if not current_window():
+                return
+        agent_played = decision is not None and self._apply_command(seat, decision.command)
+        ok = agent_played
+        if not ok:
+            command = command or self._fallback_command(state, seat)
+            ok = command is not None and self._apply_command(seat, command)
         if not ok:
             fallback = self._fallback_command(state, seat)
             if fallback is not None:
@@ -730,6 +801,46 @@ class YaotongRoomSession:
         self._action_epoch += 1
         self._reaction_remaining()
         self.broadcast_snapshot()
+        if agent_played and decision is not None and state.result is None:
+            self._broadcast_llm_commentary(state, seat, decision.message)
+
+    def _broadcast_llm_commentary(self, state: GameState, seat: int, text: str) -> None:
+        config = self.llm_seats[seat].config
+        if not self.conn.connected_seats or not self._llm_speech.admit(
+                seat, config.style, mandatory=config.style == '话痨'):
+            return
+        self._llm_message_seq += 1
+        message_id = self._llm_message_seq
+        scope = {
+            'matchId': self.match_id or self.room_id, 'round': state.hand_number, 'seat': seat,
+            'priority': 'normal', 'purpose': 'commentary',
+            'speechSource': 'model-message', 'actionKind': 'discard',
+        }
+        self.conn.broadcast({'kind': 'llm_message', 'id': message_id, 'text': text, **scope})
+        task = asyncio.create_task(self._synthesize_llm_audio(
+            state, scope, message_id, text, config.style, config.provider_id))
+        self._llm_audio_tasks.add(task)
+        task.add_done_callback(self._llm_audio_tasks.discard)
+
+    async def _synthesize_llm_audio(self, state: GameState, scope: dict, message_id: int,
+                                     text: str, style: str, provider_id: str) -> None:
+        try:
+            audio = await get_tts_service().ensure_audio(text, style, provider_id)
+        except Exception:
+            return
+        if audio is None or self.closed or self.match_finished or self.state is not state \
+                or state.result is not None:
+            return
+        self.conn.broadcast({
+            'kind': 'llm_audio', 'messageId': message_id, 'audioUrl': audio.audio_url,
+            'cached': audio.cached, **scope,
+        })
+
+    def _cancel_llm_audio(self) -> None:
+        for task in tuple(self._llm_audio_tasks):
+            if not task.done() and not task.get_loop().is_closed():
+                task.get_loop().call_soon_threadsafe(task.cancel)
+        self._llm_audio_tasks.clear()
 
     # ── 老手“等”：每小局每个座位独立累计 15 秒 ─────────────
 
@@ -980,6 +1091,7 @@ class YaotongRoomSession:
     def close(self) -> None:
         self._transition = None
         self.closed = True
+        self._cancel_llm_audio()
         self._release_all_holds()
         self.conn.broadcast({'kind': 'room_closed'})
         try:
@@ -1004,6 +1116,7 @@ class YaotongRoomSession:
         self._forced_finishing = True
         self.status = 'finished'
         self.match_finished = True
+        self._cancel_llm_audio()
         if (cancel_task and self._drive_task is not None
                 and not self._drive_task.done()):
             self._drive_task.cancel()
@@ -1056,7 +1169,7 @@ class YaotongRoomSession:
                 'player_id': state.player_id if state is not None else None,
                 'nickname': (
                     state.nickname if state is not None
-                    else f'AI-{seat}'
+                    else self.llm_seats[seat].nickname if seat in self.llm_seats else f'AI-{seat}'
                 ),
             }
             for seat, state in enumerate(self.seats)

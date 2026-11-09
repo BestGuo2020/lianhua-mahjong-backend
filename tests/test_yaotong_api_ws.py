@@ -78,6 +78,8 @@ async def test_create_yaotong_room_exposes_match_length(server, fresh_rooms):
     assert room['yaotongMode'] == 'easy'
     assert room['capacity'] == 4
     assert len(room['seats']) == 4
+    assert room['reservedSeats'] == []
+    assert room['llmEnabled'] is False
 
     joined = await join_room(server['http'], room['roomId'], '甲')
     assert joined['seat'] == 0
@@ -104,21 +106,67 @@ async def test_yaotong_create_accepts_expert_mode(server, fresh_rooms):
 
 
 @pytest.mark.asyncio
-async def test_yaotong_create_rejects_llm_and_non_four_seats(server, fresh_rooms):
+async def test_yaotong_create_rejects_non_four_seats(server, fresh_rooms):
     async with httpx.AsyncClient(base_url=server['http'], timeout=10) as client:
-        llm_response = await client.post('/api/rooms', json={
-            'mode': 'east', 'capacity': 4, 'rulesetId': 'yaotong',
-            'matchLength': 4, 'llmEnabled': True,
-        }, cookies=COOKIE_A)
-        assert llm_response.status_code == 409
-        assert llm_response.json()['detail']['code'] == 'LLM_NOT_ENABLED'
-
         capacity_response = await client.post('/api/rooms', json={
             'mode': 'east', 'capacity': 3, 'rulesetId': 'yaotong',
             'matchLength': 4, 'llmEnabled': False,
         }, cookies=COOKIE_A)
         assert capacity_response.status_code == 409
         assert capacity_response.json()['detail']['code'] == 'INVALID_CAPACITY'
+
+
+@pytest.mark.asyncio
+async def test_yaotong_llm_room_accepts_humans_in_all_unselected_seats(server, fresh_rooms):
+    room = await create_room(server['http'], llmEnabled=True)
+    room_id = room['roomId']
+    assert room['reservedSeats'] == []
+    assert room['llmEnabled'] is True
+    for seat in range(4):
+        member = await join_room(server['http'], room_id, f'玩家{seat}',
+                                 cookie={'lgm_wakudemo_session': f'agent-room-{seat}'})
+        assert member['seat'] == seat
+
+
+@pytest.mark.asyncio
+async def test_yaotong_room_reserves_and_releases_individual_model_seats(server, fresh_rooms, monkeypatch):
+    for provider in ('YT_FIRST', 'YT_SECOND'):
+        monkeypatch.setenv(f'LLM_PROVIDER_{provider}_BASE_URL', 'https://example.invalid/v1')
+        monkeypatch.setenv(f'LLM_PROVIDER_{provider}_API_KEY', 'test-key')
+        monkeypatch.setenv(f'LLM_PROVIDER_{provider}_MODEL', provider.lower())
+    room = await create_room(server['http'], llmEnabled=True)
+    room_id = room['roomId']
+    host = await join_room(server['http'], room_id, '房主')
+    owner = {'seat': host['seat'], 'rejoinCode': host['rejoinCode']}
+    reservations = [
+        {'seat': 1, 'providerId': 'yt_first', 'style': '高冷'},
+        {'seat': 3, 'providerId': 'yt_second', 'style': None},
+    ]
+
+    async with httpx.AsyncClient(base_url=server['http'], timeout=10) as client:
+        for item in reservations:
+            response = await client.post(f'/api/rooms/{room_id}/llm-seats', json={
+                **owner, 'reserveSeat': item['seat'],
+                'providerId': item['providerId'], 'style': item['style'],
+            })
+            assert response.status_code == 200, response.text
+        detail = (await client.get(f'/api/rooms/{room_id}')).json()
+        assert detail['reservedSeats'] == reservations
+        guest = await join_room(server['http'], room_id, '来客',
+                                cookie={'lgm_wakudemo_session': 'yt-model-guest'})
+        assert guest['seat'] == 2
+        response = await client.post(f'/api/rooms/{room_id}/join', json={'nickname': '候补'},
+                                     cookies={'lgm_wakudemo_session': 'yt-model-late'})
+        assert response.status_code == 409
+        assert response.json()['detail']['code'] == 'SEATS_RESERVED'
+        response = await client.post(f'/api/rooms/{room_id}/llm-seats', json={
+            **owner, 'reserveSeat': 1,
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()['reservedSeats'] == reservations[1:]
+        late = await join_room(server['http'], room_id, '候补',
+                               cookie={'lgm_wakudemo_session': 'yt-model-late'})
+        assert late['seat'] == 1
 
 
 async def auto_client(ws, room, timeout=60.0) -> dict:

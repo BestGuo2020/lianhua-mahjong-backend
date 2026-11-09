@@ -307,6 +307,9 @@ class YaotongRoomSession:
             and seat not in self.auto_seats
         )
 
+    def _discard_agent(self, seat: int) -> Optional[YaotongDiscardAgent]:
+        return self.llm_seats.get(seat) if self.seats[seat] is None else None
+
     def _connected_human_seats(self) -> list[int]:
         # 托管只交出操作权，在线玩家仍须看到完整开局与结算演出。
         return [seat for seat, state in enumerate(self.seats)
@@ -604,10 +607,12 @@ class YaotongRoomSession:
 
     def _decision_key(self, seat: int) -> Optional[tuple]:
         state = self.state
-        if (state is None or self.closed or self.match_finished or self._opening is not None
-                or self.seats[seat] is None):
+        if state is None or self.closed or self.match_finished or self._opening is not None:
             return None
-        if self._human_automatic_command(seat) is not None:
+        if self.seats[seat] is None:
+            if self._discard_agent(seat) is None or state.phase != 'discard':
+                return None
+        elif self._human_automatic_command(seat) is not None:
             return None
         base = (id(state), state.phase, seat)
         player = state.players[seat]
@@ -633,7 +638,7 @@ class YaotongRoomSession:
                 decision = None
             if key is None:
                 continue
-            if decision is None and self._human_seat(seat):
+            if decision is None and (self._human_seat(seat) or self._discard_agent(seat) is not None):
                 decision = _Decision(key, now + self.turn_timeout)
                 self._decisions[seat] = decision
             if decision is None:
@@ -767,23 +772,37 @@ class YaotongRoomSession:
                     and self._action_epoch == epoch and self._human_seat(seat) == was_human
                     and state.phase != 'settled')
 
+        clock = None
+        if self._discard_agent(seat) is not None and state.phase == 'discard':
+            self._sync_decisions()
+            clock = self._decisions.get(seat)
         if delay is None:
             delay = self._ai_think_seconds(state, seat)
+        if clock is not None:
+            delay = min(delay, max(0.0, clock.deadline - time.monotonic()))
         await self._wait_pace(delay)
         # 等待期间可能重连、取消托管、真人操作或换局。
         if not current_window():
             return
         command = command or choose_action(state, seat)
         decision = None
-        agent = self.llm_seats.get(seat)
-        if agent is not None and self.seats[seat] is None and command is not None:
-            with logger.contextualize(
-                    room_id=self.room_id, seat=seat, llm_ruleset=self.ruleset_id,
-                    llm_round=state.hand_number, llm_window='discard',
-                    llm_request_id=f'{self.match_id}:{state.hand_number}:{epoch}:{seat}'):
-                decision = await agent.choose_discard(state, seat, command)
-            if not current_window():
-                return
+        agent = self._discard_agent(seat)
+        if agent is not None and clock is not None and command is not None:
+            remaining = clock.deadline - time.monotonic()
+            if remaining > 0:
+                with logger.contextualize(
+                        room_id=self.room_id, seat=seat, llm_ruleset=self.ruleset_id,
+                        llm_round=state.hand_number, llm_window='discard',
+                        llm_request_id=f'{self.match_id}:{state.hand_number}:{epoch}:{seat}'):
+                    try:
+                        decision = await asyncio.wait_for(
+                            agent.choose_discard(state, seat, command), remaining)
+                    except asyncio.TimeoutError:
+                        logger.info('幺筒 Agent 出牌时间到，使用规则 AI')
+                if not current_window():
+                    return
+                if time.monotonic() >= clock.deadline:
+                    decision = None
         agent_played = decision is not None and self._apply_command(seat, decision.command)
         ok = agent_played
         if not ok:

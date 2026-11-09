@@ -104,12 +104,61 @@ async def test_agent_failure_uses_the_rule_ai_discard(room, monkeypatch, timeout
                 cancelled = True
         return 'A0', ''
 
-    monkeypatch.setattr(yaotong_agent, '_DISCARD_TIMEOUT_S', 0.01)
+    room.turn_timeout = 0.05
     monkeypatch.setattr(yaotong_agent, 'request_llm_decision', fail)
     await room._act_ai(3)
     assert room.llm_seats[3].requests == 1
     assert player.river[-1].tile == expected
     assert cancelled == timeout
+
+
+@pytest.mark.parametrize('model_seconds', [6.0, 14.0], ids=['before-deadline', 'at-deadline'])
+async def test_agent_uses_remaining_room_countdown(room, monkeypatch, model_seconds):
+    now = 100.0
+    monkeypatch.setattr(yaotong_room, 'time', SimpleNamespace(monotonic=lambda: now))
+    room._sync_decisions()
+    now += 4.0
+    player = room.state.players[3]
+    rule_tile = player.hand[choose_action(room.state, 3).index]
+    selected_tile = None
+    timeouts = []
+
+    async def advance_pace(seconds):
+        nonlocal now
+        now += seconds
+
+    async def wait_for_decision(awaitable, timeout):
+        timeouts.append(timeout)
+        return await awaitable
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        nonlocal now, selected_tile
+        payload = json.loads(user)
+        candidate = next(c for c in payload['candidates'] if c['id'] != payload['engineSuggestion'])
+        selected_tile = candidate['tile']
+        now += model_seconds
+        return candidate['id'], ''
+
+    monkeypatch.setattr(room, '_wait_pace', advance_pace)
+    monkeypatch.setattr(yaotong_room.asyncio, 'wait_for', wait_for_decision)
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    await room._act_ai(3, delay=2.0)
+
+    assert timeouts == [14.0]
+    assert selected_tile is not None
+    assert tile_name(player.river[-1].tile) == (
+        selected_tile if model_seconds < 14 else tile_name(rule_tile))
+
+
+async def test_agent_skips_request_when_countdown_has_expired(room):
+    player = room.state.players[3]
+    rule_tile = player.hand[choose_action(room.state, 3).index]
+    room.turn_timeout = 0
+
+    await room._act_ai(3, delay=2.0)
+
+    assert room.llm_seats[3].requests == 0
+    assert player.river[-1].tile == rule_tile
 
 
 @pytest.mark.parametrize('finish_match', [False, True], ids=['rejoin', 'finish'])

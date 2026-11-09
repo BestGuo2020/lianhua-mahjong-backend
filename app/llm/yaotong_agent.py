@@ -1,6 +1,5 @@
 """幺筒 Agent 只在规则 AI 准备普通出牌时参与决策。"""
 
-import asyncio
 import json
 import re
 from typing import NamedTuple
@@ -18,7 +17,6 @@ from app.llm.decision_speech import resolve_decision_speech
 from app.llm.persona import avatar_url, default_nickname, display_name, provider_folder
 
 
-_DISCARD_TIMEOUT_S = 3.0
 _PRIVATE_COMMENTARY = re.compile(
     r'暗手|手牌|手[里中上]|听口|听牌|向听|差.{0,3}张|'
     r'[一二三四五六七八九两1-9][万筒条索]|[幺么][筒鸡]|[mps][1-9]', re.I,
@@ -116,12 +114,9 @@ class YaotongDiscardAgent:
         }
         self.requests += 1
         try:
-            choice, message = await asyncio.wait_for(
-                request_llm_decision(
-                    self.config, _SYSTEM_PROMPT, json.dumps(payload, ensure_ascii=False),
-                    list(indexes), retry_parse=False,
-                ),
-                timeout=min(self.config.timeout_s, _DISCARD_TIMEOUT_S),
+            choice, message = await request_llm_decision(
+                self.config, _SYSTEM_PROMPT, json.dumps(payload, ensure_ascii=False),
+                list(indexes), retry_parse=False,
             )
         except Exception as exc:
             logger.bind(error=type(exc).__name__).info('幺筒 Agent 请求失败，使用规则 AI')

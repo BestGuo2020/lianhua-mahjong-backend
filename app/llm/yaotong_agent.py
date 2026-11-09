@@ -1,34 +1,37 @@
 """幺筒 Agent 只在规则 AI 准备普通出牌时参与决策。"""
 
 import json
-import re
 from typing import NamedTuple
 
 from loguru import logger
 
+from app.core.yaotong.engine import discard_chicken_tier, preview_discard
 from app.core.yaotong.hands import discard_waits
 from app.core.yaotong.mode import action_protection
-from app.core.yaotong.tiles import counts_of, is_chicken, tile_name
+from app.core.yaotong.tiles import YAO, counts_of, tile_name
 from app.core.yaotong.types import Command, GameState, Seat
 from app.game.anime_characters import resolve_anime_character_id
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig
-from app.llm.decision_speech import resolve_decision_speech
 from app.llm.persona import avatar_url, default_nickname, display_name, provider_folder
 
 
-_PRIVATE_COMMENTARY = re.compile(
-    r'暗手|手牌|手[里中上]|听口|听牌|向听|差.{0,3}张|'
-    r'[一二三四五六七八九两1-9][万筒条索]|[幺么][筒鸡]|[mps][1-9]', re.I,
-)
 _SYSTEM_PROMPT = (
-    '你是幺筒麻将的牌手，本次只选一张合法弃牌。'
-    '一筒可以作本牌或癞子。固定鸡、幺筒及杠后出牌会影响分数和责任款。'
-    '参考听口、可见剩余张数、其他家的牌河和报听状态。'
-    '可参考 style 中的打法风格。'
-    'engineSuggestion 是规则机器人的建议，模型可以选择其他候选。'
-    'message 写一句最多16字、符合性格的中文牌桌闲聊，只谈公开局势。'
-    '台词不要报具体牌名、手牌、听口、出牌理由或候选编号。'
+    '你是幺筒麻将的牌手，本次只选一张合法弃牌。\n'
+    '一筒（幺筒）作本牌时每张有10基础鸡分，也可当癞子替牌补对子、顺子或刻子。'
+    '一万、八筒、一条（幺鸡）是固定鸡，只按本牌使用。\n'
+    '候选的 chicken 给出鸡牌类型、弃牌档位和原始鸡分，普通牌为 null。'
+    '幺筒分预冲、首冲、后冲、杠冲；固定鸡分首冲、跟冲、底鸡。'
+    '鸡分按听牌和终局情况收赔，未听可能反赔，幺筒被碰、杠或胡走会涉及责任款。'
+    'afterKong 表示杠后出牌，被胡会烧鸡。\n'
+    'yaosKept 是弃牌后手里仍能作本牌或癞子的一筒张数。'
+    'waits 已枚举本牌与癞子两种用法，普通点炮另看胡牌资格。remaining 是各听张的可见剩余张数上限，'
+    'needsKeptYaoAsWildcard 表示这个听口必须用留在手里的一筒替牌。'
+    '优先保住有活张的听口；没听也要考虑留一筒补牌形的价值，别只为了冲鸡分丢掉一筒。'
+    '参考其他家的牌河和报听状态。engineSuggestion 是规则 AI 建议，可选其他候选。\n'
+    'message 写一句最多16字、符合 style 的中文牌桌台词。可以闲聊，也可以说自己这次实际打出的'
+    '牌及其档位。冲鸡时优先回应当前档位，例如「幺筒首冲！」或「八筒跟冲！」。'
+    '只说公开事实，别报暗手、听口、选牌理由、候选编号或结算分，别把未发生的碰杠胡说成已发生。'
     '只输出 JSON {"choice":"候选编号","message":"一句台词"}。'
 )
 
@@ -80,18 +83,30 @@ class YaotongDiscardAgent:
               for _ in range(3 if meld.kind == 'peng' else 4)),
         ])
         waits = {entry['index']: entry['waits'] for entry in discard_waits(player)}
+        yao_count = player.hand.count(YAO)
         indexes = {}
         candidates = []
         for number, (tile, index) in enumerate(by_tile.items(), start=1):
             candidate_id = f'A{number}'
             indexes[candidate_id] = index
+            discard = preview_discard(state, seat, tile)
+            tier = discard_chicken_tier(discard)
             candidates.append({
                 'id': candidate_id,
                 'tile': tile_name(tile),
-                'chicken': is_chicken(tile),
+                'chicken': {
+                    'kind': '幺筒' if tile == YAO else '固定鸡',
+                    'tier': tier,
+                    'points': discard.chicken,
+                } if tier else None,
+                'yaosKept': yao_count - int(tile == YAO),
                 'waits': [
                     {'tile': tile_name(wait.tile),
-                     'remaining': max(0, 4 - visible_counts[wait.tile])}
+                     'remaining': max(0, 4 - visible_counts[wait.tile]),
+                     'needsKeptYaoAsWildcard': all(
+                         value.wildcards > int(wait.tile == YAO and not value.winning_yao_natural)
+                         for value in wait.values
+                     )}
                     for wait in waits.get(index, ())
                 ],
             })
@@ -124,9 +139,7 @@ class YaotongDiscardAgent:
         if not isinstance(choice, str) or choice not in indexes:
             logger.info('幺筒 Agent 候选编号无效，使用规则 AI')
             return None
-        message = message if isinstance(message, str) and not _PRIVATE_COMMENTARY.search(message) else ''
-        speech = resolve_decision_speech(
-            message, {'kind': 'discard'}, self.config.style, self.requests - 1,
-            {'isDealer': seat == state.dealer},
+        return YaotongDiscardDecision(
+            Command(type='discard', index=indexes[choice]),
+            message if isinstance(message, str) else '',
         )
-        return YaotongDiscardDecision(Command(type='discard', index=indexes[choice]), speech)

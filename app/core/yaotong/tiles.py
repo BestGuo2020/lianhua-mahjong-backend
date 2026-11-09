@@ -10,7 +10,7 @@ from typing import Callable, Iterable
 
 # 幺筒：9 = 一筒
 YAO = 9
-# 固定鸡：一筒、八筒、一条
+# 固定鸡：一万、八筒、一条
 FIXED = (0, 16, 18)
 # 27 种序数牌，每种 4 张 = 108 张
 TILES = tuple(range(27))

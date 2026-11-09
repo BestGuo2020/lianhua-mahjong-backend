@@ -66,6 +66,7 @@ _FLOW_NAMES = {
     'first-draw', 'next-draw', 'after-peng', 'after-open-kong', 'before-rob',
     'between-robbers', 'after-added-kong', 'rob-win', 'before-claim',
 }
+_YAO_RUSH_LABELS = {'pre': '预冲', 'first': '首冲', 'later': '后冲', 'hot': '杠冲'}
 
 
 def observe_game_events(state: GameState, observer: EventObserver):
@@ -548,6 +549,41 @@ def _restore_from_snapshot(state: GameState, snapshot: GameState) -> None:
     state.wait_remaining_ms = wait_remaining
 
 
+def preview_discard(state: GameState, seat: Seat, tile: Tile) -> Discard:
+    """计算下一张弃牌的档位，保留原状态供其他候选比较。"""
+    player = state.players[seat]
+    pre = any(other.discards == 0 for other in state.players)
+    chicken = 0
+    stage = 'normal'
+    if tile == YAO:
+        stage = (
+            'hot' if player.after_kong
+            else 'pre' if pre
+            else 'later' if state.first_yao_discard
+            else 'first'
+        )
+        chicken = {'hot': 100, 'pre': 30, 'first': 20, 'later': 15}[stage]
+    elif is_fixed(tile):
+        chicken = 4 if tile not in state.first_fixed_discard or player.discards == 0 else 2
+
+    first_chicken = is_chicken(tile) and tile not in state.seen_chicken_discards
+    follow_chicken = is_fixed(tile) and chicken == 4 and not first_chicken
+    return Discard(
+        tile=tile, chicken=chicken, stage=stage, id=state.serial + 1,
+        first_chicken=first_chicken, follow_chicken=follow_chicken, pre=pre,
+    )
+
+
+def discard_chicken_tier(discard: Discard) -> str | None:
+    if discard.tile == YAO:
+        return _YAO_RUSH_LABELS.get(discard.stage)
+    if not is_fixed(discard.tile):
+        return None
+    if discard.chicken == 2:
+        return '底鸡'
+    return '跟冲' if discard.follow_chicken else '首冲'
+
+
 def act(state: GameState, seat: Seat, command: Command,
         flow: Optional[EngineFlow] = None) -> bool:
     if (not isinstance(seat, int) or isinstance(seat, bool)
@@ -800,25 +836,11 @@ def act(state: GameState, seat: Seat, command: Command,
 
     tile = player.hand[command.index]
     illegal_chicken_discard = tile in player.chicken_peng
-    pre = any(other.discards == 0 for other in state.players)
-    chicken = 0
-    stage = 'normal'
-    if tile == YAO:
-        stage = (
-            'hot' if player.after_kong
-            else 'pre' if pre
-            else 'later' if state.first_yao_discard
-            else 'first'
-        )
-        chicken = {'hot': 100, 'pre': 30, 'first': 20, 'later': 15, 'normal': 0}[stage]
-        if stage == 'first':
-            state.first_yao_discard = True
-    elif is_fixed(tile):
-        chicken = 4 if (
-            tile not in state.first_fixed_discard or player.discards == 0
-        ) else 2
-        if tile not in state.first_fixed_discard:
-            state.first_fixed_discard.append(tile)
+    discard = preview_discard(state, seat, tile)
+    if discard.stage == 'first':
+        state.first_yao_discard = True
+    if is_fixed(tile) and tile not in state.first_fixed_discard:
+        state.first_fixed_discard.append(tile)
 
     hot = player.after_kong
     player.hand.pop(command.index)
@@ -829,31 +851,18 @@ def act(state: GameState, seat: Seat, command: Command,
     if is_chicken(tile):
         player.chicken_discard.append(tile)
 
-    stage_labels = {
-        'pre': '预冲', 'first': '首冲', 'later': '后冲',
-        'hot': '杠冲', 'normal': '',
-    }
     discarded_event = _event(
         state, seat, 'discard',
-        f'{stage_labels[stage]}幺筒 · {chicken}' if tile == YAO
+        f'{_YAO_RUSH_LABELS[discard.stage]}幺筒 · {discard.chicken}' if tile == YAO
         else f'打出{tile_name(tile)}',
         tile,
-        chicken=chicken,
-        rush=stage,
+        chicken=discard.chicken,
+        rush=discard.stage,
         after_kong=hot,
         notify=False,
     )
-    first_chicken = is_chicken(tile) and tile not in state.seen_chicken_discards
-    if first_chicken:
+    if discard.first_chicken:
         state.seen_chicken_discards.append(tile)
-    follow_chicken = (
-        is_fixed(tile) and chicken == 4 and not first_chicken
-    )
-    discard = Discard(
-        tile=tile, chicken=chicken, stage=stage,  # type: ignore[arg-type]
-        id=state.serial, first_chicken=first_chicken,
-        follow_chicken=follow_chicken, pre=pre,
-    )
     player.river.append(discard)
     notify_event(state, discarded_event)
 

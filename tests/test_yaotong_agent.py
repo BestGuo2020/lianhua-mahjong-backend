@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.yaotong.ai import choose_action
-from app.core.yaotong.tiles import tile_name
+from app.core.yaotong.engine import act
+from app.core.yaotong.tiles import YAO, tile_name
 from app.core.yaotong.types import Command, GameEvent, GameState, Meld, Player
 from app.game import yaotong_room
 from app.game.yaotong_room import YaotongRoomSession
@@ -87,6 +88,81 @@ async def test_agent_executes_only_a_legal_candidate_from_its_own_view(room, mon
     await room._act_ai(3)
     assert selected is not None
     assert tile_name(player.river[-1].tile) == selected
+
+
+@pytest.mark.parametrize(
+    ('tile', 'opening', 'after_kong', 'seen', 'tier', 'points'),
+    [
+        (YAO, True, False, False, '预冲', 30),
+        (YAO, False, False, False, '首冲', 20),
+        (YAO, False, False, True, '后冲', 15),
+        (YAO, True, True, False, '杠冲', 100),
+        (0, False, False, False, '首冲', 4),
+        (16, True, False, True, '跟冲', 4),
+        (18, False, False, True, '底鸡', 2),
+        (1, False, False, False, None, 0),
+    ],
+)
+async def test_agent_candidate_tier_matches_the_discard(
+    room, monkeypatch, tile, opening, after_kong, seen, tier, points,
+):
+    state = room.state
+    player = state.players[3]
+    for other in state.players:
+        other.discards = 1
+    player.hand = [tile, 2]
+    player.melds = []
+    player.chicken_peng = []
+    player.discards = 0 if opening and tile != YAO else 1
+    player.after_kong = after_kong
+    if opening and tile == YAO:
+        state.players[2].discards = 0  # 本家已经打过，预冲要等最后一家。
+    if seen:
+        state.seen_chicken_discards = [tile]
+        state.first_yao_discard = tile == YAO
+        state.first_fixed_discard = [] if tile == YAO else [tile]
+    state.wall = [3, 4, 5]
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        candidate = json.loads(user)['candidates'][0]
+        assert candidate['tile'] == tile_name(tile)
+        assert candidate['chicken'] == (
+            {'kind': '幺筒' if tile == YAO else '固定鸡', 'tier': tier, 'points': points}
+            if tier else None
+        )
+        assert state.serial == 0
+        assert not player.river
+        return candidate['id'], ''
+
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    decision = await room.llm_seats[3].choose_discard(state, 3, Command(type='discard', index=0))
+    assert decision is not None
+    assert act(state, 3, decision.command)
+    assert (player.river[-1].tile, player.river[-1].chicken) == (tile, points)
+    assert player.river[-1].follow_chicken == (tier == '跟冲')
+
+
+async def test_agent_sees_waits_that_require_keeping_yao_as_wildcard(room, monkeypatch):
+    player = room.state.players[3]
+    player.melds = []
+    player.chicken_peng = []
+    player.hand = [0, 1, 2, 3, 4, 5, 18, 19, 20, 13, 13, 15, 17, YAO]
+    captured = {}
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        assert '一万、八筒、一条（幺鸡）是固定鸡，只按本牌使用' in system
+        captured.update({item['tile']: item for item in json.loads(user)['candidates']})
+        return captured['九筒']['id'], ''
+
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    decision = await room.llm_seats[3].choose_discard(room.state, 3, Command(type='discard', index=12))
+    assert decision.command.index == 12
+    kept, discarded = captured['九筒'], captured['一筒']
+    assert (kept['yaosKept'], discarded['yaosKept']) == (1, 0)
+    assert len(kept['waits']) == 6
+    assert all(wait['needsKeptYaoAsWildcard'] for wait in kept['waits'])
+    assert {wait['tile'] for wait in discarded['waits']} == {'八筒', '一筒'}
+    assert all(not wait['needsKeptYaoAsWildcard'] for wait in discarded['waits'])
 
 
 @pytest.mark.parametrize('timeout', [False, True], ids=['invalid-choice', 'timeout'])
@@ -192,16 +268,26 @@ async def test_agent_leaves_other_actions_and_locked_hands_to_rule_ai(room):
     assert agent.requests == 0
 
 
-@pytest.mark.parametrize(('reply', 'expected'), [
-    ('  先走一步。你们继续。  ', '先走一步。'),
-    ('手里有两张一筒。', '这张先走。'),
+@pytest.mark.parametrize(('tile', 'reply', 'expected'), [
+    (1, '  先走一步。你们继续。  ', '先走一步。'),
+    (1, '手里有两张一筒。', '这张先走。'),
+    (1, '这张是固定鸡！', '这张先走。'),
+    (YAO, '幺筒首冲，走你！', '幺筒首冲，走你！'),
+    (YAO, '这张后冲！', '一筒首冲。'),
+    (YAO, '八筒首冲！', '一筒首冲。'),
+    (YAO, '幺筒，我有一对。', '一筒首冲。'),
+    (YAO, '首冲，20分到手！', '一筒首冲。'),
+    (YAO, '首冲，责任鸡来了！', '一筒首冲。'),
+    (18, '幺鸡首冲啦！', '幺鸡首冲啦！'),
 ])
-async def test_agent_comments_after_discard_and_synthesizes_in_background(room, monkeypatch, reply, expected):
+async def test_agent_comments_after_discard_and_synthesizes_in_background(room, monkeypatch, tile, reply, expected):
     player = room.state.players[3]
     player.melds = []
     player.chicken_peng = []
-    player.hand = [1, 1, 4, 5, 6, 10, 11, 14, 17, 19, 20, 22, 24, 26]
+    player.hand = [1, 1, 4, 5, 6, YAO, 11, 14, 17, 18, 20, 22, 24, 26]
     player.drawn = 26
+    for other in room.state.players:
+        other.discards = 1
     room.state.wall = [3, 7, 9, 12, 16, 21, 23, 25]
     room.on_connect(0)
     queue = asyncio.Queue()
@@ -210,7 +296,8 @@ async def test_agent_comments_after_discard_and_synthesizes_in_background(room, 
     audio_url = f'/api/tts/audio/{"a" * 64}.mp3'
 
     async def request(config, system, user, candidate_ids, **kwargs):
-        return candidate_ids[0], reply
+        candidate = next(item for item in json.loads(user)['candidates'] if item['tile'] == tile_name(tile))
+        return candidate['id'], reply
 
     async def synthesize(text, style, provider_id):
         assert text == expected
@@ -221,7 +308,7 @@ async def test_agent_comments_after_discard_and_synthesizes_in_background(room, 
     monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
     monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
     await room._act_ai(3)
-    assert player.river
+    assert player.river[-1].tile == tile
     assert queue.get_nowait()['kind'] == 'yt_snapshot'
     speech = queue.get_nowait()
     assert speech['kind'] == 'llm_message' and speech['seat'] == 3 and speech['text'] == expected
@@ -234,6 +321,22 @@ async def test_agent_comments_after_discard_and_synthesizes_in_background(room, 
     assert (audio['messageId'], audio['matchId'], audio['round']) == (
         speech['id'], speech['matchId'], speech['round'],
     )
+
+
+async def test_agent_only_comments_if_its_discard_lands(room, monkeypatch):
+    room.on_connect(0)
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        return candidate_ids[0], '这张走了。'
+
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    monkeypatch.setattr(room, '_apply_command', lambda seat, command: True)
+    await room._act_ai(3)
+    assert room.llm_seats[3].requests == 1
+    assert queue.get_nowait()['kind'] == 'yt_snapshot'
+    assert queue.empty()
 
 
 async def test_agent_audio_from_a_previous_hand_is_dropped(room, monkeypatch):
@@ -325,9 +428,13 @@ async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeyp
 
     monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
     room.state.players[3].declaration = 'ready'
+    room.state.players[3].melds = [
+        Meld(18, 'peng', from_seat=1, chicken=8),
+        Meld(YAO, 'open', from_seat=2, chicken=60, responsibility=20),
+    ]
     room.state.events = [
-        GameEvent(1, 3, '碰', 'peng'),
-        GameEvent(2, 3, '明杠', 'kong'),
+        GameEvent(1, 3, '碰', 'peng', tile=18),
+        GameEvent(2, 3, '明杠', 'kong', tile=YAO),
         GameEvent(3, 3, '存杠', 'kong'),
         GameEvent(4, 3, '宣告补杠', 'kong-intent'),
         GameEvent(5, 3, '补杠', 'kong'),
@@ -346,6 +453,8 @@ async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeyp
     assert [message['actionKind'] for message in speech] == [
         'peng', 'gang', 'concealed-kong', 'added-kong', 'ready',
     ]
+    assert '首碰' in speech[0]['text']
+    assert '责任鸡' in speech[1]['text']
     assert all(message['seat'] == 3 and message['priority'] == 'important' for message in speech)
     assert all('大明杠' not in message['text'] for message in speech)
     speech_ids = {message['id'] for message in speech}

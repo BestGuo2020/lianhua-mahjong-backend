@@ -38,6 +38,7 @@ from app.llm.config import llm_server_available, load_llm_providers
 from app.llm.decision_speech import decision_speech, reasoning_status_speech
 from app.llm.speech_policy import LlmSpeechPolicy
 from app.llm.yaotong_agent import YaotongDiscardAgent, YaotongDiscardDecision
+from app.llm.yaotong_speech import chicken_claim_speech, discard_speech
 from app.tts.service import get_tts_service
 from app.ws.manager import ConnectionManager
 
@@ -821,6 +822,7 @@ class YaotongRoomSession:
                     return
                 if time.monotonic() >= clock.deadline:
                     decision = None
+        before_action = state.serial
         agent_played = decision is not None and self._apply_command(seat, decision.command)
         ok = agent_played
         if not ok:
@@ -838,8 +840,14 @@ class YaotongRoomSession:
         self._action_epoch += 1
         self._reaction_remaining()
         self.broadcast_snapshot()
-        if agent_played and decision is not None and state.result is None:
-            self._broadcast_llm_commentary(state, seat, decision.message)
+        if agent_played and decision is not None and agent is not None and state.result is None:
+            river = state.players[seat].river
+            if river and river[-1].id > before_action:
+                text = discard_speech(
+                    decision.message, river[-1], agent.config.style, agent.requests - 1,
+                    is_dealer=seat == state.dealer,
+                )
+                self._broadcast_llm_commentary(state, seat, text)
 
     def _llm_scope(self, state: GameState, seat: int) -> dict:
         return {'matchId': self.match_id or self.room_id, 'round': state.hand_number, 'seat': seat}
@@ -932,7 +940,9 @@ class YaotongRoomSession:
             # 补杠在宣告时说一次，即使后来被抢杠，也不在结算补杠时重播。
             action_kind = LLM_MELD_ACTION_KINDS.get((event.kind, event.text))
             if action_kind:
-                text = decision_speech({'kind': action_kind}, agent.config.style, event.id)
+                text = chicken_claim_speech(state, event, action_kind, agent.config.style)
+                if text is None:
+                    text = decision_speech({'kind': action_kind}, agent.config.style, event.id)
                 self._broadcast_llm_commentary(
                     state, event.seat, text.replace('大明杠', '杠'), action_kind=action_kind)
 

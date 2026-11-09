@@ -7,7 +7,7 @@ import pytest
 
 from app.core.yaotong.ai import choose_action
 from app.core.yaotong.tiles import tile_name
-from app.core.yaotong.types import Command, GameState, Meld, Player
+from app.core.yaotong.types import Command, GameEvent, GameState, Meld, Player
 from app.game import yaotong_room
 from app.game.yaotong_room import YaotongRoomSession
 from app.llm import yaotong_agent
@@ -252,3 +252,69 @@ async def test_agent_audio_from_a_previous_hand_is_dropped(room, monkeypatch):
     release_audio.set()
     await asyncio.gather(*room._llm_audio_tasks)
     assert queue.empty()
+
+
+async def test_public_llm_actions_use_persona_voice_once_per_event(room, monkeypatch):
+    room.on_connect(0)
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    voices = []
+
+    async def synthesize(text, style, provider_id):
+        voices.append((text, style, provider_id))
+        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
+
+    monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
+    room.state.players[3].declaration = 'ready'
+    room.state.events = [
+        GameEvent(1, 3, '碰', 'peng'),
+        GameEvent(2, 3, '明杠', 'kong'),
+        GameEvent(3, 3, '存杠', 'kong'),
+        GameEvent(4, 3, '宣告补杠', 'kong-intent'),
+        GameEvent(5, 3, '补杠', 'kong'),
+        GameEvent(6, 3, '报听 · 锁定听口', 'ready'),
+        GameEvent(7, 1, '碰', 'peng'),
+    ]
+    room.state.serial = 7
+    room.broadcast_snapshot()
+    room.broadcast_snapshot()
+    await asyncio.gather(*room._llm_audio_tasks)
+    messages = [queue.get_nowait() for _ in range(queue.qsize())]
+    speech = [message for message in messages if message['kind'] == 'llm_message']
+    audio = [message for message in messages if message['kind'] == 'llm_audio']
+    assert [message['actionKind'] for message in speech] == [
+        'peng', 'gang', 'concealed-kong', 'added-kong', 'ready',
+    ]
+    assert all(message['seat'] == 3 and message['priority'] == 'important' for message in speech)
+    assert all('大明杠' not in message['text'] for message in speech)
+    assert {message['messageId'] for message in audio} == {message['id'] for message in speech}
+    config = room.llm_seats[3].config
+    assert set(voices) == {(message['text'], config.style, config.provider_id) for message in speech}
+    assert room.llm_seats[3].requests == 0
+
+
+async def test_llm_win_audio_can_finish_after_the_match_settles(room, monkeypatch):
+    room.on_connect(0)
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    player = room.state.players[3]
+    player.melds = []
+    player.hand = [1, 2, 3, 4, 5, 6, 19, 20, 21, 14, 14, 24, 25, 26]
+    player.drawn = 26
+    release_audio = asyncio.Event()
+
+    async def synthesize(*_):
+        await release_audio.wait()
+        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
+
+    monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
+    await room._act_ai(3, command=Command(type='hu'))
+    assert queue.get_nowait()['roundResult']['winners'] == [3]
+    speech = queue.get_nowait()
+    assert (speech['kind'], speech['actionKind'], speech['text']) == ('llm_message', 'win', '自摸！')
+    room.match_finished = True
+    room._cancel_llm_audio(keep_win=True)
+    release_audio.set()
+    await asyncio.gather(*room._llm_audio_tasks)
+    audio = queue.get_nowait()
+    assert audio['kind'] == 'llm_audio' and audio['messageId'] == speech['id']

@@ -32,6 +32,7 @@ from app.core.yaotong.types import Command, GameState
 from app.game.room import ROOM_LIFETIME, RoomError, _make_rejoin_code, room_registry
 from app.game.yaotong_protocol import command_from_action, settlement_view, snapshot_for
 from app.llm.config import llm_server_available, load_llm_providers
+from app.llm.decision_speech import decision_speech
 from app.llm.speech_policy import LlmSpeechPolicy
 from app.llm.yaotong_agent import YaotongDiscardAgent
 from app.tts.service import get_tts_service
@@ -50,6 +51,11 @@ EMOTE_IDS = frozenset({'tomato', 'egg', 'pan', 'banana', 'kiss', 'like'})
 QUICK_CHAT_GAP = 0.7
 QUICK_CHAT_REPEAT = 5.0
 EMOTE_GAP = 0.35
+LLM_MELD_ACTION_KINDS = {
+    ('peng', '碰'): 'peng', ('kong-intent', '宣告补杠'): 'added-kong',
+    ('kong', '明杠'): 'gang', ('kong', '暗杠'): 'concealed-kong',
+    ('kong', '转弯杠'): 'concealed-kong', ('kong', '存杠'): 'concealed-kong',
+}
 
 
 @dataclass
@@ -112,7 +118,8 @@ class YaotongRoomSession:
         self.llm_seats: dict[int, YaotongDiscardAgent] = {}
         self._llm_speech = LlmSpeechPolicy()
         self._llm_message_seq = 0
-        self._llm_audio_tasks: set[asyncio.Task] = set()
+        self._llm_event_serial = 0
+        self._llm_audio_tasks: dict[asyncio.Task, bool] = {}
         self.status = 'lobby'
         self.creator_seat: Optional[int] = None
         self.seats: list[Optional[_Seat]] = [None] * 4
@@ -342,6 +349,7 @@ class YaotongRoomSession:
             if state is None or not state.controller.connected:
                 continue
             self.conn.send_to_seat_nowait(seat, self.snapshot_for(seat))
+        self._broadcast_llm_action_events()
 
     # ── 开局 ────────────────────────────────────────────
 
@@ -410,6 +418,7 @@ class YaotongRoomSession:
         }
         self._opening_round = self.state.hand_number
         self._opening_confirmations = set()
+        self._llm_event_serial = self.state.serial
         self._reaction_key = None
         self._quick_chat_sent.clear()
         self._emote_sent.clear()
@@ -437,13 +446,14 @@ class YaotongRoomSession:
                 if state is None:
                     break
                 if state.phase == 'settled':
-                    self._cancel_llm_audio()
+                    self._cancel_llm_audio(keep_win=True)
                     self._release_all_holds()
                     await self._persist_round()
                     self.broadcast_snapshot()
                     if state.result is not None and state.result.finished:
                         break
                     await self._wait_for_continues()
+                    self._cancel_llm_audio()
                     self._continue_confirmations = set()
                     self.state = continue_game(state)
                     self._apply_names()
@@ -469,7 +479,7 @@ class YaotongRoomSession:
             self.conn.broadcast({'kind': 'error', 'code': 'INTERNAL_ERROR'})
             logger.bind(room_id=self.room_id).exception('幺筒房间驱动异常')
         finally:
-            self._cancel_llm_audio()
+            self._cancel_llm_audio(keep_win=self.status == 'finished' and not self._forced_finishing)
 
     async def _drive_step(self) -> None:
         state = self.state
@@ -823,43 +833,87 @@ class YaotongRoomSession:
         if agent_played and decision is not None and state.result is None:
             self._broadcast_llm_commentary(state, seat, decision.message)
 
-    def _broadcast_llm_commentary(self, state: GameState, seat: int, text: str) -> None:
+    def _broadcast_llm_action_events(self) -> None:
+        state = self.state
+        if state is None or not self.llm_seats or state.serial <= self._llm_event_serial:
+            return
+        previous = self._llm_event_serial
+        self._llm_event_serial = state.serial
+        if not self.conn.connected_seats or self.closed or self.match_finished:
+            return
+        for event in state.events:
+            if event.id <= previous:
+                continue
+            if event.kind == 'hu' and state.result is not None:
+                text = {'self': '自摸！', 'rob': '抢杠胡！', 'hot': '接热炮！'}.get(
+                    state.result.win_kind, '我胡了！')
+                for seat in state.result.winners:
+                    if self._discard_agent(seat) is not None:
+                        self._broadcast_llm_commentary(state, seat, text, action_kind='win')
+                continue
+            agent = self._discard_agent(event.seat)
+            if agent is None or state.result is not None:
+                continue
+            if event.kind == 'ready':
+                original = state.players[event.seat].declaration == 'original'
+                self._broadcast_llm_commentary(
+                    state, event.seat, '我原报。' if original else '我报听了。',
+                    action_kind='original-ready' if original else 'ready')
+                continue
+            # 补杠在宣告时说一次，即使后来被抢杠，也不在结算补杠时重播。
+            action_kind = LLM_MELD_ACTION_KINDS.get((event.kind, event.text))
+            if action_kind:
+                text = decision_speech({'kind': action_kind}, agent.config.style, event.id)
+                self._broadcast_llm_commentary(
+                    state, event.seat, text.replace('大明杠', '杠'), action_kind=action_kind)
+
+    def _broadcast_llm_commentary(self, state: GameState, seat: int, text: str, *,
+                                  action_kind: str = 'discard') -> None:
         config = self.llm_seats[seat].config
+        action = action_kind != 'discard'
+        priority = 'important' if action else 'normal'
         if not self.conn.connected_seats or not self._llm_speech.admit(
-                seat, config.style, mandatory=config.style == '话痨'):
+                seat, config.style, priority, mandatory=config.style == '话痨'):
             return
         self._llm_message_seq += 1
         message_id = self._llm_message_seq
         scope = {
             'matchId': self.match_id or self.room_id, 'round': state.hand_number, 'seat': seat,
-            'priority': 'normal', 'purpose': 'commentary',
-            'speechSource': 'model-message', 'actionKind': 'discard',
+            'priority': priority, 'purpose': 'action' if action else 'commentary',
+            'speechSource': 'fixed-line' if action else 'model-message', 'actionKind': action_kind,
         }
         self.conn.broadcast({'kind': 'llm_message', 'id': message_id, 'text': text, **scope})
-        task = asyncio.create_task(self._synthesize_llm_audio(
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._synthesize_llm_audio(
             state, scope, message_id, text, config.style, config.provider_id))
-        self._llm_audio_tasks.add(task)
-        task.add_done_callback(self._llm_audio_tasks.discard)
+        self._llm_audio_tasks[task] = action_kind == 'win'
+        task.add_done_callback(lambda done: self._llm_audio_tasks.pop(done, None))
 
     async def _synthesize_llm_audio(self, state: GameState, scope: dict, message_id: int,
                                      text: str, style: str, provider_id: str) -> None:
         try:
-            audio = await get_tts_service().ensure_audio(text, style, provider_id)
+            audio = await asyncio.wait_for(get_tts_service().ensure_audio(text, style, provider_id), 4.0)
         except Exception:
             return
-        if audio is None or self.closed or self.match_finished or self.state is not state \
-                or state.result is not None:
+        if audio is None or self.closed or self._forced_finishing or self.state is not state:
+            return
+        if scope['actionKind'] != 'win' and (self.match_finished or state.result is not None):
             return
         self.conn.broadcast({
             'kind': 'llm_audio', 'messageId': message_id, 'audioUrl': audio.audio_url,
             'cached': audio.cached, **scope,
         })
 
-    def _cancel_llm_audio(self) -> None:
-        for task in tuple(self._llm_audio_tasks):
+    def _cancel_llm_audio(self, *, keep_win: bool = False) -> None:
+        for task, is_win in tuple(self._llm_audio_tasks.items()):
+            if keep_win and is_win:
+                continue
             if not task.done() and not task.get_loop().is_closed():
                 task.get_loop().call_soon_threadsafe(task.cancel)
-        self._llm_audio_tasks.clear()
+            self._llm_audio_tasks.pop(task, None)
 
     # ── 老手“等”：每小局每个座位独立累计 15 秒 ─────────────
 

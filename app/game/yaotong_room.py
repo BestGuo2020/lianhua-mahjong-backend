@@ -151,6 +151,8 @@ class YaotongRoomSession:
         self._opening: Optional[dict] = None
         self._opening_round = 0
         self._opening_confirmations: set[int] = set()
+        self._round_speech_sent = False
+        self._round_speech_confirmations: set[int] = set()
         self._continue_confirmations: set[int] = set()
         self._quick_chat_sent: dict[int, tuple[str, float]] = {}
         self._emote_sent: dict[int, float] = {}
@@ -162,6 +164,7 @@ class YaotongRoomSession:
 
         self.turn_timeout = 20.0
         self.opening_timeout = 60.0
+        self.round_speech_timeout = 60.0
         self.continue_timeout = 20.0
         # 真人房间注入 PACE 时按单机 AI_DELAYS/YAOTONG_AI_DISCARD_MS 停顿；
         # 测试/无头房间默认 0（仍可用 ai_delay 覆盖）。
@@ -331,6 +334,13 @@ class YaotongRoomSession:
     def opening(self) -> Optional[dict]:
         return self._opening
 
+    @property
+    def round_speech_pending(self) -> Optional[bool]:
+        result = self.state.result if self.state is not None else None
+        if not self.llm_seats or result is None or result.kind not in ('win', 'draw'):
+            return None
+        return not self._round_speech_sent and not self._forced_finishing
+
     def continuation(self) -> Optional[dict]:
         if self.state is None or self.state.result is None:
             return None
@@ -423,6 +433,8 @@ class YaotongRoomSession:
         }
         self._opening_round = self.state.hand_number
         self._opening_confirmations = set()
+        self._round_speech_sent = False
+        self._round_speech_confirmations.clear()
         self._llm_event_serial = self.state.serial
         self._reaction_key = None
         self._quick_chat_sent.clear()
@@ -455,13 +467,24 @@ class YaotongRoomSession:
                     self._release_all_holds()
                     await self._persist_round()
                     self.broadcast_snapshot()
-                    if self.llm_seats:
+                    if self.round_speech_pending:
                         pending_win_audio = tuple(self._llm_audio_tasks)
-                        task = asyncio.create_task(self._announce_llm_round_reactions(state, pending_win_audio))
-                        self._track_llm_audio_task(task, keep_result=True)
+                        try:
+                            await self._announce_llm_round_reactions(state, pending_win_audio)
+                        except Exception:
+                            logger.bind(room_id=self.room_id).exception('幺筒局末感言发送失败')
+                        self._round_speech_sent = True
+                        self.broadcast_snapshot()
+                        # 合成与发送结束后，仍需等待在线真人客户端播完语音。
+                        await self._wait_for_confirmations(
+                            self._round_speech_confirmations, self.round_speech_timeout)
+                    if self.closed or self.match_finished:
+                        break
                     if state.result is not None and state.result.finished:
                         break
                     await self._wait_for_continues()
+                    if self.closed or self.match_finished:
+                        break
                     self._cancel_llm_audio()
                     self._continue_confirmations = set()
                     self.state = continue_game(state)
@@ -1108,18 +1131,16 @@ class YaotongRoomSession:
                 pass
 
     async def _wait_for_continues(self) -> None:
-        required = self._connected_human_seats()
-        if not required:
-            return
-        deadline = asyncio.get_running_loop().time() + self.continue_timeout
-        while asyncio.get_running_loop().time() < deadline:
-            required = self._connected_human_seats()
-            if not required or all(
-                seat in self._continue_confirmations for seat in required
-            ):
+        await self._wait_for_confirmations(self._continue_confirmations, self.continue_timeout)
+
+    async def _wait_for_confirmations(self, confirmations: set[int], timeout: float) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not self.closed and not self.match_finished:
+            if all(seat in confirmations for seat in self._connected_human_seats()):
                 return
             self._wake.clear()
-            remaining = deadline - asyncio.get_running_loop().time()
+            remaining = deadline - loop.time()
             if remaining <= 0:
                 return
             try:
@@ -1197,13 +1218,28 @@ class YaotongRoomSession:
             self._opening_confirmations.add(seat)
             self._wake.set()
             return True, ''
+        if kind == 'round_speech_done':
+            if self.seats[seat] is None:
+                return False, 'NOT_HUMAN_SEAT'
+            if (not self._round_speech_sent or self.state is None or self.state.result is None
+                    or type(message.get('round')) is not int or message['round'] != self.state.hand_number
+                    or message.get('matchId') != (self.match_id or self.room_id)):
+                return False, 'STALE_ACTION'
+            self._round_speech_confirmations.add(seat)
+            self._wake.set()
+            return True, ''
         if message.get('kind') == 'continue':
             if self.seats[seat] is None:
                 return False, 'NOT_HUMAN_SEAT'
             if self.state is None or self.state.result is None or self.state.result.finished \
                     or message.get('round') != self.state.hand_number:
                 return False, 'STALE_ACTION'
+            if 'matchId' in message and message['matchId'] != (self.match_id or self.room_id):
+                return False, 'STALE_ACTION'
             self._continue_confirmations.add(seat)
+            # 旧客户端只有“继续”回执。提前确认也只能在台词发完后推进。
+            if 'matchId' not in message:
+                self._round_speech_confirmations.add(seat)
             self._wake.set()
             self.broadcast_snapshot()
             return True, ''

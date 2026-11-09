@@ -8,7 +8,7 @@ import pytest
 from app.core.yaotong.ai import choose_action
 from app.core.yaotong.engine import act
 from app.core.yaotong.tiles import YAO, tile_name
-from app.core.yaotong.types import Command, GameEvent, GameState, Meld, Player
+from app.core.yaotong.types import Command, GameEvent, GameState, Meld, Player, Settlement
 from app.game import yaotong_room
 from app.game.yaotong_room import YaotongRoomSession
 from app.llm import yaotong_agent
@@ -490,23 +490,38 @@ async def test_llm_win_audio_precedes_round_reactions_after_the_match_settles(ro
 
     monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
     await room._act_ai(3, command=Command(type='hu'))
-    assert queue.get_nowait()['roundResult']['winners'] == [3]
+    snapshot = queue.get_nowait()
+    assert snapshot['roundResult']['winners'] == [3]
+    assert snapshot['roundSpeechPending'] is True
     speech = queue.get_nowait()
     assert (speech['kind'], speech['actionKind'], speech['text']) == ('llm_message', 'win', '自摸！')
     room.state.result = replace(room.state.result, finished=True)
-    await asyncio.wait_for(room._drive(), 1)
-    assert room.match_finished
-    assert all(message.get('purpose') != 'round-reaction'
-               for message in (queue.get_nowait() for _ in range(queue.qsize())))
-    release_audio.set()
-    await asyncio.gather(*room._llm_audio_tasks)
-    audio = queue.get_nowait()
+    drive = asyncio.create_task(room._drive())
+    messages = []
+    try:
+        release_audio.set()
+        while True:
+            message = await asyncio.wait_for(queue.get(), 1)
+            if message.get('roundSpeechPending') is False:
+                break
+            if message['kind'] in ('llm_message', 'llm_audio'):
+                messages.append(message)
+        assert not room.match_finished
+        done = {'kind': 'round_speech_done', 'matchId': snapshot['roomId'], 'round': snapshot['round']}
+        assert room.handle_client_message(0, done) == (True, '')
+        await asyncio.wait_for(drive, 1)
+        assert room.match_finished
+    finally:
+        drive.cancel()
+        await asyncio.gather(drive, return_exceptions=True)
+
+    audio = messages.pop(0)
     if audio_available:
         assert audio['kind'] == 'llm_audio' and audio['messageId'] == speech['id']
     else:
         assert audio == {**speech, 'hasAudio': False}
     for seat, lines in ((3, yaotong_room._LLM_WIN_LINES['self-draw']), (2, yaotong_room._LLM_LOSS_LINES)):
-        reaction = queue.get_nowait()
+        reaction = messages.pop(0)
         config = room.llm_seats[seat].config
         assert (reaction['kind'], reaction['purpose'], reaction['seat'], reaction['hasAudio']) == (
             'llm_message', 'round-reaction', seat, audio_available,
@@ -514,6 +529,44 @@ async def test_llm_win_audio_precedes_round_reactions_after_the_match_settles(ro
         assert reaction['text'] in lines[config.style]
         assert (reaction['text'], config.style, config.provider_id) in voices
         if audio_available:
-            reaction_audio = queue.get_nowait()
+            reaction_audio = messages.pop(0)
             assert (reaction_audio['kind'], reaction_audio['messageId']) == ('llm_audio', reaction['id'])
-    assert queue.empty()
+    assert not messages
+
+
+async def test_round_speech_playback_delays_the_next_round_wait(room, monkeypatch):
+    other_seat, _, _ = room.join_or_rejoin('乙')
+    room.on_connect(0)
+    room.on_connect(other_seat)
+    room._opening_confirmations.update((0, other_seat))
+    room.state.phase = 'settled'
+    room.state.result = Settlement('draw', [], None, '流局', [0] * 4, 0, False)
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    continue_started = asyncio.Event()
+
+    async def synthesize(*_):
+        return None
+
+    async def wait_for_continues():
+        continue_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
+    monkeypatch.setattr(room, '_wait_for_continues', wait_for_continues)
+    drive = asyncio.create_task(room._drive())
+    try:
+        while (await asyncio.wait_for(queue.get(), 1)).get('roundSpeechPending') is not False:
+            pass
+        scope = {'matchId': room.room_id, 'round': room.state.hand_number}
+        done = {'kind': 'round_speech_done', **scope}
+        assert room.handle_client_message(other_seat, {'kind': 'continue', **scope}) == (True, '')
+        assert room.handle_client_message(0, {**done, 'round': scope['round'] + 1}) == (False, 'STALE_ACTION')
+        assert room.handle_client_message(0, done) == (True, '')
+        await asyncio.sleep(0)
+        assert not continue_started.is_set()
+        room.on_disconnect(other_seat)
+        await asyncio.wait_for(continue_started.wait(), 1)
+    finally:
+        drive.cancel()
+        await asyncio.gather(drive, return_exceptions=True)

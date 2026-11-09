@@ -314,6 +314,7 @@ def snapshot_for(room, seat: int) -> dict:
     state = room.state
     result = state.result if state is not None else None
     continuation = room.continuation()
+    round_speech_pending = room.round_speech_pending
     retained = hu_window(state, seat) if state is not None else None
     return {
         'kind': 'yt_snapshot',
@@ -335,6 +336,7 @@ def snapshot_for(room, seat: int) -> dict:
         'opening': room.opening,
         'flowStep': room._transition.step if getattr(room, '_transition', None) else None,
         'roundResult': settlement_view(result) if result is not None else None,
+        **({'roundSpeechPending': round_speech_pending} if round_speech_pending is not None else {}),
         **({'continuation': continuation} if continuation else {}),
         'view': snapshot_view(room, seat),
         # 只给本人裁剪后的胡口，不暴露其他家的手牌或私有候选。

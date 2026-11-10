@@ -255,7 +255,6 @@ class PendingAuthorization:
 
 @dataclass
 class AuthenticatedSession:
-    access_token: str = field(repr=False)
     account: dict[str, Any]
     expires_at: float
 
@@ -316,7 +315,7 @@ def _safe_oauth_error(response: httpx.Response) -> str:
 class WakuDemoOAuthService:
     """服务端 OAuth 会话仓库。
 
-    access token 只存在服务端内存，浏览器只保存不可推导的应用会话 ID。
+    access token 只用于读取上游账户，游戏会话保存账户摘要和独立的有效期。
     支持 HttpOnly Cookie，以及经一次性票据和原标签页证明换取的 Bearer 会话。
     OAuth 临时事务与登录会话使用不同 Cookie，失败回调不会注销已有登录。
     多 worker 部署时应将事务/防重放/会话状态替换为共享 Redis 存储。
@@ -543,16 +542,14 @@ class WakuDemoOAuthService:
             if owns_client:
                 await client.aclose()
 
-    def create_session(self, access_token: str, expires_in: int,
-                       account: dict[str, Any]) -> str:
+    def create_session(self, account: dict[str, Any]) -> str:
         now = time.time()
         session_id = secrets.token_urlsafe(32)
         with self._lock:
             self._cleanup(now)
             self._sessions[session_id] = AuthenticatedSession(
-                access_token=access_token,
                 account=account,
-                expires_at=now + expires_in,
+                expires_at=now + self.config.max_session_ttl_seconds,
             )
         return session_id
 

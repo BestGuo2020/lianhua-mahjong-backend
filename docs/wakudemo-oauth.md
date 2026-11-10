@@ -36,7 +36,7 @@ backend/
 4. WakuDemo 回调 `GET /api/login/callback?code=...&state=...`。成功和错误回调都严格、常量时间校验 `state`；事务只允许消费一次。
 5. 后端以 `application/x-www-form-urlencoded` POST Token 接口，字段为 `grant_type=authorization_code`、`code`、`client_id`、`redirect_uri`、`code_verifier`。超时或失败后不会重试同一个 code，用户应重新发起授权。
 6. 后端以 `Authorization: Bearer <access_token>` GET Account 接口。账户必须含稳定的 `uid`（兼容 `id/account_id/user_id`）；只保留 `id/displayName/avatarUrl` 摘要。
-7. 后端保存 token、最小账户摘要和过期时间，给浏览器签发新的随机登录 session Cookie，并删除 OAuth transaction Cookie。新客户端还会执行下节的会话交接。浏览器通过 `GET /api/login/session` 读取摘要，响应中永不包含上游 access token。
+7. 后端保存最小账户摘要和游戏会话的过期时间，签发新的随机登录 session Cookie，并删除 OAuth transaction Cookie。游戏会话按独立有效期使用，读取账户后即丢弃上游 access token。新客户端还会执行下节的会话交接。
 
 ### Safari 与跨站 Cookie 受限时的会话交接
 
@@ -79,7 +79,7 @@ OAuth 事务 Cookie 和登录 Cookie 是两个独立值。取消重登、错误 
 | `WAKUDEMO_TIMEOUT_SECONDS` | `10` | Token/Account 单次网络超时 |
 | `WAKUDEMO_PENDING_TTL_SECONDS` | `600` | state + verifier 临时事务有效期 |
 | `WAKUDEMO_TOKEN_TTL_SECONDS` | `3600` | 平台未返回 `expires_in` 时的保守有效期 |
-| `WAKUDEMO_MAX_SESSION_TTL_SECONDS` | `86400` | 本游戏最多保存 token 的时长；平台更长时会截断 |
+| `WAKUDEMO_MAX_SESSION_TTL_SECONDS` | `86400` | 游戏登录会话及 Cookie 的有效期 |
 | `WAKUDEMO_MAX_PENDING` | `1024` | 单进程最多同时存在的 OAuth 事务，防止无界占用内存 |
 | `WAKUDEMO_LOGIN_RATE_LIMIT_PER_MINUTE` | `30` | 每客户端 IP 每分钟最多发起的授权次数；仅当网关已限流时可设 `0` 关闭 |
 | `WAKUDEMO_COOKIE_NAME` | `lgm_wakudemo_session` | 登录会话 Cookie 名 |

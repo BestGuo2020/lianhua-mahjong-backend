@@ -36,7 +36,7 @@ _UNCONFIRMED_RESULT = re.compile(
 )
 
 
-def _matches_discard(text: str, tile: str, tier: str | None) -> bool:
+def _matches_discard(text: str, tile: str, tier: str | None, *, before_discard: bool) -> bool:
     checked = ''.join(normalize('NFKC', text).split())
     if _PRIVATE_COMMENTARY.search(checked) or _UNCONFIRMED_RESULT.search(checked):
         return False
@@ -50,25 +50,25 @@ def _matches_discard(text: str, tile: str, tier: str | None) -> bool:
         named = _TILE_MENTION.search(phrase)
         if named:
             spoken = named.group()
-            if (not _NAMED_DISCARD.fullmatch(phrase)
+            if (before_discard or not _NAMED_DISCARD.fullmatch(phrase)
                     or _TILE_ALIASES.get(spoken, spoken.translate(_TILE_TRANSLATION)) != tile):
                 return False
         claims = set(_CHICKEN_CLAIM.findall(phrase))
         if not claims and ((named and '冲' in phrase) or _GENERIC_RUSH.search(phrase)):
             claims.add('冲鸡')
-        if claims and (not claims <= allowed or _UNSUPPORTED_CLAIM.search(phrase)):
+        if claims and (before_discard or not claims <= allowed or _UNSUPPORTED_CLAIM.search(phrase)):
             return False
     return True
 
 
 def discard_speech(message: str, discard: Discard, style: str, sequence: int,
-                   *, is_dealer: bool) -> str:
+                   *, is_dealer: bool, before_discard: bool = False) -> str:
     tile = tile_name(discard.tile)
     tier = discard_chicken_tier(discard)
     text = compact_speech_text(message)
-    if not _matches_discard(text, tile, tier):
+    if not _matches_discard(text, tile, tier, before_discard=before_discard):
         text = ''
-    if not text and tier and tier != '底鸡':
+    if not text and not before_discard and tier and tier != '底鸡':
         text = {
             '激进': f'{tier}，走起！',
             '稳健': f'{tile}{tier}。',

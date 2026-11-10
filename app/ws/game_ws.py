@@ -74,7 +74,10 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
     queue: asyncio.Queue = asyncio.Queue()
     sender = asyncio.create_task(_sender(queue, websocket, room_id, seat))
     previous_socket = room.conn.register(seat, queue, sender, websocket)
-    room.on_connect(seat)
+    if room.ruleset_id == 'yaotong' and websocket.query_params.get('llm_midpoint') == '1':
+        room.on_connect(seat, llm_midpoint=True)
+    else:
+        room.on_connect(seat)
     if previous_socket is not None:
         try:
             await previous_socket.close()

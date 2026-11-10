@@ -339,6 +339,86 @@ async def test_agent_only_comments_if_its_discard_lands(room, monkeypatch):
     assert queue.empty()
 
 
+@pytest.mark.parametrize('disconnect', [False, True], ids=['both-midpoints', 'window-changed'])
+async def test_agent_speaks_and_waits_before_discard(room, monkeypatch, disconnect):
+    other, _, _ = room.join_or_rejoin('乙')
+    queue = asyncio.Queue()
+    room.conn.register(0, queue, None)
+    room.conn.register(other, asyncio.Queue(), None)
+    room.on_connect(0, llm_midpoint=True)
+    room.on_connect(other, llm_midpoint=True)
+    player = room.state.players[3]
+    player.melds = []
+    player.chicken_peng = []
+    player.hand = [1, 1, 4, 5, 6, YAO, 11, 14, 17, 18, 20, 22, 24, 26]
+    player.drawn = 26
+    room.state.wall = [3, 7, 9, 12, 16, 21, 23, 25]
+    for opponent in room.state.players:
+        opponent.discards = 1
+    audio_url = '/api/tts/audio/' + 'a' * 64 + '.mp3'
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        candidate = next(item for item in json.loads(user)['candidates'] if item['tile'] == tile_name(YAO))
+        return candidate['id'], '幺筒首冲，走你！'
+
+    async def synthesize(text, style, provider_id):
+        assert text == '这张先走。'
+        return SimpleNamespace(audio_url=audio_url, cached=True)
+
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
+    turn = asyncio.create_task(room._act_ai(3, delay=0))
+    try:
+        speech = await asyncio.wait_for(queue.get(), 1)
+        assert speech['kind'] == 'llm_message' and speech['awaitMidpoint']
+        assert speech['text'] == '这张先走。'
+        audio = await asyncio.wait_for(queue.get(), 1)
+        assert audio['kind'] == 'llm_audio' and audio['messageId'] == speech['id']
+        assert audio['audioUrl'] == audio_url and not player.river
+        ack = {
+            'kind': 'llm_midpoint', 'matchId': speech['matchId'], 'round': speech['round'],
+            'messageId': speech['id'],
+        }
+        room.handle_client_message(other, {**ack, 'round': ack['round'] + 1})
+        room.handle_client_message(0, ack)
+        room.handle_client_message(0, ack)
+        await asyncio.sleep(0)
+        assert not turn.done() and not player.river
+        if disconnect:
+            room.on_disconnect(other)
+        else:
+            room.handle_client_message(other, ack)
+        await asyncio.wait_for(turn, 1)
+        assert bool(player.river) == (not disconnect)
+        if not disconnect:
+            assert player.river[-1].tile == YAO and player.river[-1].stage == 'first'
+            assert queue.get_nowait()['kind'] == 'yt_snapshot'
+        assert queue.empty()
+    finally:
+        turn.cancel()
+        await asyncio.gather(turn, return_exceptions=True)
+    assert room._discard_speech is None
+
+
+@pytest.mark.parametrize('audio_available', [False, True], ids=['no-audio', 'no-client-ack'])
+async def test_agent_discards_when_voice_cannot_release_the_turn(room, monkeypatch, audio_available):
+    room.on_connect(0, llm_midpoint=True)
+    room.conn.register(0, asyncio.Queue(), None)
+
+    async def request(config, system, user, candidate_ids, **kwargs):
+        return candidate_ids[0], ''
+
+    async def synthesize(*_):
+        return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True) if audio_available else None
+
+    monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
+    monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
+    monkeypatch.setattr(yaotong_room, 'LLM_DISCARD_SPEECH_TIMEOUT', 0.05)
+    await asyncio.wait_for(room._act_ai(3, delay=0), 1)
+    assert room.state.players[3].river
+    assert room._discard_speech is None
+
+
 async def test_agent_audio_from_a_previous_hand_is_dropped(room, monkeypatch):
     queue = asyncio.Queue()
     room.conn.register(0, queue, None)

@@ -76,7 +76,7 @@ def test_handoff_expires_and_cannot_resurrect_revoked_sessions(monkeypatch):
     service = WakuDemoOAuthService(config())
     _, tx = service.begin(session_challenge=create_s256_challenge(VERIFIER))
     pending = service._pending[tx]
-    sid = service.create_session('upstream', 600, {'id': 'a'})
+    sid = service.create_session({'id': 'a'})
     ticket = service.create_handoff(sid, pending)
     service._handoffs[ticket].expires_at = 0
     with pytest.raises(WakuDemoOAuthError, match='session_handoff_rejected'):

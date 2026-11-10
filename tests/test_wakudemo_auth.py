@@ -93,10 +93,10 @@ def test_non_ascii_state_is_rejected_without_consuming_transaction():
     service.consume_pending(transaction_id, valid_state, 'code-a')
 
 
-def test_expired_authorization_and_token_session_are_removed(monkeypatch):
+def test_expired_authorization_and_game_session_are_removed(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(oauth_module.time, 'time', lambda: now[0])
-    cfg = config()
+    cfg = replace(config(), max_session_ttl_seconds=1)
     service = WakuDemoOAuthService(cfg)
 
     location, browser_session_id = service.begin()
@@ -105,7 +105,7 @@ def test_expired_authorization_and_token_session_are_removed(monkeypatch):
     with pytest.raises(WakuDemoOAuthError, match='authorization_request_expired'):
         service.consume_pending(browser_session_id, state, 'late-code')
 
-    session_id = service.create_session('server-token', 1, {'id': 'account-1'})
+    session_id = service.create_session({'id': 'account-1'})
     assert service.get_session(session_id) is not None
     now[0] += 2
     assert service.get_session(session_id) is None
@@ -306,7 +306,10 @@ async def test_start_configuration_error_returns_to_frontend(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complete_callback_keeps_token_server_side(monkeypatch):
+async def test_callback_keeps_game_session_valid_after_the_upstream_token_expires(monkeypatch):
+    now = [oauth_module.time.time()]
+    monkeypatch.setattr(oauth_module.time, 'time', lambda: now[0])
+
     async def provider(request: httpx.Request):
         if request.url.path.endswith('/token'):
             return httpx.Response(200, json={
@@ -346,6 +349,7 @@ async def test_complete_callback_keeps_token_server_side(monkeypatch):
         })
         assert callback.status_code == 302
         assert 'wakudemo_login=success' in callback.headers['location']
+        assert f'max-age={service.config.max_session_ttl_seconds}' in callback.headers['set-cookie'].lower()
         authenticated_session_id = client.cookies.get(config().cookie_name)
         assert authenticated_session_id
         assert authenticated_session_id != transaction_cookie
@@ -375,6 +379,9 @@ async def test_complete_callback_keeps_token_server_side(monkeypatch):
         # 重放 callback 只清 OAuth 事务，不能注销当前有效登录。
         assert (await client.get('/api/login/session')).json()['authenticated'] is True
 
+        now[0] += 601
+        assert (await client.get('/api/login/session')).json() == session.json()
+
         logout = await client.post('/api/login/logout', headers={
             'Content-Type': 'application/json',
             'Origin': 'http://localhost:5173',
@@ -390,7 +397,6 @@ async def test_complete_callback_keeps_token_server_side(monkeypatch):
 async def test_cancelling_reauthentication_preserves_existing_login(monkeypatch):
     service = WakuDemoOAuthService(config())
     old_session_id = service.create_session(
-        'old-server-token', 600,
         {'id': 'waku-old', 'displayName': '旧账号', 'avatarUrl': None},
     )
     monkeypatch.setattr(auth_api, 'get_wakudemo_oauth_service', lambda: service)
@@ -449,9 +455,8 @@ async def test_account_without_stable_id_does_not_create_session(monkeypatch):
 async def test_expired_session_cookie_is_deleted(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(oauth_module.time, 'time', lambda: now[0])
-    service = WakuDemoOAuthService(config())
+    service = WakuDemoOAuthService(replace(config(), max_session_ttl_seconds=1))
     session_id = service.create_session(
-        'expired-token', 1,
         {'id': 'waku-1', 'displayName': None, 'avatarUrl': None},
     )
     monkeypatch.setattr(auth_api, 'get_wakudemo_oauth_service', lambda: service)
@@ -475,7 +480,6 @@ async def test_expired_session_cookie_is_deleted(monkeypatch):
 async def test_session_origin_and_logout_csrf_are_enforced(monkeypatch):
     service = WakuDemoOAuthService(config())
     session_id = service.create_session(
-        'server-token', 600,
         {'id': 'waku-1', 'displayName': None, 'avatarUrl': None},
     )
     monkeypatch.setattr(auth_api, 'get_wakudemo_oauth_service', lambda: service)

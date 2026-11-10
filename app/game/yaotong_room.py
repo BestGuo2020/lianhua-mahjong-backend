@@ -23,6 +23,7 @@ from app.core.yaotong.engine import (
     act,
     continue_game,
     create_game,
+    preview_discard,
     self_options,
 )
 from app.core.yaotong.hands import waits
@@ -56,6 +57,7 @@ QUICK_CHAT_GAP = 0.7
 QUICK_CHAT_REPEAT = 5.0
 EMOTE_GAP = 0.35
 LLM_THINKING_CUE_DELAY = 0.8
+LLM_DISCARD_SPEECH_TIMEOUT = 7.0
 LLM_MELD_ACTION_KINDS = {
     ('peng', '碰'): 'peng', ('kong-intent', '宣告补杠'): 'added-kong',
     ('kong', '明杠'): 'gang', ('kong', '暗杠'): 'concealed-kong',
@@ -96,6 +98,13 @@ class _Decision:
     paused_remaining: Optional[float] = None
 
 
+@dataclass
+class _DiscardSpeech:
+    message_id: int
+    listeners: set[int]
+    acknowledged: set[int] = field(default_factory=set)
+
+
 class YaotongRoomSession:
     """单房间会话。状态机由 engine.act 推进，本类只负责网络与节奏。"""
 
@@ -125,6 +134,8 @@ class YaotongRoomSession:
         self._llm_message_seq = 0
         self._llm_event_serial = 0
         self._llm_audio_tasks: dict[asyncio.Task, bool] = {}
+        self._llm_midpoint_seats: set[int] = set()
+        self._discard_speech: _DiscardSpeech | None = None
         self.status = 'lobby'
         self.creator_seat: Optional[int] = None
         self.seats: list[Optional[_Seat]] = [None] * 4
@@ -250,6 +261,7 @@ class YaotongRoomSession:
                     self._release_hold(seat)
                 self._wake.set()
                 self.auto_seats.discard(seat)
+                self._llm_midpoint_seats.discard(seat)
                 self.conn.unregister(seat)
                 if self.creator_seat == seat:
                     self._transfer_creator()
@@ -297,16 +309,21 @@ class YaotongRoomSession:
             else:
                 self.reserved_seats.pop(seat, None)
 
-    def on_connect(self, seat: int) -> None:
+    def on_connect(self, seat: int, *, llm_midpoint: bool = False) -> None:
         state = self.seats[seat]
         if state is not None:
             state.controller.connected = True
             state.connected_at = time.monotonic()
+        if llm_midpoint:
+            self._llm_midpoint_seats.add(seat)
+        else:
+            self._llm_midpoint_seats.discard(seat)
         self._action_epoch += 1
         self._wake.set()
 
     def on_disconnect(self, seat: int) -> None:
         self._action_epoch += 1
+        self._llm_midpoint_seats.discard(seat)
         state = self.seats[seat]
         if state is not None:
             state.controller.connected = False
@@ -845,6 +862,12 @@ class YaotongRoomSession:
                     return
                 if time.monotonic() >= clock.deadline:
                     decision = None
+        speech_handled = False
+        if decision is not None and agent is not None and clock is not None:
+            speech_handled = await self._speak_before_discard(
+                agent, state, seat, decision, clock.deadline, current_window)
+            if not current_window():
+                return
         before_action = state.serial
         agent_played = decision is not None and self._apply_command(seat, decision.command)
         ok = agent_played
@@ -863,7 +886,7 @@ class YaotongRoomSession:
         self._action_epoch += 1
         self._reaction_remaining()
         self.broadcast_snapshot()
-        if agent_played and decision is not None and agent is not None and state.result is None:
+        if not speech_handled and agent_played and decision is not None and agent is not None and state.result is None:
             river = state.players[seat].river
             if river and river[-1].id > before_action:
                 text = discard_speech(
@@ -874,6 +897,50 @@ class YaotongRoomSession:
 
     def _llm_scope(self, state: GameState, seat: int) -> dict:
         return {'matchId': self.match_id or self.room_id, 'round': state.hand_number, 'seat': seat}
+
+    async def _speak_before_discard(
+        self, agent: YaotongDiscardAgent, state: GameState, seat: int,
+        decision: YaotongDiscardDecision, turn_deadline: float,
+        current_window: Callable[[], bool],
+    ) -> bool:
+        listeners = self._llm_midpoint_seats.intersection(self.conn.connected_seats)
+        now = time.monotonic()
+        deadline = min(turn_deadline, now + LLM_DISCARD_SPEECH_TIMEOUT)
+        hand = state.players[seat].hand
+        index = decision.command.index
+        if not listeners or deadline <= now or index is None or not 0 <= index < len(hand):
+            return False
+        config = agent.config
+        if not self._llm_speech.admit(seat, config.style, mandatory=config.style == '话痨'):
+            return True
+        text = discard_speech(
+            decision.message, preview_discard(state, seat, hand[index]), config.style,
+            agent.requests - 1, is_dealer=seat == state.dealer, before_discard=True,
+        )
+        self._llm_message_seq += 1
+        message_id = self._llm_message_seq
+        scope = {
+            **self._llm_scope(state, seat), 'priority': 'important', 'purpose': 'action',
+            'speechSource': 'model-message', 'actionKind': 'discard', 'awaitMidpoint': True,
+        }
+        self.conn.broadcast({'kind': 'llm_message', 'id': message_id, 'text': text, **scope})
+        sent = await self._synthesize_llm_audio(
+            state, scope, message_id, text, config.style, config.provider_id,
+            is_current=current_window, timeout=min(4.0, deadline - time.monotonic()))
+        if not sent:
+            return True
+
+        playback = _DiscardSpeech(message_id, listeners)
+        self._discard_speech = playback
+        try:
+            while current_window() and not listeners.issubset(playback.acknowledged):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await self._wait_pace(remaining)
+        finally:
+            self._discard_speech = None
+        return True
 
     async def _choose_discard_with_thinking(
         self, agent: YaotongDiscardAgent, state: GameState, seat: int, command: Command,
@@ -999,17 +1066,18 @@ class YaotongRoomSession:
 
     async def _synthesize_llm_audio(self, state: GameState, scope: dict, message_id: int,
                                      text: str, style: str, provider_id: str,
-                                     *, is_current: Optional[Callable[[], bool]] = None) -> None:
+                                     *, is_current: Optional[Callable[[], bool]] = None,
+                                     timeout: float = 4.0) -> bool:
         try:
-            audio = await asyncio.wait_for(get_tts_service().ensure_audio(text, style, provider_id), 4.0)
+            audio = await asyncio.wait_for(get_tts_service().ensure_audio(text, style, provider_id), timeout)
         except Exception:
             audio = None
         if (self.closed or self._forced_finishing or self.state is not state
                 or (is_current is not None and not is_current())):
-            return
+            return False
         round_reaction = scope['purpose'] == 'round-reaction'
         if not round_reaction and scope.get('actionKind') != 'win' and (self.match_finished or state.result is not None):
-            return
+            return False
         if round_reaction:
             self.conn.broadcast({
                 'kind': 'llm_message', 'id': message_id, 'text': text, 'hasAudio': audio is not None, **scope,
@@ -1019,11 +1087,12 @@ class YaotongRoomSession:
                 self.conn.broadcast({
                     'kind': 'llm_message', 'id': message_id, 'text': text, 'hasAudio': False, **scope,
                 })
-            return
+            return False
         self.conn.broadcast({
             'kind': 'llm_audio', 'messageId': message_id, 'audioUrl': audio.audio_url,
             'cached': audio.cached, **scope,
         })
+        return True
 
     def _cancel_llm_audio(self, *, keep_result: bool = False) -> None:
         for task, is_result in tuple(self._llm_audio_tasks.items()):
@@ -1194,6 +1263,15 @@ class YaotongRoomSession:
         kind = message.get('kind')
         if kind in ('quick_chat', 'emote'):
             return self._handle_interaction(seat, kind, message)
+        if kind == 'llm_midpoint':
+            playback = self._discard_speech
+            if (playback is not None and seat in playback.listeners and self.state is not None
+                    and message.get('matchId') == (self.match_id or self.room_id)
+                    and type(message.get('round')) is int and message['round'] == self.state.hand_number
+                    and type(message.get('messageId')) is int and message['messageId'] == playback.message_id):
+                playback.acknowledged.add(seat)
+                self._wake.set()
+            return True, ''
         if message.get('kind') == 'auto':
             enabled = message.get('enabled')
             if not isinstance(enabled, bool):

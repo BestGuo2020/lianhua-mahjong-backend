@@ -173,7 +173,7 @@ async def test_login_start_errors_also_return_to_selected_site(monkeypatch):
 @pytest.mark.parametrize('origin', [OLD_SITE[:-1], NEW_SITE[:-1], 'https://evil.example'])
 async def test_session_and_logout_origins_include_both_sites_only(monkeypatch, origin):
     service = WakuDemoOAuthService(config())
-    session_id = service.create_session('server-only', 600, {'id': 'same-user'})
+    session_id = service.create_session({'id': 'same-user'})
     monkeypatch.setattr(auth_api, 'get_wakudemo_oauth_service', lambda: service)
     app = FastAPI()
     app.include_router(auth_api.router)

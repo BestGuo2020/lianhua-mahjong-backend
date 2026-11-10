@@ -203,14 +203,13 @@ async def wakudemo_login_callback(
         pending = service.consume_pending(transaction_id, state, code)
         if not code:
             raise WakuDemoOAuthError('missing_authorization_code')
-        access_token, expires_in, account = await service.exchange_code(
+        _, _, account = await service.exchange_code(
             code, pending.code_verifier)
         account_summary = _account_summary(account)
         if account_summary['id'] is None:
             raise WakuDemoOAuthError('invalid_account_response', 502)
         # 授权成功后轮换随机会话 ID，防止登录前会话固定。
-        authenticated_session_id = service.create_session(
-            access_token, expires_in, account_summary)
+        authenticated_session_id = service.create_session(account_summary)
     except WakuDemoOAuthError as exc:
         logger.warning('WakuDemo OAuth 登录失败: {}', exc.code)
         if service.config.frontend_origin:
@@ -234,7 +233,7 @@ async def wakudemo_login_callback(
         fragment['wakudemo_ticket'] = service.create_handoff(authenticated_session_id, pending)
         destination = urlunsplit((*parts[:4], urlencode(fragment)))
     response = RedirectResponse(destination, status_code=302)
-    _set_session_cookie(response, authenticated_session_id, expires_in)
+    _set_session_cookie(response, authenticated_session_id, service.config.max_session_ttl_seconds)
     _delete_transaction_cookie(response)
     return _harden_auth_response(response)
 

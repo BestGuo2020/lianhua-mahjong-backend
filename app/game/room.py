@@ -29,6 +29,7 @@ from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.llm_player import LLMPlayer
 from app.game.remote_player import RemotePlayer
+from app.game.table_interactions import REQUEST_KIND, TableInteractionRelay
 from app.llm.config import (default_provider_id, llm_server_available,
                             load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname, display_name, provider_folder
@@ -302,6 +303,7 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
         'matchId': match_id_of(room),
+        'interactionScope': room.table_interaction_scope(),
         'phase': phase,
         'round': mgr.round if mgr else 1,
         'dealer': mgr.dealer if mgr else 0,
@@ -375,6 +377,7 @@ class RoomSession:
         self._rejoin_window = 30.0
         self._rejoin_limit = 5
         self.conn = ConnectionManager()
+        self._table_interactions = TableInteractionRelay()
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
@@ -692,8 +695,21 @@ class RoomSession:
         for seat in self.conn.connected_seats:
             self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
 
+    def table_interaction_scope(self) -> str | None:
+        game = self.manager
+        if (game is None or self.status != 'playing' or game.match_finished
+                or game.phase in ('lobby', 'win-effect', 'settled', 'finished')):
+            return self._table_interactions.scope_for(None)
+        return self._table_interactions.scope_for((self.match_started_at, game.round, game.honba))
+
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
+        if message.get('kind') == REQUEST_KIND:
+            if self.seats[seat] is not None:
+                event = self._table_interactions.accept(seat, message, self.table_interaction_scope())
+                if event is not None:
+                    self.conn.broadcast(event)
+            return True, ''
         if message.get('type') == 'ping':
             # 回应 pong：客户端据此测 RTT → 信号质量显示（signal-N）
             self.conn.send_to_seat_nowait(seat, {'kind': 'pong'})

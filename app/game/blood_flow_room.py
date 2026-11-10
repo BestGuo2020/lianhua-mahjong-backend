@@ -23,6 +23,7 @@ from app.game.blood_flow_engine import (SEATS, BloodFlowEngine, next_seat,
 from app.game.manager import PLAYER_SEED
 from app.game.room import (ROOM_LIFETIME, RoomError, _model_speech_metadata,
                            room_registry)
+from app.game.table_interactions import REQUEST_KIND, TableInteractionRelay
 from app.llm.persona import avatar_url, default_nickname, display_name, provider_folder
 from app.llm.speech_policy import LlmSpeechPolicy, compact_speech_text
 from app.rules.blood_flow import BloodFlowRuleSet
@@ -171,6 +172,7 @@ class BloodFlowRoomSession:
         self.llm_request = llm_request_fn
         self.seats: list[Optional[_Seat]] = [None] * 4
         self.conn = ConnectionManager()
+        self._table_interactions = TableInteractionRelay()
         self.engine: Optional[BloodFlowEngine] = None
         self.scores = [BLOOD_FLOW_CONFIG.initial_score] * 4
         self.round_index = -1
@@ -872,7 +874,18 @@ class BloodFlowRoomSession:
             self.broadcast_snapshot()
         return True, ''
 
+    def table_interaction_scope(self) -> str | None:
+        engine = self.engine
+        active = self.status == 'playing' and not self.match_finished and engine is not None and engine.result is None
+        return self._table_interactions.scope_for(engine if active else None)
+
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
+        if message.get('kind') == REQUEST_KIND:
+            if self.seats[seat] is not None:
+                event = self._table_interactions.accept(seat, message, self.table_interaction_scope())
+                if event is not None:
+                    self.conn.broadcast(event)
+            return True, ''
         # 心跳：前端 roomSocket 发的是 {'type': 'ping'}（经典房间同款），不是 kind。
         if message.get('type') == 'ping' or message.get('kind') == 'ping':
             # 心跳回应：客户端据此测 RTT → 信号质量（与经典房间同协议）。
@@ -1061,6 +1074,7 @@ class BloodFlowRoomSession:
         continuation = self._continuation()
         return {
             'kind': 'bf_snapshot',
+            'interactionScope': self.table_interaction_scope(),
             'view': self._seat_view(seat),
             # 局号对玩家 1-based（东1局…）；回执按同一口径校验。
             'round': self.round_index + 1,

@@ -258,7 +258,7 @@ def _structural_values(player: Player, ctx: WinContext) -> list[HandValue]:
 
         has_kong = any(meld.kind != 'peng' for meld in player.melds)
         if ctx.kind == 'self' and has_kong and player.after_kong and player.drawn == ctx.tile:
-            patterns.append(Pattern('杠开', 20))
+            patterns.append(Pattern('杠上开花', 20))
         if (ctx.kind == 'discard' and not big and not has_kong and not player.follow_dealer
                 and player.declaration == 'none'):
             return
@@ -389,7 +389,7 @@ def discard_waits(player: Player) -> list[dict]:
 
 
 _SCENE_PATTERNS = frozenset({
-    '抢杠', '热炮', '杠开', '天胡', '地胡', '天胡／地胡', '报听', '原报', '素胡',
+    '抢杠', '热炮', '杠上开花', '天胡', '地胡', '天胡／地胡', '报听', '原报', '素胡',
 })
 
 

@@ -1,10 +1,11 @@
-"""杠开 +20：真实开杠/补摸/胡牌流程与场景边界。"""
+"""杠上开花 +20：真实开杠/补摸/胡牌流程与场景边界。"""
 import pytest
 
 from app.core.yaotong.engine import act, self_options
 from app.core.yaotong.hands import evaluate_hand, shape_points
 from app.core.yaotong.settlement import ready_info
 from app.core.yaotong.types import Command, GameState, Meld, Player, WinContext
+from app.game.yaotong_protocol import settlement_view
 
 
 def tiles(text):
@@ -41,7 +42,10 @@ def test_all_kong_kinds_add_20_to_hu_and_keep_independent_kong_payment(kind):
     assert self_options(state, 0).h == 35
     assert act(state, 0, Command(type='hu'))
     value = state.result.values[0]
-    assert [(p.name, p.points) for p in value.patterns] == [('硬胡', 10), ('杠开', 20)]
+    assert [(p.name, p.points) for p in value.patterns] == [('硬胡', 10), ('杠上开花', 20)]
+    wire = settlement_view(state.result)
+    assert wire['values']['0']['patterns'][-1] == {'name': '杠上开花', 'points': 20}
+    assert {t['reason'] for t in wire['transfers'] if t['account'] == '胡牌分'} == {'硬胡＋杠上开花'}
     assert [t.amount for t in state.result.transfers if t.account == '胡牌分'] == [35, 35, 35]
     assert [t.amount for t in state.result.transfers if t.account == '杠分'] == (
         [] if kind == 'stored' else [5] if kind == 'open' else [5, 5, 5])
@@ -65,7 +69,7 @@ def test_joker_kong_win_is_5_plus_20_without_hard_hu():
     state.players[0].drawn = 9
     assert act(state, 0, Command(type='hu'))
     assert state.result.values[0].h == 25
-    assert [(p.name, p.points) for p in state.result.values[0].patterns] == [('杠开', 20)]
+    assert [(p.name, p.points) for p in state.result.values[0].patterns] == [('杠上开花', 20)]
 
 
 @pytest.mark.parametrize('kind', ['discard', 'rob', 'hot', 'ready'])
@@ -73,7 +77,7 @@ def test_other_scenes_and_ready_price_never_borrow_kong_win(kind):
     state = kong_draw('turn')
     values = evaluate_hand(state.players[0], WinContext(kind, 26))
     assert values
-    assert all(p.name != '杠开' for v in values for p in v.patterns)
+    assert all(p.name != '杠上开花' for v in values for p in v.patterns)
     assert ready_info(state.players[0])['price'] == 10
 
 
@@ -96,4 +100,4 @@ def test_multiple_kongs_still_count_kong_win_only_once():
                     melds=[Meld(4, 'turn'), Meld(12, 'added')])
     value = evaluate_hand(player, WinContext('self', 26))[0]
     assert value.h == 35
-    assert [(p.name, p.points) for p in value.patterns if p.name == '杠开'] == [('杠开', 20)]
+    assert [(p.name, p.points) for p in value.patterns if p.name == '杠上开花'] == [('杠上开花', 20)]

@@ -70,7 +70,7 @@ async def test_agent_executes_only_a_legal_candidate_from_its_own_view(room, mon
     assert agent_view['playerKind'] == 'llm' and agent_view['isLlm'] is True
     assert agent_view['hand'] == []
 
-    async def choose_other(config, system, user, candidate_ids, *, retry_parse):
+    async def choose_other(config, system, user, candidate_ids, *, on_reasoning_progress, retry_parse):
         nonlocal selected
         payload = json.loads(user)
         assert payload['hand'] == [tile_name(tile) for tile in player.hand]
@@ -438,15 +438,26 @@ async def test_agent_audio_from_a_previous_hand_is_dropped(room, monkeypatch):
     assert queue.empty()
 
 
-async def test_slow_agent_request_shows_silent_status_until_the_decision(room, monkeypatch):
+@pytest.mark.parametrize('progress_texts', [
+    (), ('思考中 · 正在观察公开牌局', '思考中 · 正在整理规则约束'),
+], ids=['ordinary-wait', 'reasoning-progress'])
+async def test_agent_status_follows_reasoning_progress(room, monkeypatch, progress_texts):
     room.state.wall = [3]
     room.on_connect(0)
     queue = asyncio.Queue()
     room.conn.register(0, queue, None)
+    requested = asyncio.Event()
     release_model = asyncio.Event()
     voices = []
+    status = {
+        'kind': 'llm_status', 'messageId': 1, 'matchId': room.room_id,
+        'round': room.state.hand_number, 'seat': 3,
+    }
 
-    async def request(config, system, user, candidate_ids, **kwargs):
+    async def request(config, system, user, candidate_ids, *, on_reasoning_progress, retry_parse):
+        requested.set()
+        for _ in progress_texts:
+            on_reasoning_progress()
         await release_model.wait()
         return candidate_ids[0], '这张先走。'
 
@@ -454,30 +465,27 @@ async def test_slow_agent_request_shows_silent_status_until_the_decision(room, m
         voices.append(text)
         return SimpleNamespace(audio_url='/api/tts/audio/test.mp3', cached=True)
 
-    monkeypatch.setattr(yaotong_room, 'LLM_DISCARD_STATUS_DELAY', 0)
     monkeypatch.setattr(yaotong_agent, 'request_llm_decision', request)
     monkeypatch.setattr(yaotong_room, 'get_tts_service', lambda: SimpleNamespace(ensure_audio=synthesize))
     turn = asyncio.create_task(room._act_ai(3, command=Command(type='discard', index=1), delay=0))
     try:
-        status = await asyncio.wait_for(queue.get(), 1)
-        assert (status['kind'], status['seat'], status['active'], status['text']) == (
-            'llm_status', 3, True, '正在选牌…',
-        )
-        assert room.llm_seats[3].requests == 1
+        await asyncio.wait_for(requested.wait(), 1)
+        for text in progress_texts:
+            assert queue.get_nowait() == {**status, 'active': True, 'text': text}
+        if not progress_texts:
+            # 跨过原本的 0.8 秒等待提示阈值。
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(queue.get(), 1)
         assert voices == []
     finally:
         release_model.set()
         await turn
     await asyncio.gather(*room._llm_audio_tasks)
-    stopped = queue.get_nowait()
-    assert stopped['kind'] == 'llm_status' and stopped['active'] is False
-    assert (stopped['messageId'], stopped['matchId'], stopped['round']) == (
-        status['messageId'], status['matchId'], status['round'],
-    )
+    messages = [queue.get_nowait() for _ in range(queue.qsize())]
+    ended = [{**status, 'active': False}] if progress_texts else []
+    assert [message for message in messages if message['kind'] == 'llm_status'] == ended
     assert room.state.players[3].river
     assert voices == ['这张先走。']
-    assert all(message.get('messageId') != status['messageId']
-               for message in (queue.get_nowait() for _ in range(queue.qsize())))
 
 
 @pytest.mark.parametrize('midpoint', [False, True], ids=['after-discard', 'before-discard'])

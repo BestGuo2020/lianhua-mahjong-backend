@@ -36,7 +36,7 @@ from app.game.room import (
 )
 from app.game.yaotong_protocol import command_from_action, settlement_view, snapshot_for
 from app.llm.config import llm_server_available, load_llm_providers
-from app.llm.decision_speech import decision_speech
+from app.llm.decision_speech import decision_speech, safe_reasoning_status
 from app.llm.speech_policy import LlmSpeechPolicy
 from app.llm.yaotong_agent import YaotongDiscardAgent, YaotongDiscardDecision
 from app.llm.yaotong_speech import chicken_claim_speech, discard_speech
@@ -56,7 +56,6 @@ EMOTE_IDS = frozenset({'tomato', 'egg', 'pan', 'banana', 'kiss', 'like'})
 QUICK_CHAT_GAP = 0.7
 QUICK_CHAT_REPEAT = 5.0
 EMOTE_GAP = 0.35
-LLM_DISCARD_STATUS_DELAY = 0.8
 LLM_DISCARD_SPEECH_TIMEOUT = 7.0
 LLM_MELD_ACTION_KINDS = {
     ('peng', '碰'): 'peng', ('kong-intent', '宣告补杠'): 'added-kong',
@@ -947,23 +946,25 @@ class YaotongRoomSession:
         self, agent: YaotongDiscardAgent, state: GameState, seat: int, command: Command,
         timeout: float, current_window: Callable[[], bool],
     ) -> YaotongDiscardDecision | None:
-        request_count = agent.requests
         status = None
+        progress = 0
 
-        async def announce_pending() -> None:
-            nonlocal status
-            await asyncio.sleep(LLM_DISCARD_STATUS_DELAY)
-            if not current_window() or agent.requests == request_count or not self.conn.connected_seats:
+        def on_reasoning_progress() -> None:
+            nonlocal status, progress
+            if not current_window() or not self.conn.connected_seats:
                 return
-            self._llm_message_seq += 1
-            status = {'kind': 'llm_status', 'messageId': self._llm_message_seq, **self._llm_scope(state, seat)}
-            self.conn.broadcast({**status, 'active': True, 'text': '正在选牌…'})
+            if status is None:
+                self._llm_message_seq += 1
+                status = {'kind': 'llm_status', 'messageId': self._llm_message_seq, **self._llm_scope(state, seat)}
+            progress += 1
+            self.conn.broadcast({**status, 'active': True, 'text': safe_reasoning_status(progress)})
 
-        pending = asyncio.create_task(announce_pending())
         try:
-            return await asyncio.wait_for(agent.choose_discard(state, seat, command), timeout)
+            return await asyncio.wait_for(
+                agent.choose_discard(state, seat, command, on_reasoning_progress=on_reasoning_progress),
+                timeout,
+            )
         finally:
-            pending.cancel()
             if status is not None:
                 self.conn.broadcast({**status, 'active': False})
 

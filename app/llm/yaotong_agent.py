@@ -1,7 +1,7 @@
 """幺筒 Agent 只在规则 AI 准备普通出牌时参与决策。"""
 
 import json
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from loguru import logger
 
@@ -53,8 +53,10 @@ class YaotongDiscardAgent:
         self.character_id = resolve_anime_character_id(provider_id=config.provider_type,
                                                        avatar_folder=folder)
 
-    async def choose_discard(self, state: GameState, seat: Seat,
-                             rule_command: Command) -> YaotongDiscardDecision | None:
+    async def choose_discard(
+        self, state: GameState, seat: Seat, rule_command: Command, *,
+        on_reasoning_progress: Callable[[], None] | None = None,
+    ) -> YaotongDiscardDecision | None:
         if (rule_command.type != 'discard' or rule_command.declare
                 or rule_command.index is None or state.phase != 'discard'
                 or state.current != seat):
@@ -131,7 +133,7 @@ class YaotongDiscardAgent:
         try:
             choice, message = await request_llm_decision(
                 self.config, _SYSTEM_PROMPT, json.dumps(payload, ensure_ascii=False),
-                list(indexes), retry_parse=False,
+                list(indexes), on_reasoning_progress=on_reasoning_progress, retry_parse=False,
             )
         except Exception as exc:
             logger.bind(error=type(exc).__name__).info('幺筒 Agent 请求失败，使用规则 AI')

@@ -36,7 +36,7 @@ from app.game.room import (
 )
 from app.game.yaotong_protocol import command_from_action, settlement_view, snapshot_for
 from app.llm.config import llm_server_available, load_llm_providers
-from app.llm.decision_speech import decision_speech, reasoning_status_speech
+from app.llm.decision_speech import decision_speech
 from app.llm.speech_policy import LlmSpeechPolicy
 from app.llm.yaotong_agent import YaotongDiscardAgent, YaotongDiscardDecision
 from app.llm.yaotong_speech import chicken_claim_speech, discard_speech
@@ -56,7 +56,7 @@ EMOTE_IDS = frozenset({'tomato', 'egg', 'pan', 'banana', 'kiss', 'like'})
 QUICK_CHAT_GAP = 0.7
 QUICK_CHAT_REPEAT = 5.0
 EMOTE_GAP = 0.35
-LLM_THINKING_CUE_DELAY = 0.8
+LLM_DISCARD_STATUS_DELAY = 0.8
 LLM_DISCARD_SPEECH_TIMEOUT = 7.0
 LLM_MELD_ACTION_KINDS = {
     ('peng', '碰'): 'peng', ('kong-intent', '宣告补杠'): 'added-kong',
@@ -854,7 +854,7 @@ class YaotongRoomSession:
                         llm_round=state.hand_number, llm_window='discard',
                         llm_request_id=f'{self.match_id}:{state.hand_number}:{epoch}:{seat}'):
                     try:
-                        decision = await self._choose_discard_with_thinking(
+                        decision = await self._choose_discard_with_status(
                             agent, state, seat, command, remaining, current_window)
                     except asyncio.TimeoutError:
                         logger.info('幺筒 Agent 出牌时间到，使用规则 AI')
@@ -911,7 +911,8 @@ class YaotongRoomSession:
         if not listeners or deadline <= now or index is None or not 0 <= index < len(hand):
             return False
         config = agent.config
-        if not self._llm_speech.admit(seat, config.style, mandatory=config.style == '话痨'):
+        # 弃牌闲聊按普通发言限频，播报沿用出牌动作的队列顺序。
+        if not self._llm_speech.admit(seat, config.style):
             return True
         text = discard_speech(
             decision.message, preview_discard(state, seat, hand[index]), config.style,
@@ -942,34 +943,27 @@ class YaotongRoomSession:
             self._discard_speech = None
         return True
 
-    async def _choose_discard_with_thinking(
+    async def _choose_discard_with_status(
         self, agent: YaotongDiscardAgent, state: GameState, seat: int, command: Command,
         timeout: float, current_window: Callable[[], bool],
     ) -> YaotongDiscardDecision | None:
         request_count = agent.requests
         status = None
 
-        async def announce_thinking() -> None:
+        async def announce_pending() -> None:
             nonlocal status
-            await asyncio.sleep(LLM_THINKING_CUE_DELAY)
+            await asyncio.sleep(LLM_DISCARD_STATUS_DELAY)
             if not current_window() or agent.requests == request_count or not self.conn.connected_seats:
                 return
-            scope = self._llm_scope(state, seat)
-            text = reasoning_status_speech(agent.config.style, request_count)
             self._llm_message_seq += 1
-            message_id = self._llm_message_seq
-            status = {'kind': 'llm_status', 'messageId': message_id, **scope}
-            self.conn.broadcast({**status, 'active': True, 'text': text})
-            await self._synthesize_llm_audio(state, {
-                **scope, 'priority': 'normal', 'purpose': 'commentary',
-                'speechSource': 'fixed-line', 'actionKind': 'discard',
-            }, message_id, text, agent.config.style, agent.config.provider_id, is_current=current_window)
+            status = {'kind': 'llm_status', 'messageId': self._llm_message_seq, **self._llm_scope(state, seat)}
+            self.conn.broadcast({**status, 'active': True, 'text': '正在选牌…'})
 
-        thinking = asyncio.create_task(announce_thinking())
+        pending = asyncio.create_task(announce_pending())
         try:
             return await asyncio.wait_for(agent.choose_discard(state, seat, command), timeout)
         finally:
-            thinking.cancel()
+            pending.cancel()
             if status is not None:
                 self.conn.broadcast({**status, 'active': False})
 
@@ -1041,8 +1035,7 @@ class YaotongRoomSession:
         config = self.llm_seats[seat].config
         action = action_kind != 'discard'
         priority = 'important' if action else 'normal'
-        if not self.conn.connected_seats or not self._llm_speech.admit(
-                seat, config.style, priority, mandatory=config.style == '话痨'):
+        if not self.conn.connected_seats or not self._llm_speech.admit(seat, config.style, priority):
             return
         self._llm_message_seq += 1
         message_id = self._llm_message_seq
